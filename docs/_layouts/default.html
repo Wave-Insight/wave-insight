@@ -24,10 +24,18 @@
 
       <div id="banner">
         <span id="logo"></span>
-
-        <a href="{{ site.github.repository_url }}" class="button fork"><strong>View On GitHub</strong></a>
-        <a href="/lib" class="button fork"><strong>Libaray</strong></a>
-        <a href="/docs" class="button fork"><strong>Documents</strong></a>
+          <div id="wrap">
+            <div id="div1">
+              <a href="{{ site.github.repository_url }}" class="button fork"><strong>View On GitHub</strong></a>
+            </div>
+            <div id="div2">
+              <a href="/lib" class="button fork"><strong>Libaray</strong></a>
+            </div>
+            <div id="div3">
+              <a href="/docs" class="button fork"><strong>Documents</strong></a>
+            </div>
+        </div>
+        
         {% if site.show_downloads %}
           <div class="downloads">
             <span>Downloads:</span>
