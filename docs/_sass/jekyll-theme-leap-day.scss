@@ -199,9 +199,9 @@ header {
 #banner {
   z-index: 100;
   left:0;
-  right:50%;
+  right:0;
   height: 50px;
-  margin-right:-382px;
+  // margin-right:-382px;
   position: fixed;
   top: 115px;
   background: #ffcc00;
@@ -527,4 +527,17 @@ footer {
     bottom:auto;
     width:auto;
   }
+}
+
+.flex-card-list { 
+  display: flex;
+  align-items: baseline;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  justify-content: center;
+}
+.flex-card {
+  margin: 0px;
+  padding: 0px;
+  flex-shrink: 0;
 }

@@ -491,14 +491,3 @@ table {
     border-spacing: 0;
 }
 
-.flex-card-list { 
-    display: flex;
-    align-items: baseline;
-    flex-direction: row;
-    flex-wrap: nowrap;
-}
-.flex-card {
-    margin: 0px;
-    padding: 0px;
-    flex-shrink: 0;
-}
