@@ -491,7 +491,11 @@ table {
     border-spacing: 0;
 }
 
-.flexbox .flex-card-list { 
-    display:flex; 
-    flex-wrap:wrap; 
+.flex-card-list { 
+    display: flex;
+}
+.flex-card {
+    margin: 0px;
+    padding: 0px;
+    flex-shrink: 0;
 }

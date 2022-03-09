@@ -25,21 +25,19 @@
       <div id="banner">
         <span id="logo"></span>
 
-        <ul class="flex-card-list"> <!-- card list item --> 
-          <li class="flex-card-listitem"> <!-- card module --> 
-            <div class="flex-card">
-              <a href="{{ site.github.repository_url }}" class="button fork"><strong>View On GitHub</strong></a>
-            </div>
-            
-            <div class="flex-card">
-              <a href="/lib" class="button fork"><strong>Libaray</strong></a>
-            </div>
 
-            <div class="flex-card">
-              <a href="/docs" class="button fork"><strong>Documents</strong></a>
-            </div>
-          </li>
-      </ul>
+        <div class="flex-card-list">
+          <div class="flex-card">
+            <a href="{{ site.github.repository_url }}" class="button fork"><strong>View On GitHub</strong></a>
+          </div>
+          <div class="flex-card">
+            <a href="/lib" class="button fork"><strong>Libaray</strong></a>
+          </div>
+          <div class="flex-card">
+            <a href="/docs" class="button fork"><strong>Documents</strong></a>
+          </div>
+        </div>
+        
         
         {% if site.show_downloads %}
           <div class="downloads">
