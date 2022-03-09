@@ -493,6 +493,9 @@ table {
 
 .flex-card-list { 
     display: flex;
+    align-items: baseline;
+    flex-direction: row;
+    flex-wrap: nowrap;
 }
 .flex-card {
     margin: 0px;
