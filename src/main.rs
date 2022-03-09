@@ -55,6 +55,14 @@ fn main(){
     constructor.end_module();
 
     let s = Structure::from_constructor(constructor);
+    println!();
+    println!("{:?}",s);
+    println!();
     let ron = s.to_ron_string();
-    println!("{}",ron)
+    println!("{}",ron);
+    println!();
+    let s_from_ron = Structure::from_ron_str(&ron);
+    println!("{:?}",s_from_ron);
+    println!();
+    assert_eq!(s,s_from_ron);
 }
