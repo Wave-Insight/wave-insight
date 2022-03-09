@@ -491,7 +491,7 @@ table {
     border-spacing: 0;
 }
 
-#wrap{
-    display: flex;
-    justify-content: flex-start;
+.flexbox .flex-card-list { 
+    display:flex; 
+    flex-wrap:wrap; 
 }
