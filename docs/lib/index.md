@@ -1,3 +1,7 @@
+---
+layout: default
+---
+
 # Hello From Wave-Insight
 
 Rust
