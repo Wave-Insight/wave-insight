@@ -196,9 +196,9 @@ dependencies = [
 
 [[package]]
 name = "wave-insight-lib"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c93756df36862613e1020177cde2bd92f927f3dd3590981e742aa35ad19e2c6"
+checksum = "2a3b4aa799df22f9cf946924b5c519b09b83ec97a6dde7e3c2625ede72cf4645"
 dependencies = [
  "hashbrown",
  "nom",

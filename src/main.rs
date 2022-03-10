@@ -1,4 +1,6 @@
-use wave_insight_lib::structure::Structure ;
+use wave_insight_lib::structure::Wire;
+use wave_insight_lib::structure::Module;
+use wave_insight_lib::structure::Structure;
 fn main(){
     let mut constructor = Structure::new_constructor();
     constructor.filename  = "input.vcd";

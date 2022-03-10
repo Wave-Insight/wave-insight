@@ -8,4 +8,4 @@ description = "A efficient web-based wave viewer API"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wave-insight-lib = "0.1.1"
+wave-insight-lib = "0.1.2"
