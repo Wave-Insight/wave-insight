@@ -1,15 +1,7 @@
-[package]
-name = "wave-insight"
-version = "0.1.1"
-edition = "2021"
-license = "Apache-2.0"
-authors = ["Junzhuo <zhou@junzhuo.me>"]
-keywords = ["Waveform-Viewer", "broswer-based", "http", "VCD"]
-description = "A efficient web-based wave viewer API"
-homepage = "https://wave-insight.io"
-repository = "https://github.com/Wave-Insight/wave-insight"
-documentation = "https://docs.rs/crate/wave-insight/latest"
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
 
-[dependencies]
-wave-insight-lib = "0.1.2"
+members = [
+    "wave-insight-lib",
+    "front-end",
+    "back-end",
+]
