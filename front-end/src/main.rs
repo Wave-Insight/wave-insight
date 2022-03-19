@@ -1,6 +1,12 @@
-use wave_insight_lib::hello_string;
+use app::App;
+
+mod app;
+mod top_bar;
+mod file_load;
+mod code_reader;
+mod module_struct;
+mod wave_show;
 
 fn main() {
-    println!("Hello, world!");
-    println!("{}",hello_string());
+    yew::start_app::<App>();
 }

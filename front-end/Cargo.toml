@@ -5,5 +5,10 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[profile.release]
+lto = true
+
 [dependencies]
+yew = "0.19"
 wave-insight-lib = { path = "../wave-insight-lib" }
+material-yew = { git = "https://github.com/hamza1311/material-yew", features = ["full"], rev = "1bfb89d" }
