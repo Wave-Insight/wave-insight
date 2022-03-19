@@ -1,22 +1,28 @@
-use wave_insight_lib::hello_string;
+use wave_insight_lib::{data_struct::Module, parser::vcd_parser::vcd_parser};
+
 use yew::prelude::*;
+use web_sys::console;//TODO:for debug
+
 use crate::code_reader::CodeReader;
 use crate::wave_show::WaveShow;
 use crate::file_load::FileLoad;
+use crate::file_load::FileType;
 use crate::module_struct::ModuleStruct;
 
 use crate::top_bar::TopBar;
 use material_yew::{MatDrawer,
-    drawer::{MatDrawerAppContent, MatDrawerTitle},}; 
+    drawer::{MatDrawerAppContent, MatDrawerTitle},};
 
 pub enum Msg {
     NavIconClick,
     Opened,
     Closed,
+    ParserFile(FileType,String),
 }
 
 pub struct App {
     drawer_state: bool,
+    module: Module,
 }
 
 impl Component for App {
@@ -26,6 +32,7 @@ impl Component for App {
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
             drawer_state: false,
+            module: Module::new(),
         }
     }
 
@@ -42,6 +49,14 @@ impl Component for App {
             Msg::Opened => {
                 self.drawer_state = true;
                 false
+            }
+            Msg::ParserFile(file_type,text) => {
+                match file_type {
+                    FileType::IsVcd => {self.module = vcd_parser(&text,self.module.clone())},
+                    FileType::IsVerilog => {},
+                }
+                console::log_1(&format!("finish parser {}",(match file_type {FileType::IsVcd=>{"vcd"},FileType::IsVerilog=>{"verilog"},})).into());
+                true
             }
         }
     }
@@ -60,12 +75,11 @@ impl Component for App {
                     </MatDrawerTitle>
 
                     <div class="drawer-content">
-                        <FileLoad/>
-                        <ModuleStruct/>
+                        <FileLoad ongetfile={link.callback(|i:(FileType,String)| Msg::ParserFile(i.0,i.1))}/>
+                        <ModuleStruct module={self.module.clone()} />
                     </div>
                     <MatDrawerAppContent>
                         <div class="app-content" > <TopBar onnavigationiconclick={link.callback(|_| Msg::NavIconClick)}/> </div>
-                        <p>{ hello_string() }</p>
                         <div>
                             <CodeReader/>
                             <WaveShow/>

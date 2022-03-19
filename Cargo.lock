@@ -47,8 +47,11 @@ dependencies = [
 name = "front-end"
 version = "0.1.0"
 dependencies = [
+ "gloo-file 0.2.1",
+ "js-sys",
  "material-yew",
  "wave-insight-lib",
+ "web-sys",
  "yew",
 ]
 

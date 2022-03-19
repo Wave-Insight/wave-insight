@@ -12,3 +12,10 @@ lto = true
 yew = "0.19"
 wave-insight-lib = { path = "../wave-insight-lib" }
 material-yew = { git = "https://github.com/hamza1311/material-yew", features = ["full"], rev = "1bfb89d" }
+
+js-sys = "0.3"
+gloo-file = "0.2"
+
+[dependencies.web-sys]
+version = "0.3"
+features = ["File"]

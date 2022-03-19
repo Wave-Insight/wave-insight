@@ -1,3 +1,7 @@
+
+pub mod data_struct;
+pub mod parser;
+
 #[cfg(test)]
 mod tests {
     #[test]
