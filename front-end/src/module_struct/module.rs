@@ -8,7 +8,6 @@ pub struct ModuleStructProps {
 }
 
 pub struct ModuleStruct {
-    module: Vec<String>,//TODO:
 }
 
 impl Component for ModuleStruct {
@@ -17,7 +16,6 @@ impl Component for ModuleStruct {
 
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
-            module: vec![],
         }
     }
 
@@ -25,24 +23,32 @@ impl Component for ModuleStruct {
         true
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn view(&self, ctx: &Context<Self>) -> Html {
         let module = &ctx.props().module;
-        self.module = (&module.sub_module).iter().map(|x| x.0.to_string()).collect();
-        true
-    }
-
-    fn view(&self, _ctx: &Context<Self>) -> Html {
         
-        // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
+        fn show_module(m:&Module, level: i32) -> Html {
+            html! {
+                for (m.sub_module).iter().map(|x| {
+                    let space = (0..level*2).map(|_| " ").fold("".to_string(),|a,b| a+b);
+                    let signals = x.1.signal.iter();
+                    html! {
+                        <div>
+                            <h3 style="line-height:0.4;white-space:pre">{space.clone()+x.0}</h3>
+                            {for signals.map(|s| html!{
+                                <p style="line-height:0.2;white-space:pre">{space.clone()+s.0}</p>
+                            })}
+                            {show_module(x.1,level+1)}
+                        </div>
+                    }
+                })
+            }
+        }
+        
         html! {
             <div>
                 {
-                    for (self.module).iter().map(|x| {
-                        html! {<p>{x}</p>}
-                    })
+                    show_module(module,0)
                 }
-                <p>{ self.module.len() }</p>//TODO:for debug
-                <p>{ "module struct" }</p>
             </div>
         }
     }

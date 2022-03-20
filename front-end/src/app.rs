@@ -31,7 +31,7 @@ impl Component for App {
 
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
-            drawer_state: false,
+            drawer_state: true,
             module: Module::new(),
         }
     }
