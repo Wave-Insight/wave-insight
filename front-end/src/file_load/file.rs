@@ -11,14 +11,14 @@ pub enum FileType {
 }
 
 pub enum Msg {
-    Loaded(FileType,String),
+    Loaded(FileType,String,String),
     Files(Vec<File>),
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct FileLoadProps {
     #[prop_or_default]
-    pub ongetfile: Callback<(FileType,String)>,
+    pub ongetfile: Callback<(FileType,String,String)>,
 }
 
 pub struct FileLoad {
@@ -37,10 +37,10 @@ impl Component for FileLoad {
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::Loaded(file_type, text) => {
+            Msg::Loaded(file_type, file_name, text) => {
                 console::log_1(&format!("parsering {}",(match file_type {FileType::IsVcd=>{"vcd"},FileType::IsVerilog=>{"verilog"},})).into());
                 let ongetfile = ctx.props().ongetfile.clone();
-                ongetfile.emit((file_type,text));
+                ongetfile.emit((file_type,file_name,text));
                 true
             }
             Msg::Files(result) => {
@@ -54,6 +54,7 @@ impl Component for FileLoad {
                     let task = gloo_file::callbacks::read_as_text(&file, move |res| {
                         link.send_message(Msg::Loaded(
                             file_type,
+                            file_name,
                             res.unwrap_or_else(|e| e.to_string()),
                         ))
                     });

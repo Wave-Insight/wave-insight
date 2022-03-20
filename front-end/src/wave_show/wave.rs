@@ -20,7 +20,7 @@ impl Component for WaveShow {
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
             <div>
-                <p>{ "wave show" }</p>
+                
             </div>
         }
     }
