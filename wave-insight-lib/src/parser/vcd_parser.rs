@@ -6,7 +6,7 @@ use crate::data_struct::{Module, Signal, CodeLocation};
 type SignalPath = (Vec<String>,String);
 type ModulePath = Vec<String>;
 type FuncType = (Module,HashMap<String,SignalPath>,ModulePath,i32);
-
+//TODO: perf:insert signal or module should not find the destiny module each time
 pub fn vcd_parser(input: &str, raw_module: Module) -> Module {
     let lines = input.lines();
     let dump_out = lines.fold((raw_module,HashMap::new(),vec![],0),|(module,identify_table,module_path,clock),line|
@@ -42,6 +42,7 @@ fn insert_signal((module,identify_table,module_path,clock): FuncType, mut line_i
         size,
         value_change: vec![],
         same_value_signal,
+        module_path: module_path.clone(),
         location_define: CodeLocation{file_name:"".to_string(),line:0},
         location_drive: vec![],
         location_load: vec![],
