@@ -25,8 +25,9 @@ impl Component for CodeBlock {
         let text = &ctx.props().text;
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
-            <div style="height:300px">
-                <pre style="background-color:#dadada">
+            <div>
+                <pre>
+                <code style="background-color:#dadada;display:block;height:400px;overflow-y:auto">
                     //<span style="color:#945eb8">{"    abcde"}</span>
                     {
                         for text.lines().map(|l| {
@@ -35,6 +36,7 @@ impl Component for CodeBlock {
                             }
                         })
                     }
+                </code>
                 </pre>
             </div>
         }

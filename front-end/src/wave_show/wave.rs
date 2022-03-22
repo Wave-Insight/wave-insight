@@ -17,10 +17,16 @@ impl Component for WaveShow {
     }
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
-        // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
+        let view_box = format!("0 0 {} {}", 2500, 1500);
+        
         html! {
-            <div>
-                
+            <div style="display:block;height:400px;overflow-y:auto">
+                <div style="float:left;width:100px">
+                </div>
+                <div style="float:right;width:1400px;background-color:#202020">
+                    <svg viewBox={view_box}>
+                    </svg>
+                </div>
             </div>
         }
     }
