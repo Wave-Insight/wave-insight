@@ -1,16 +1,20 @@
 use yew::prelude::*;
 
-use wave_insight_lib::data_struct::{Module};
+use wave_insight_lib::data_struct::Module;
 use crate::module_struct::{SignalComponent, ModuleComponent};
 use web_sys::console;//TODO:for debug
 
+type SignalPath = (Vec<String>,String);
+
 pub enum Msg {
-    GetClick(String),
+    GetClick(SignalPath),
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct ModuleStructProps {
     pub module: Module,
+    #[prop_or_default]
+    pub signaladd: Callback<SignalPath>,
 }
 
 pub struct ModuleStruct {
@@ -25,10 +29,12 @@ impl Component for ModuleStruct {
         }
     }
 
-    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
+        let props = ctx.props();
         match msg {
             Msg::GetClick(s) => {
-                console::log_1(&format!("click,{}",s).into());
+                console::log_1(&format!("click,{}",s.1).into());
+                props.signaladd.emit(s);
                 true
             },
         }
@@ -38,7 +44,7 @@ impl Component for ModuleStruct {
         let module = &ctx.props().module;
         let link = ctx.link();
         
-        let callback = link.callback(move |p:(Vec<String>,String)| Msg::GetClick(p.1));
+        let callback = link.callback(Msg::GetClick);
         fn show_module(m:&Module, level: i32, callback: &Callback<(Vec<String>,String)>) -> Html {
             html! {
                 for (m.sub_module).iter().map(|x| {

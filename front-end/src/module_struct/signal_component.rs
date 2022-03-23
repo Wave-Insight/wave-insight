@@ -52,7 +52,8 @@ impl Component for SignalComponent {
                 <p style="line-height:0.2;white-space:pre"
                     onclick={link.callback(|_| Msg::Click)}>{
                         self.space.clone()+&self.show_name
-                    }</p>
+                    }
+                </p>
             </div>
         }
     }

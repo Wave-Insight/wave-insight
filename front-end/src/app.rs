@@ -1,4 +1,5 @@
 use wave_insight_lib::{data_struct::Module,
+    data_struct::Signal,
     parser::vcd_parser::vcd_parser,
     parser::verilog_parser::verilog_parser};
 
@@ -20,12 +21,14 @@ pub enum Msg {
     Opened,
     Closed,
     ParserFile(FileType,String,String),
+    SignalAdd((Vec<String>,String)),
 }
 
 pub struct App {
     drawer_state: bool,
     module: Module,
     verilog_source: Vec<(String,String)>,
+    signal_add: (String,Signal),
 }
 
 impl Component for App {
@@ -37,6 +40,7 @@ impl Component for App {
             drawer_state: true,
             module: Module::new(),
             verilog_source: vec![],
+            signal_add: ("".to_string(),Signal::new()),
         }
     }
 
@@ -65,6 +69,10 @@ impl Component for App {
                 console::log_1(&format!("finish parser {}",(match file_type {FileType::IsVcd=>{"vcd"},FileType::IsVerilog=>{"verilog"},})).into());
                 true
             }
+            Msg::SignalAdd(input) => {
+                self.signal_add = (input.1.clone(),self.module.get_signal(&input).unwrap().clone());
+                true
+            }
         }
     }
 
@@ -83,14 +91,14 @@ impl Component for App {
 
                     <div class="drawer-content">
                         <FileLoad ongetfile={link.callback(|i:(FileType,String,String)| Msg::ParserFile(i.0,i.1,i.2))}/>
-                        <ModuleStruct module={self.module.clone()} />
+                        <ModuleStruct module={self.module.clone()} signaladd={link.callback(Msg::SignalAdd)}/>
                     </div>
                     <MatDrawerAppContent>
                         <div class="app-content" >
                             <TopBar onnavigationiconclick={link.callback(|_| Msg::NavIconClick)}/>
                             <div>
-                                <CodeReader file={self.verilog_source.clone()}/>
-                                <WaveShow/>
+                                <CodeReader file={self.verilog_source.clone()} />
+                                <WaveShow signaladd={self.signal_add.clone()} />
                             </div>
                         </div>
                     </MatDrawerAppContent>

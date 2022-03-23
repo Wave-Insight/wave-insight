@@ -26,7 +26,7 @@ fn parsing_line(input: FuncType, line: String) -> FuncType {
     }
 }
 
-fn insert_signal((module,identify_table,module_path,clock): FuncType, mut line_item: SplitWhitespace) -> FuncType {
+fn insert_signal((module,identify_table,module_path,clock): FuncType, mut line_item: SplitWhitespace<'_>) -> FuncType {
     //  $var wire  1 1 clk $end
     let mut module_out = module;
     let mut identify_table_out = identify_table;
@@ -55,7 +55,7 @@ fn insert_signal((module,identify_table,module_path,clock): FuncType, mut line_i
     (module_out,identify_table_out,module_path,clock)
 }
 
-fn insert_module((module,identify_table,module_path,clock): FuncType, mut line_item: SplitWhitespace) -> FuncType {
+fn insert_module((module,identify_table,module_path,clock): FuncType, mut line_item: SplitWhitespace<'_>) -> FuncType {
     // $scope module TOP $end
     let mut module_out = module;
     let mut module_path_out = module_path;
