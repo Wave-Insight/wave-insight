@@ -1,6 +1,8 @@
 use std::{vec, str::SplitWhitespace};
 use std::collections::HashMap;
 
+use num::BigUint;
+
 use crate::data_struct::{Module, Signal, CodeLocation};
 
 type SignalPath = (Vec<String>,String);
@@ -84,19 +86,19 @@ fn value_change((module,identify_table,module_path,clock): FuncType, mut line_it
         let mut module_out = module;
         if let Some(s) = identify_table.get(line_item.next().unwrap())
             .and_then(|x| module_out.get_signal(x))
-            { s.value_change.push((clock,u64::from_str_radix(value,2).unwrap() as i64)) }//TODO:wrong! signal size may be larger than i64
+            { s.value_change.push((clock,BigUint::parse_bytes(value.as_bytes(),2).unwrap())) }//TODO:wrong! signal size may be larger than i64
         (module_out,identify_table,module_path,clock)
     }else if let Some(identify) = this_item.strip_prefix('1') {
         let mut module_out = module;
         if let Some(s) = identify_table.get(identify)
             .and_then(|x| module_out.get_signal(x))
-            { s.value_change.push((clock,1)) }
+            { s.value_change.push((clock,BigUint::new(vec![1]))) }
         (module_out,identify_table,module_path,clock)
     }else if let Some(identify) = this_item.strip_prefix('0') {
         let mut module_out = module;
         if let Some(s) = identify_table.get(identify)
             .and_then(|x| module_out.get_signal(x))
-            { s.value_change.push((clock,0)) }
+            { s.value_change.push((clock,BigUint::new(vec![0]))) }
         (module_out,identify_table,module_path,clock)
     }else {
         (module,identify_table,module_path,clock)

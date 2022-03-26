@@ -1,10 +1,12 @@
+use num::BigUint;
+
 use super::CodeLocation;
 
 //no need of name because name is key
 #[derive(Debug, PartialEq, Clone)]
 pub struct Signal {
     pub size: usize,
-    pub value_change: Vec<(i32,i64)>,
+    pub value_change: Vec<(i32,BigUint)>,
     pub same_value_signal: Option<(Vec<String>,String)>,//(module_name,signal_name)
     pub module_path: Vec<String>,//TODO:try to find something instead of String,which looks like hash key
     pub location_define: CodeLocation,//TODO:need file name

@@ -1,3 +1,4 @@
+use num::BigUint;
 use yew::prelude::*;
 
 use wave_insight_lib::data_struct::Signal;
@@ -10,7 +11,7 @@ pub struct WaveShowProps {
 pub struct WaveShow {
     signal_name: Vec<String>,
     //signal_path: (Vec<String>,String),
-    signal_show: Vec<Vec<(i32,i32)>>,
+    signal_show: Vec<Vec<(i32,BigUint)>>,
 }
 
 impl Component for WaveShow {
@@ -49,6 +50,20 @@ impl Component for WaveShow {
                 </div>
                 <div style="float:right;width:1400px;background-color:#202020">
                     <svg viewBox={view_box}>
+                        {
+                            for (&self.signal_show).iter().map(|show| {
+                                let color = "red";
+
+                                let mut points = String::new();
+                                for d in show {
+                                    if d.0>=0 && d.0 < 3000 {
+                                        points.push_str(&format!("{:.2},{:.2} ", d.0, 20));
+                                    }
+                                }
+
+                                html! { <polyline points={points} fill="none" stroke={color} /> }
+                            })
+                        }
                     </svg>
                 </div>
             </div>
