@@ -59,11 +59,12 @@ impl Component for SignalValue {
 
             html! {
                 <svg viewBox={view_box}>
-                    <polyline points={points} fill="none" stroke={"rgb(255,0,0)"} />
+                    <polyline points={points} fill="none" stroke={"rgb(0,255,0)"} />
                 </svg>}
         }else {
             let mut points1 = String::new();
             let mut points2 = String::new();
+            let mut value: Vec<Html> = vec![];
             for d in &self.value {
                 if d.0>=0 && d.0 < 3000 {
                     points1.push_str(&format!("{:.2},{:.2} ", d.0-2, zero_position+40));
@@ -72,6 +73,14 @@ impl Component for SignalValue {
                     points2.push_str(&format!("{:.2},{:.2} ", d.0-2, zero_position));
                     points2.push_str(&format!("{:.2},{:.2} ", d.0, zero_position+20));
                     points2.push_str(&format!("{:.2},{:.2} ", d.0+2, zero_position));
+
+                    value.push(
+                        html!{
+                            <text x={format!("{}",d.0+2)} y={format!("{}",zero_position+37)} fill="rgb(255,255,255)">
+                                {format!("{}",d.1)}
+                            </text>
+                        }
+                    );
                 }
             };
             points1.push_str(&format!("{:.2},{:.2} ", 3000, zero_position+40));
@@ -79,8 +88,9 @@ impl Component for SignalValue {
 
             html! {
                 <svg viewBox={view_box}>
-                    <polyline points={points1} fill="none" stroke={"rgb(255,0,0)"} />
-                    <polyline points={points2} fill="none" stroke={"rgb(255,0,0)"} />
+                    <polyline points={points1} fill="none" stroke={"rgb(0,255,0)"} />
+                    <polyline points={points2} fill="none" stroke={"rgb(0,255,0)"} />
+                    {for value}
                 </svg> }
         }
     }

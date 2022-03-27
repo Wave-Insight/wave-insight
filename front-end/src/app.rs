@@ -13,13 +13,9 @@ use crate::file_load::FileType;
 use crate::module_struct::ModuleStruct;
 
 use crate::top_bar::TopBar;
-use material_yew::{MatDrawer,
-    drawer::{MatDrawerAppContent, MatDrawerTitle},};
 
 pub enum Msg {
     NavIconClick,
-    Opened,
-    Closed,
     ParserFile(FileType,String,String),
     SignalAdd((Vec<String>,String)),
 }
@@ -50,14 +46,6 @@ impl Component for App {
                 self.drawer_state = !self.drawer_state;
                 true
             }
-            Msg::Closed => {
-                self.drawer_state = false;
-                false
-            }
-            Msg::Opened => {
-                self.drawer_state = true;
-                false
-            }
             Msg::ParserFile(file_type,file_name,text) => {
                 match file_type {
                     FileType::IsVcd => {self.module = vcd_parser(&text,self.module.clone())},
@@ -80,29 +68,24 @@ impl Component for App {
         let link = ctx.link();
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
-            <div>
-                <MatDrawer open={self.drawer_state} drawer_type="dismissible"
-                           onopened={link.callback(|_| Msg::Opened)}
-                           onclosed={link.callback(|_| Msg::Closed)}>
-
-                    <MatDrawerTitle>
-                        <span class="drawer-title">{"Components"}</span>
-                    </MatDrawerTitle>
-
-                    <div class="drawer-content">
+            <div style="height:100%">
+                <TopBar onnavigationiconclick={link.callback(|_| Msg::NavIconClick)}/>
+                {if self.drawer_state {
+                    html!{
+                    <div style="width:20%;float:left">
                         <FileLoad ongetfile={link.callback(|i:(FileType,String,String)| Msg::ParserFile(i.0,i.1,i.2))}/>
                         <ModuleStruct module={self.module.clone()} signaladd={link.callback(Msg::SignalAdd)}/>
                     </div>
-                    <MatDrawerAppContent>
-                        <div class="app-content" >
-                            <TopBar onnavigationiconclick={link.callback(|_| Msg::NavIconClick)}/>
-                            <div>
-                                <CodeReader file={self.verilog_source.clone()} />
-                                <WaveShow signaladd={self.signal_add.clone()} />
-                            </div>
-                        </div>
-                    </MatDrawerAppContent>
-                </MatDrawer>
+                    }
+                }else {
+                    html!{}
+                }}
+                <div style={"width:".to_owned()+(if self.drawer_state {"80%"} else {"100%"})+";float:left;display:block;height:100%;overflow-y:auto"} >
+                    <div style="display:block;height:100%;overflow-y:auto">
+                        <CodeReader file={self.verilog_source.clone()} />
+                        <WaveShow signaladd={self.signal_add.clone()} />
+                    </div>
+                </div>
             </div>
         }
     }

@@ -45,14 +45,14 @@ impl Component for WaveShow {
         
         html! {
             <div style="display:block;height:400px;overflow-y:auto">
-                <div style="float:left;width:100px">
+                <div style="float:left;width:10%">
                     {
                         for (&self.signal_name).iter().map(|s| {
                             html!{<SignalName name={s.clone()}/>}
                         })
                     }
                 </div>
-                <div style="float:right;width:1400px;background-color:#202020">
+                <div style="float:right;width:90%;background-color:#202020">
                     {
                         for (&self.signal_show).iter().zip(&self.bool_signal).map(|(s,b)| {
                             html!{<SignalValue value={s.clone()} bool_signal={*b} zero_position={5} />}

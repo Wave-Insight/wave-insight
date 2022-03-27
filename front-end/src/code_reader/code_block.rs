@@ -28,7 +28,6 @@ impl Component for CodeBlock {
             <div>
                 <pre>
                 <code style="background-color:#dadada;display:block;height:400px;overflow-y:auto">
-                    //<span style="color:#945eb8">{"    abcde"}</span>
                     {
                         for text.lines().map(|l| {
                             html!{

@@ -29,7 +29,7 @@ impl Component for TopBar {
         let props = ctx.props();
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
-            <div>
+            <div style="height:10%">
                 <MatTopAppBarFixed onnavigationiconclick={props.onnavigationiconclick.clone()}>
                     <MatTopAppBarNavigationIcon>
                         <MatIconButton icon="menu"></MatIconButton>
