@@ -9,6 +9,7 @@ type ModulePath = [String];
 pub struct Module {
     pub sub_module: HashMap<String,Module>,
     pub signal: HashMap<String,Signal>,
+    pub end_clock: i32,
 }
 
 impl Module {
@@ -16,6 +17,7 @@ impl Module {
         Self {
             sub_module: HashMap::new(),
             signal: HashMap::new(),
+            end_clock: 0,
         }
     }
     pub fn get_module(&mut self, path: &ModulePath) -> Option<&mut Module> {

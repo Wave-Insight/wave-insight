@@ -14,7 +14,9 @@ pub fn vcd_parser(input: &str, raw_module: Module) -> Module {
     let dump_out = lines.fold((raw_module,HashMap::new(),vec![],0),|(module,identify_table,module_path,clock),line|
         parsing_line((module,identify_table,module_path,clock),line.to_string())
     );
-    dump_out.0
+    let mut ret = dump_out.0;
+    ret.end_clock = dump_out.3;
+    ret
 }
 
 fn parsing_line(input: FuncType, line: String) -> FuncType {

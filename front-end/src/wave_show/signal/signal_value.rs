@@ -12,7 +12,8 @@ pub struct SignalValue {
 pub struct SignalValueProps {
     pub value: Vec<(i32,BigUint)>,
     pub bool_signal: bool,
-    pub zero_position: u32,
+    pub x_axis: f64,
+    pub size: f64,
 }
 
 impl Component for SignalValue {
@@ -37,20 +38,24 @@ impl Component for SignalValue {
     //}
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let zero_position = ctx.props().zero_position;
+        let props = ctx.props();
+        let x_axis = props.x_axis;
+        let size = props.size;
+        let zero_position = 5;
         let view_box = format!("0 0 {} {}", 2500, 50);
         if self.bool_signal {
             let mut points = String::new();
             let mut last: u32 = 0;
             for d in &self.value {
-                if d.0>=0 && d.0 < 3000 {
+                let x = ((d.0 as f64) - x_axis)*size;
+                if (0.0..3000.0).contains(&x) {
                     if d.1 == BigUint::new(vec![1]){
-                        points.push_str(&format!("{:.2},{:.2} ", d.0, zero_position+40));
-                        points.push_str(&format!("{:.2},{:.2} ", d.0, zero_position));
+                        points.push_str(&format!("{:.2},{:.2} ", x, zero_position+40));
+                        points.push_str(&format!("{:.2},{:.2} ", x, zero_position));
                         last = zero_position;
                     }else {
-                        points.push_str(&format!("{:.2},{:.2} ", d.0, zero_position));
-                        points.push_str(&format!("{:.2},{:.2} ", d.0, zero_position+40));
+                        points.push_str(&format!("{:.2},{:.2} ", x, zero_position));
+                        points.push_str(&format!("{:.2},{:.2} ", x, zero_position+40));
                         last = zero_position+40;
                     }
                 }
@@ -66,17 +71,18 @@ impl Component for SignalValue {
             let mut points2 = String::new();
             let mut value: Vec<Html> = vec![];
             for d in &self.value {
-                if d.0>=0 && d.0 < 3000 {
-                    points1.push_str(&format!("{:.2},{:.2} ", d.0-2, zero_position+40));
-                    points1.push_str(&format!("{:.2},{:.2} ", d.0, zero_position+20));
-                    points1.push_str(&format!("{:.2},{:.2} ", d.0+2, zero_position+40));
-                    points2.push_str(&format!("{:.2},{:.2} ", d.0-2, zero_position));
-                    points2.push_str(&format!("{:.2},{:.2} ", d.0, zero_position+20));
-                    points2.push_str(&format!("{:.2},{:.2} ", d.0+2, zero_position));
+                let x = ((d.0 as f64) - x_axis)*size;
+                if (0.0..3000.0).contains(&x) {
+                    points1.push_str(&format!("{:.2},{:.2} ", x-2.0, zero_position+40));
+                    points1.push_str(&format!("{:.2},{:.2} ", x, zero_position+20));
+                    points1.push_str(&format!("{:.2},{:.2} ", x+2.0, zero_position+40));
+                    points2.push_str(&format!("{:.2},{:.2} ", x-2.0, zero_position));
+                    points2.push_str(&format!("{:.2},{:.2} ", x, zero_position+20));
+                    points2.push_str(&format!("{:.2},{:.2} ", x+2.0, zero_position));
 
                     value.push(
                         html!{
-                            <text x={format!("{}",d.0+2)} y={format!("{}",zero_position+37)} fill="rgb(255,255,255)">
+                            <text x={format!("{}",x+2.0)} y={format!("{}",zero_position+37)} fill="rgb(255,255,255)">
                                 {format!("{}",d.1)}
                             </text>
                         }

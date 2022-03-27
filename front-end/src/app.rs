@@ -83,7 +83,7 @@ impl Component for App {
                 <div style={"width:".to_owned()+(if self.drawer_state {"80%"} else {"100%"})+";float:left;display:block;height:100%;overflow-y:auto"} >
                     <div style="display:block;height:100%;overflow-y:auto">
                         <CodeReader file={self.verilog_source.clone()} />
-                        <WaveShow signaladd={self.signal_add.clone()} />
+                        <WaveShow signaladd={self.signal_add.clone()} end_clock={self.module.end_clock} />
                     </div>
                 </div>
             </div>
