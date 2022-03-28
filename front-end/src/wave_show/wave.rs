@@ -74,8 +74,8 @@ impl Component for WaveShow {
         let end_clock = ctx.props().end_clock;
         
         html! {
-            <div>
-                <div style="display:block;height:400px;overflow-y:auto">
+            <div style="display:block;height:50%;overflow-y:auto">
+                <div style="height:90%;overflow-y:auto">
                     <div style="float:left;width:10%">
                         {
                             for (&self.signal_name).iter().map(|s| {
@@ -92,7 +92,7 @@ impl Component for WaveShow {
                     </div>
                 </div>
                 <input id="slider" type="range"
-                min="0" max={end_clock.to_string()} step="1" style="width:99%"
+                min="0" max={end_clock.to_string()} step="1" style="margin:0px;width:99%;height:9%"
                 onchange={link.callback(|e: Event| Msg::SetX(e.target_unchecked_into::<HtmlInputElement>().value_as_number()))} />
             </div>
         }

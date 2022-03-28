@@ -25,9 +25,9 @@ impl Component for CodeBlock {
         let text = &ctx.props().text;
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
-            <div>
+            <div style="background-color:#dadada;display:block;height:100%;overflow-y:auto">//;height:400px
                 <pre>
-                <code style="background-color:#dadada;display:block;height:400px;overflow-y:auto">
+                <code>
                     {
                         for text.lines().map(|l| {
                             html!{

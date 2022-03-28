@@ -45,7 +45,7 @@ impl Component for CodeReader {
 
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
-            <div>
+            <div style="height:50%;overflow-y:auto">
                 <MatTabBar onactivated={link.callback(Msg::SetActive)}>
                 {
                     if props.file.is_empty() {

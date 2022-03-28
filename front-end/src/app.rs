@@ -66,13 +66,18 @@ impl Component for App {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
+
+        let window = web_sys::window().expect("should have a window in this context");
+        let win_height = window.inner_height().unwrap().as_f64().unwrap()-64.0;
+        console::log_1(&format!("height2 {:?}",win_height).into());
+
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
-            <div style="height:100%">
+            <div style={"height:".to_owned()+&win_height.to_string()+"px"}>
                 <TopBar onnavigationiconclick={link.callback(|_| Msg::NavIconClick)}/>
                 {if self.drawer_state {
                     html!{
-                    <div style="width:20%;float:left">
+                    <div style="width:20%;float:left;height:100%;overflow-y:auto">
                         <FileLoad ongetfile={link.callback(|i:(FileType,String,String)| Msg::ParserFile(i.0,i.1,i.2))}/>
                         <ModuleStruct module={self.module.clone()} signaladd={link.callback(Msg::SignalAdd)}/>
                     </div>

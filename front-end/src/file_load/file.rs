@@ -70,7 +70,6 @@ impl Component for FileLoad {
         let link = ctx.link();
         html! {
             <div>
-                <p>{ "file load" }</p>
                 <input type="file" multiple=true onchange={link.callback(move |e: Event| {
                         let mut result = Vec::new();
                         let input: HtmlInputElement = e.target_unchecked_into();
