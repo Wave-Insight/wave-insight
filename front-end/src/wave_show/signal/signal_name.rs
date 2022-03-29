@@ -26,7 +26,7 @@ impl Component for SignalName {
         let props = ctx.props();
         Self {
             name: props.name.clone(),
-            height: "20px".to_string(),
+            height: "34px".to_string(),
             menu_show: "hidden".to_string(),
         }
     }
@@ -45,10 +45,10 @@ impl Component for SignalName {
             Msg::Setting(set_what) => {
                 self.menu_show = "hidden".to_string();
                 if set_what == "Analog" {
-                    if self.height == "20px" {
-                        self.height = "40px".to_string();
+                    if self.height == "34px" {
+                        self.height = "60px".to_string();
                     }else {
-                        self.height = "20px".to_string();
+                        self.height = "34px".to_string();
                     }
                 }
                 true
@@ -60,7 +60,7 @@ impl Component for SignalName {
         let link = ctx.link();
         html! {
             <div>
-                <p oncontextmenu={link.callback(Msg::ContextMenu)} style={"height:".to_owned()+&self.height}>{&self.name}</p>
+                <p oncontextmenu={link.callback(Msg::ContextMenu)} style={"margin:0px;height:".to_owned()+&self.height}>{&self.name}</p>
                 <div style={"border:1px solid #ddd;position:absolute;background-color:#fff;visibility:".to_owned()+&self.menu_show}>
                     <a onclick={link.callback(|_| Msg::Setting("Hex".to_string()))}>{"Hex"}</a>
                     <hr/>
