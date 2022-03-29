@@ -1,5 +1,5 @@
 use crate::data_struct::signal::Signal;
-use std::collections::HashMap;
+use linked_hash_map::LinkedHashMap;
 
 type SignalPath = (Vec<String>,String);
 type ModulePath = [String];
@@ -7,16 +7,16 @@ type ModulePath = [String];
 //except for top module, name is key
 #[derive(Debug, PartialEq, Clone)]
 pub struct Module {
-    pub sub_module: HashMap<String,Module>,
-    pub signal: HashMap<String,Signal>,
+    pub sub_module: LinkedHashMap<String,Module>,
+    pub signal: LinkedHashMap<String,Signal>,
     pub end_clock: i32,
 }
 
 impl Module {
     pub fn new() -> Self {
         Self {
-            sub_module: HashMap::new(),
-            signal: HashMap::new(),
+            sub_module: LinkedHashMap::new(),
+            signal: LinkedHashMap::new(),
             end_clock: 0,
         }
     }
