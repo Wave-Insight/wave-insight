@@ -68,9 +68,7 @@ impl Component for FileLoad {
     fn view(&self, ctx: &Context<Self>) -> Html {
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         let link = ctx.link();
-        html! {
-            <div>
-                <input type="file" multiple=true onchange={link.callback(move |e: Event| {
+        let onchangefunc = link.callback(move |e: Event| {
                         let mut result = Vec::new();
                         let input: HtmlInputElement = e.target_unchecked_into();
 
@@ -83,8 +81,10 @@ impl Component for FileLoad {
                             result.extend(files);
                         }
                         Msg::Files(result)
-                    })}
-                />
+                    });
+        html! {
+            <div>
+                <input type="file" multiple=true onchange={onchangefunc}/>
             </div>
         }
     }

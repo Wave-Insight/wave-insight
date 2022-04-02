@@ -4,6 +4,8 @@ use yew::prelude::*;
 
 use wave_insight_lib::data_struct::Signal;
 
+use super::ctrl::Ctrl;
+use super::settings::Settings;
 use super::signal::SignalName;
 use super::signal::SignalValue;
 
@@ -16,14 +18,20 @@ pub struct WaveShowProps {
 pub enum Msg {
     SetX(f64),
     Wheel(WheelEvent),
+    ShowMenu(usize),
+    SetSignal((bool,Settings)),
 }
 
 pub struct WaveShow {
     signal_name: Vec<String>,
     signal_show: Vec<Vec<(i32,BigUint)>>,
     bool_signal: Vec<bool>,
+    signal_setting: Vec<Settings>,
     x_axis: f64,
     size: f64,
+
+    menu_show: bool,
+    on_show_idx: usize,
 }
 
 impl Component for WaveShow {
@@ -35,8 +43,12 @@ impl Component for WaveShow {
             signal_name: vec![],
             signal_show: vec![],
             bool_signal: vec![],
+            signal_setting: vec![],
             x_axis: 0f64,
             size: 1f64,
+
+            menu_show: false,
+            on_show_idx: 0,
         }
     }
 
@@ -56,15 +68,30 @@ impl Component for WaveShow {
                 }
                 true
             }
+            Msg::ShowMenu(idx) => {
+                self.menu_show = true;
+                self.on_show_idx = idx;
+                true
+            }
+            Msg::SetSignal((close,set)) => {
+                if close {
+                    self.menu_show = false;
+                }
+                self.signal_setting[self.on_show_idx] = set;
+                true
+            }
         }
     }
 
     fn changed(&mut self, ctx: &Context<Self>) -> bool {
         let (signal_name,signal) = &ctx.props().signaladd;
         if !signal_name.is_empty() {
-            self.signal_name.push(signal_name.clone());
+            self.signal_name.push(
+                if signal.size==1 {signal_name.clone()}
+                else {signal_name.clone()+"["+&(signal.size-1).to_string()+":0]"});
             self.signal_show.push(signal.value_change.clone());
             self.bool_signal.push(signal.size==1);
+            self.signal_setting.push(Settings::new());
         }
         true
     }
@@ -75,11 +102,14 @@ impl Component for WaveShow {
         
         html! {
             <div style="display:block;height:50%;overflow-y:auto">
+                if self.menu_show {
+                    <Ctrl name={"signal_name"} setting={self.signal_setting[self.on_show_idx as usize].clone()} onset={link.callback(Msg::SetSignal)} />//TODO:
+                }
                 <div style="height:90%;overflow-y:auto">
                     <div style="float:left;width:10%">
                         {
-                            for (&self.signal_name).iter().map(|s| {
-                                html!{<SignalName name={s.clone()}/>}
+                            for (&self.signal_name).iter().enumerate().map(|(idx,s)| {
+                                html!{<SignalName name={s.clone()} menu={link.callback(move |()| Msg::ShowMenu(idx))} />}
                             })
                         }
                     </div>
