@@ -1,5 +1,7 @@
-use num::BigUint;
+use num::{BigUint,BigInt, bigint::{ToBigInt, Sign}};
 use yew::prelude::*;
+
+use crate::wave_show::{Settings, ShowType};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SignalValue {
@@ -14,6 +16,8 @@ pub struct SignalValueProps {
     pub bool_signal: bool,
     pub x_axis: f64,
     pub size: f64,
+    pub setting: Settings,
+    pub bitcount: usize,
 }
 
 impl Component for SignalValue {
@@ -41,6 +45,8 @@ impl Component for SignalValue {
         let props = ctx.props();
         let x_axis = props.x_axis;
         let size = props.size;
+        let show_type = &props.setting.show_type;
+        let bitcount = props.bitcount as u32;
         let zero_position = 3;
         if self.bool_signal {
             let mut points = String::new();
@@ -92,13 +98,7 @@ impl Component for SignalValue {
                         head_used = true;
                         points1.push_str(&format!("{:.2},{:.2} ", 0, zero_position+24));
                         points2.push_str(&format!("{:.2},{:.2} ", 0, zero_position));
-                        value.push(
-                            html!{
-                                <text x={format!("{}",0)} y={format!("{}",zero_position+21)} fill="rgb(255,255,255)">
-                                    {format!("{}",head)}
-                                </text>
-                            }
-                        );
+                        value.push(value_text(0.0, &head, show_type, bitcount));
                     }
                     points1.push_str(&format!("{:.2},{:.2} ", x-2.0, zero_position+24));
                     points1.push_str(&format!("{:.2},{:.2} ", x, zero_position+12));
@@ -107,13 +107,7 @@ impl Component for SignalValue {
                     points2.push_str(&format!("{:.2},{:.2} ", x, zero_position+12));
                     points2.push_str(&format!("{:.2},{:.2} ", x+2.0, zero_position));
 
-                    value.push(
-                        html!{
-                            <text x={format!("{}",x+2.0)} y={format!("{}",zero_position+21)} fill="rgb(255,255,255)">
-                                {format!("{}",d.1)}
-                            </text>
-                        }
-                    );
+                    value.push(value_text(x+2.0, &d.1, show_type, bitcount));
                 }else if x < 0.0 {
                     head = d.1.clone();
                     head_used = false;
@@ -122,13 +116,7 @@ impl Component for SignalValue {
             if !head_used {
                 points1.push_str(&format!("{:.2},{:.2} ", 0, zero_position+24));
                 points2.push_str(&format!("{:.2},{:.2} ", 0, zero_position));
-                value.push(
-                    html!{
-                        <text x={format!("{}",0)} y={format!("{}",zero_position+21)} fill="rgb(255,255,255)">
-                            {format!("{}",head)}
-                        </text>
-                    }
-                );
+                value.push(value_text(0.0, &head, show_type, bitcount));
             }
             points1.push_str(&format!("{:.2},{:.2} ", 3000, zero_position+24));
             points2.push_str(&format!("{:.2},{:.2} ", 3000, zero_position));
@@ -140,5 +128,39 @@ impl Component for SignalValue {
                     {for value}
                 </svg> }
         }
+    }
+}
+
+fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32) -> Html {
+    let zero_position = 3;
+    html!{
+        <text x={format!("{}",begin)} y={format!("{}",zero_position+21)} fill="rgb(255,255,255)">
+            {
+                if *show_type==ShowType::Hex {
+                    value.to_str_radix(16).to_string()
+                }else if *show_type==ShowType::Oct {
+                    value.to_str_radix(8).to_string()
+                }else if *show_type==ShowType::Bin {
+                    value.to_str_radix(2).to_string()
+                }else if *show_type==ShowType::UInt {
+                    format!("{}",value)
+                }else if *show_type==ShowType::SInt {
+                    let bound = BigUint::new(vec![2]).pow(bitcount-1);
+                    let value_to_sint = if *value >= bound {
+                        value.to_bigint().unwrap() - BigInt::new(Sign::Plus,vec![2]).pow(bitcount)
+                    }else {
+                        value.to_bigint().unwrap()
+                    };
+                    format!("{}",value_to_sint)
+                }else {
+                    let value_to_bytes = value.to_bytes_be();
+                    let s = match std::str::from_utf8(&value_to_bytes) {
+                        Ok(v) => v,
+                        Err(_e) => "invalid",//TODO:do not panic
+                    };
+                    s.to_string()
+                }
+            }
+        </text>
     }
 }
