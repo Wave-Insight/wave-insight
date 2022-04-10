@@ -28,6 +28,7 @@ pub struct WaveShow {
     bool_signal: Vec<bool>,
     signal_setting: Vec<Settings>,
     signal_bitcount: Vec<usize>,
+    load_and_drive: Vec<(Vec<String>,Vec<String>)>,
     x_axis: f64,
     size: f64,
 
@@ -46,6 +47,7 @@ impl Component for WaveShow {
             bool_signal: vec![],
             signal_setting: vec![],
             signal_bitcount: vec![],
+            load_and_drive: vec![],
             x_axis: 0f64,
             size: 1f64,
 
@@ -96,6 +98,7 @@ impl Component for WaveShow {
             self.bool_signal.push(bool_signal);
             self.signal_setting.push(Settings::new());
             self.signal_bitcount.push(signal.size);
+            self.load_and_drive.push((signal.load.clone(),signal.drive.clone()));
         }
         true
     }
@@ -107,7 +110,11 @@ impl Component for WaveShow {
         html! {
             <div style="display:block;height:50%;overflow-y:auto">
                 if self.menu_show {
-                    <Ctrl name={self.signal_name[self.on_show_idx as usize].clone()} setting={self.signal_setting[self.on_show_idx as usize].clone()} onset={link.callback(Msg::SetSignal)} />
+                    <Ctrl name={self.signal_name[self.on_show_idx as usize].clone()}
+                        setting={self.signal_setting[self.on_show_idx as usize].clone()}
+                        load={self.load_and_drive[self.on_show_idx as usize].0.clone()}
+                        drive={self.load_and_drive[self.on_show_idx as usize].1.clone()}
+                        onset={link.callback(Msg::SetSignal)} />
                 }
                 <div style="height:90%;overflow-y:auto">
                     <div style="float:left;width:10%">

@@ -1,5 +1,5 @@
 
-use crate::{data_struct::{Module, Signal, CodeLocation}, parser::{get_word::{LastType, get_word}, word_parser::{State, state_update, ParserType}, module_verilog::ModuleVerilog}};
+use crate::{data_struct::{Module, Signal}, parser::{get_word::{LastType, get_word}, word_parser::{State, state_update, ParserType}, module_verilog::ModuleVerilog}};
 
 pub fn verilog_parser(input: &str, raw_module: Module) -> Module {
     let chars = input.chars();
@@ -43,55 +43,7 @@ pub fn verilog_parser(input: &str, raw_module: Module) -> Module {
             }
         }
     });
-    //println!("{:?}",modules);
-    let top_idx = which_is_top(&modules);
-    //println!("{}",modules[top_idx].name);
-    let raw_top = (&raw_module.sub_module).iter().next().unwrap().1;
-    if (&raw_top.sub_module).iter()
-        .map(|(name,_module)| (modules[top_idx].sub_module.contains_key(name)))
-        .reduce(|a,b| a && b).unwrap_or(false)
-    {
-        let mut ret = raw_module;
-        (&modules[top_idx].signal).iter().for_each(|s| {
-            ret.signal.entry(s.to_string()).or_insert(Signal{
-                size: 1,
-                value_change: vec![],
-                same_value_signal: None,
-                module_path: vec![],
-                location_define: CodeLocation{file_name:"".to_string(),line:0},
-                location_drive: vec![],
-                location_load: vec![],
-            });
-        });
-        //TODO:assignment, and all sub module
-        ret
-    }else if (raw_top.sub_module.len()==1) &&
-        (&raw_top.sub_module.iter().next().unwrap().1.sub_module).iter()//TODO:dangerous to unwrap here
-        .map(|(name,_module)| (modules[top_idx].sub_module.contains_key(name)))
-        .reduce(|a,b| a && b).unwrap_or(false)
-    {
-        let mut ret = raw_module;
-        (&modules[top_idx].signal).iter().for_each(|s| {
-            (&mut ret.sub_module).iter_mut().next().unwrap().1.sub_module.iter_mut().next().unwrap().1.signal.entry(s.to_string()).or_insert(Signal{
-                size: 1,
-                value_change: vec![],
-                same_value_signal: None,
-                module_path: vec![],
-                location_define: CodeLocation{file_name:"".to_string(),line:0},
-                location_drive: vec![],
-                location_load: vec![],
-            });
-        });
-        ret
-    }else {
-        //raw_module//TODO:
-
-        let mut ret = Module::new();
-        (&modules[top_idx].sub_module).iter()
-        //(&(&(&raw_module.sub_module).iter().next().unwrap().1.sub_module).iter().next().unwrap().1.sub_module).into_iter()
-            .for_each(|s| {ret.sub_module.insert(s.0.to_string(),Module::new());});
-        ret
-    }
+    combine_module(raw_module, modules)
 }
 
 fn which_is_top(modules: &[ModuleVerilog]) -> usize {
@@ -110,4 +62,63 @@ fn which_is_top(modules: &[ModuleVerilog]) -> usize {
         .filter(|(_idx,has)| *has==0)
         .map(|(idx,_x)| idx)
         .next().unwrap()//TODO:only get the first top
+}
+
+fn combine_module(raw_module: Module, modules: Vec<ModuleVerilog>) -> Module {
+    let top_idx = which_is_top(&modules);
+    let raw_top = (&raw_module.sub_module).iter().next().unwrap().1;
+    if (&raw_top.sub_module).iter()
+        .map(|(name,_module)| (modules[top_idx].sub_module.contains_key(name)))
+        .reduce(|a,b| a && b).unwrap_or(false)
+    {
+        let mut ret = raw_module;
+        (&modules[top_idx].signal).iter().for_each(|s| {
+            ret.signal.entry(s.to_string()).or_insert(Signal::new());
+        });
+        //TODO:assignment, and all sub module
+        ret
+    }else if (raw_top.sub_module.len()==1) &&
+        (&raw_top.sub_module.iter().next().unwrap().1.sub_module).iter()//TODO:dangerous to unwrap here
+        .map(|(name,_module)| (modules[top_idx].sub_module.contains_key(name)))
+        .reduce(|a,b| a && b).unwrap_or(false)
+    {
+        let mut ret = raw_module;
+        let top = (&mut ret.sub_module).iter_mut().next().unwrap().1
+                .sub_module.iter_mut().next().unwrap().1;
+        insert_signal(&modules[top_idx],top);
+        insert_load(&modules[top_idx],top);
+        insert_drive(&modules[top_idx],top);
+        ret
+    }else {
+        //raw_module//TODO:
+
+        let mut ret = Module::new();
+        (&modules[top_idx].sub_module).iter()
+        //(&(&(&raw_module.sub_module).iter().next().unwrap().1.sub_module).iter().next().unwrap().1.sub_module).into_iter()
+            .for_each(|s| {ret.sub_module.insert(s.0.to_string(),Module::new());});
+        ret
+    }
+
+}
+
+fn insert_signal(from: &ModuleVerilog, to: &mut Module) {
+    from.signal.iter().for_each(|s| {to.signal.entry(s.to_string()).or_insert(Signal::new());})
+}
+fn insert_load(from: &ModuleVerilog, to: &mut Module) {
+    (from.assignment).iter().for_each(|s| {
+        s.0.iter()
+            .for_each(|left| {
+                if let Some(sig) = to.signal.get_mut(left)
+                    { sig.load.extend(s.1.clone()) }
+            });
+    });
+}
+fn insert_drive(from: &ModuleVerilog, to: &mut Module) {
+    (from.assignment).iter().for_each(|s| {
+        s.1.iter()
+            .for_each(|left| {
+                if let Some(sig) = to.signal.get_mut(left)
+                    { sig.drive.extend(s.0.clone()) }
+            });
+    });
 }

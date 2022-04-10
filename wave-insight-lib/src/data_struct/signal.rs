@@ -9,6 +9,8 @@ pub struct Signal {
     pub value_change: Vec<(i32,BigUint)>,
     pub same_value_signal: Option<(Vec<String>,String)>,//(module_name,signal_name)
     pub module_path: Vec<String>,//TODO:try to find something instead of String,which looks like hash key
+    pub drive: Vec<String>,
+    pub load: Vec<String>,
     pub location_define: CodeLocation,//TODO:need file name
     pub location_drive: Vec<CodeLocation>,
     pub location_load: Vec<CodeLocation>,
@@ -21,6 +23,8 @@ impl Signal {
             value_change: vec![],
             same_value_signal: None,
             module_path: vec![],
+            load: vec![],
+            drive: vec![],
             location_define: CodeLocation::new(),
             location_drive: vec![],
             location_load: vec![],
