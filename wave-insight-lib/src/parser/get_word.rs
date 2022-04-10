@@ -1,4 +1,38 @@
 
+/*
+         space
+   normal |   normal operator
+    |     |      |    |
+    module MyTopLevel (
+
+     normal               normal  operator
+      |---|                |      |
+      input               io_cond0,
+      input               io_cond1,
+      output              io_flag,
+      input               clk,
+      input               reset
+    );
+                bracket
+                 |---|
+      reg        [7:0]    counter;
+    
+                                    number
+                                    |--|
+      assign io_flag = ((counter == 8'h0) || io_cond1);
+      always @(posedge clk or posedge reset) begin
+        if(reset) begin
+          counter <= 8'h0;
+        end else begin
+          if(io_cond0) begin
+            counter <= (counter + 8'h01);
+          end
+        end
+      end
+    
+    endmodule
+*/
+
 pub fn get_word(c: char, word: String, last_type: LastType, line_idx: u32) -> (Option<(String,LastType)>,String,LastType,u32) {
     let mut word_out = word;
     match (c,&last_type) {

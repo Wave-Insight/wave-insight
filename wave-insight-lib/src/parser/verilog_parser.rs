@@ -3,6 +3,7 @@ use crate::{data_struct::{Module, Signal}, parser::{get_word::{LastType, get_wor
 
 pub fn verilog_parser(input: &str, raw_module: Module) -> Module {
     let chars = input.chars();
+    //init some states
     let mut word = "".to_string();
     let mut last_type = LastType::Space;
     let mut line_idx = 1;
@@ -17,20 +18,18 @@ pub fn verilog_parser(input: &str, raw_module: Module) -> Module {
         last_type = ret.2;
         line_idx = ret.3;
         ret.0
-    })
+    })//split the verilog to words
     .map(|ret| {
         if let Some(x) = ret {
             let (new_state,ret) = state_update(x, state);
-            //println!("stage1:{:?}",new_state.0);
             state = new_state;
             ret
         }else {
             None
         }
-    })
+    })//get what these words mean
     .for_each(|ret| {
         if let Some(x) = ret {
-            //println!("stage2:{:?}", x)
             match x.0 {
                 ParserType::ModuleDefine => {module=ModuleVerilog::new();module.name=x.1;},
                 ParserType::EndModule => {modules.push(module.clone());},
