@@ -4,10 +4,10 @@ A web based wave viewer
 
 ## Build
 
-'''
+```bash
 cd front-end
 trunk serve --release
-'''
+```
 
 then you can open your browser and go to `localhost:8080`
 
