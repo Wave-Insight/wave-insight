@@ -1,0 +1,40 @@
+name: Rust
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install rust stable
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+          override: true
+          
+    - uses: actions/checkout@v3
+    - name: install trunk
+      run: |
+          cargo install --locked trunk
+          cargo install wasm-bindgen-cli
+      
+    - uses: actions/checkout@v3
+    - name: Build
+      run: |
+          cd front-end
+          trunk build --release --public-url wave-insight
+          
+    - name: Deploy
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./front-end/dist
