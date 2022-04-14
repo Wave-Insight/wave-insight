@@ -46,7 +46,6 @@ fn insert_signal((module,identify_table,module_path,clock): FuncType, mut line_i
         size,
         value_change: vec![],
         same_value_signal,
-        module_path: module_path.clone(),
         load: vec![],
         drive: vec![],
         location_define: CodeLocation{file_name:"".to_string(),line:0},

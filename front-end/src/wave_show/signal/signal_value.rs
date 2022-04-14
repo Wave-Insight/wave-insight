@@ -59,16 +59,16 @@ impl Component for SignalValue {
                 let x = ((d.0 as f64) - x_axis)*size;
                 if (0.0..3000.0).contains(&x) {
                     if !head_used {
-                        points.push_str(&format!("{:.2},{:.2} ", 0, zero_position+(1-head)*24));
+                        points.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*24));
                         head_used = true;
                     }
                     if d.1 == BigUint::new(vec![1]){
-                        points.push_str(&format!("{:.2},{:.2} ", x, zero_position+24));
-                        points.push_str(&format!("{:.2},{:.2} ", x, zero_position));
+                        points.push_str(&format!("{:.2},{} ", x, zero_position+24));
+                        points.push_str(&format!("{:.2},{} ", x, zero_position));
                         last = zero_position;
                     }else {
-                        points.push_str(&format!("{:.2},{:.2} ", x, zero_position));
-                        points.push_str(&format!("{:.2},{:.2} ", x, zero_position+24));
+                        points.push_str(&format!("{:.2},{} ", x, zero_position));
+                        points.push_str(&format!("{:.2},{} ", x, zero_position+24));
                         last = zero_position+24;
                     }
                 }else if d.1 == BigUint::new(vec![1]) {
@@ -78,10 +78,10 @@ impl Component for SignalValue {
                 }
             };
             if !head_used {
-                points.push_str(&format!("{:.2},{:.2} ", 0, zero_position+(1-head)*24));
+                points.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*24));
                 last = zero_position+(1-head)*24;
             }
-            points.push_str(&format!("{:.2},{:.2} ", 3000, last));
+            points.push_str(&format!("{:.2},{} ", 3000, last));
 
             html! {
                 <svg style="height:30px;width:100%">
@@ -98,16 +98,16 @@ impl Component for SignalValue {
                 if (0.0..3000.0).contains(&x) {
                     if !head_used {
                         head_used = true;
-                        points1.push_str(&format!("{:.2},{:.2} ", 0, zero_position+24));
-                        points2.push_str(&format!("{:.2},{:.2} ", 0, zero_position));
+                        points1.push_str(&format!("{:.2},{} ", 0, zero_position+24));
+                        points2.push_str(&format!("{:.2},{} ", 0, zero_position));
                         value.push(value_text(0.0, &head, show_type, bitcount));
                     }
-                    points1.push_str(&format!("{:.2},{:.2} ", x-2.0, zero_position+24));
-                    points1.push_str(&format!("{:.2},{:.2} ", x, zero_position+12));
-                    points1.push_str(&format!("{:.2},{:.2} ", x+2.0, zero_position+24));
-                    points2.push_str(&format!("{:.2},{:.2} ", x-2.0, zero_position));
-                    points2.push_str(&format!("{:.2},{:.2} ", x, zero_position+12));
-                    points2.push_str(&format!("{:.2},{:.2} ", x+2.0, zero_position));
+                    points1.push_str(&format!("{:.2},{} ", x-2.0, zero_position+24));
+                    points1.push_str(&format!("{:.2},{} ", x, zero_position+12));
+                    points1.push_str(&format!("{:.2},{} ", x+2.0, zero_position+24));
+                    points2.push_str(&format!("{:.2},{} ", x-2.0, zero_position));
+                    points2.push_str(&format!("{:.2},{} ", x, zero_position+12));
+                    points2.push_str(&format!("{:.2},{} ", x+2.0, zero_position));
 
                     value.push(value_text(x+2.0, &d.1, show_type, bitcount));
                 }else if x < 0.0 {
@@ -116,12 +116,12 @@ impl Component for SignalValue {
                 }
             };
             if !head_used {
-                points1.push_str(&format!("{:.2},{:.2} ", 0, zero_position+24));
-                points2.push_str(&format!("{:.2},{:.2} ", 0, zero_position));
+                points1.push_str(&format!("{:.2},{} ", 0, zero_position+24));
+                points2.push_str(&format!("{:.2},{} ", 0, zero_position));
                 value.push(value_text(0.0, &head, show_type, bitcount));
             }
-            points1.push_str(&format!("{:.2},{:.2} ", 3000, zero_position+24));
-            points2.push_str(&format!("{:.2},{:.2} ", 3000, zero_position));
+            points1.push_str(&format!("{:.2},{} ", 3000, zero_position+24));
+            points2.push_str(&format!("{:.2},{} ", 3000, zero_position));
 
             html! {
                 <svg style="height:30px;width:100%">
