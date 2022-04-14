@@ -19,14 +19,14 @@ use crate::top_bar::TopBar;
 pub enum Msg {
     NavIconClick,
     ParserFile(FileType,String,String),
-    SignalAdd((Vec<String>,String)),
+    SignalAdd((String,Rc<Signal>)),
 }
 
 pub struct App {
     drawer_state: bool,
     module: Rc<Module>,
     verilog_source: Vec<(String,String)>,
-    signal_add: (String,Signal),
+    signal_add: (String,Rc<Signal>),
 }
 
 impl Component for App {
@@ -38,7 +38,7 @@ impl Component for App {
             drawer_state: true,
             module: Rc::new(Module::new()),
             verilog_source: vec![],
-            signal_add: ("".to_string(),Signal::new()),
+            signal_add: ("".to_string(),Rc::new(Signal::new())),
         }
     }
 
@@ -60,7 +60,7 @@ impl Component for App {
                 true
             }
             Msg::SignalAdd(input) => {
-                //self.signal_add = (input.1.clone(),self.module.get_signal(&input).unwrap().clone());
+                self.signal_add = (input.0,input.1);
                 true
             }
         }
@@ -90,7 +90,7 @@ impl Component for App {
                 <div style={"width:".to_owned()+(if self.drawer_state {"80%"} else {"100%"})+";float:left;display:block;height:100%;overflow-y:auto"} >
                     <div style="display:block;height:100%;overflow-y:auto">
                         <CodeReader file={self.verilog_source.clone()} />
-                        <WaveShow signaladd={self.signal_add.clone()} end_clock={self.module.end_clock} />
+                        <WaveShow signaladd={(self.signal_add.0.clone(),Rc::clone(&self.signal_add.1))} end_clock={self.module.end_clock} />
                     </div>
                 </div>
             </div>

@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use yew::prelude::*;
 
 use wave_insight_lib::data_struct::Signal;
@@ -5,10 +7,10 @@ use wave_insight_lib::data_struct::Signal;
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalComponentProps {
     pub name: String,
-    pub signal: Signal,
+    pub signal: Rc<Signal>,
     pub space: String,
     #[prop_or_default]
-    pub onclick: Callback<(Vec<String>,String)>,
+    pub onclick: Callback<(String,Rc<Signal>)>,
 }
 
 pub enum Msg {
@@ -18,7 +20,7 @@ pub enum Msg {
 pub struct SignalComponent {
     space: String,
     show_name: String,
-    path: Vec<String>
+    signal: Rc<Signal>,
 }
 
 impl Component for SignalComponent {
@@ -30,7 +32,7 @@ impl Component for SignalComponent {
         Self {
             space: props.space.clone(),
             show_name: props.name.clone(),//TODO: with size
-            path: props.signal.module_path.clone(),
+            signal: Rc::clone(&props.signal),
         }
     }
 
@@ -38,7 +40,7 @@ impl Component for SignalComponent {
         let props = ctx.props();
         match msg {
             Msg::Click => {
-                props.onclick.emit((self.path.clone(),self.show_name.clone()));
+                props.onclick.emit((self.show_name.clone(),Rc::clone(&self.signal)));
                 true
             }
         }

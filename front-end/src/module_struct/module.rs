@@ -2,21 +2,18 @@ use std::rc::Rc;
 
 use yew::prelude::*;
 
-use wave_insight_lib::data_struct::Module;
+use wave_insight_lib::data_struct::{Module, Signal};
 use crate::module_struct::{SignalComponent, ModuleComponent};
-use web_sys::console;//TODO:for debug
-
-type SignalPath = (Vec<String>,String);
 
 pub enum Msg {
-    GetClick(SignalPath),
+    GetClick((String,Rc<Signal>)),
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct ModuleStructProps {
     pub module: Rc<Module>,
     #[prop_or_default]
-    pub signaladd: Callback<SignalPath>,
+    pub signaladd: Callback<(String,Rc<Signal>)>,
 }
 
 pub struct ModuleStruct {
@@ -35,7 +32,6 @@ impl Component for ModuleStruct {
         let props = ctx.props();
         match msg {
             Msg::GetClick(s) => {
-                console::log_1(&format!("click,{}",s.1).into());
                 props.signaladd.emit(s);
                 true
             },
@@ -47,7 +43,7 @@ impl Component for ModuleStruct {
         let link = ctx.link();
         
         let callback = link.callback(Msg::GetClick);
-        fn show_module(m:&Module, level: i32, callback: &Callback<(Vec<String>,String)>) -> Html {
+        fn show_module(m:&Module, level: i32, callback: &Callback<(String,Rc<Signal>)>) -> Html {
             html! {
                 for (m.sub_module).iter().map(|x| {
                     let space = (0..level*2).map(|_| " ").fold("".to_string(),|a,b| a+b);
@@ -56,7 +52,7 @@ impl Component for ModuleStruct {
                         <div>
                             <ModuleComponent space={space.clone()} name={x.0.clone()} />
                             {for signals.map(|s| html!{
-                                <SignalComponent space={space.clone()} name={s.0.clone()} signal={s.1.clone()} onclick={callback}/>
+                                <SignalComponent space={space.clone()} name={s.0.clone()} signal={Rc::new(s.1.clone())} onclick={callback}/>
                             })}
                             {show_module(x.1,level+1,callback)}//,&callback
                         </div>

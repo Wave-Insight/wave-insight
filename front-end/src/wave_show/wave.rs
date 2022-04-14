@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use num::BigUint;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
@@ -11,7 +13,7 @@ use super::signal::SignalValue;
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct WaveShowProps {
-    pub signaladd: (String,Signal),
+    pub signaladd: (String,Rc<Signal>),
     pub end_clock: i32,
 }
 
