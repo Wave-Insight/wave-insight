@@ -1,6 +1,5 @@
 use std::rc::Rc;
 
-use num::BigUint;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -26,10 +25,9 @@ pub enum Msg {
 
 pub struct WaveShow {
     signal_name: Vec<String>,
-    signal_show: Vec<Vec<(i32,BigUint)>>,
+    signal: Vec<Rc<Signal>>,
     bool_signal: Vec<bool>,
     signal_setting: Vec<Settings>,
-    signal_bitcount: Vec<usize>,
     load_and_drive: Vec<(Vec<String>,Vec<String>)>,
     x_axis: f64,
     size: f64,
@@ -45,10 +43,9 @@ impl Component for WaveShow {
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
             signal_name: vec![],
-            signal_show: vec![],
+            signal: vec![],
             bool_signal: vec![],
             signal_setting: vec![],
-            signal_bitcount: vec![],
             load_and_drive: vec![],
             x_axis: 0f64,
             size: 1f64,
@@ -96,10 +93,9 @@ impl Component for WaveShow {
             self.signal_name.push(
                 if bool_signal {signal_name.clone()}
                 else {signal_name.clone()+"["+&(signal.size-1).to_string()+":0]"});
-            self.signal_show.push(signal.value_change.clone());
+            self.signal.push(Rc::clone(signal));
             self.bool_signal.push(bool_signal);
             self.signal_setting.push(Settings::new());
-            self.signal_bitcount.push(signal.size);
             self.load_and_drive.push((signal.load.clone(),signal.drive.clone()));
         }
         true
@@ -128,8 +124,8 @@ impl Component for WaveShow {
                     </div>
                     <div onwheel={link.callback(Msg::Wheel)} style="float:right;width:90%;background-color:#202020">
                         {
-                            for (&self.signal_show).iter().zip(&self.bool_signal).enumerate().map(|(idx,(s,b))| {
-                                html!{<SignalValue value={s.clone()} bool_signal={*b} x_axis={self.x_axis} size={self.size} setting={self.signal_setting[idx].clone()} bitcount={self.signal_bitcount[idx]} />}
+                            for (&self.signal).iter().zip(&self.bool_signal).enumerate().map(|(idx,(s,b))| {
+                                html!{<SignalValue signal={s} bool_signal={*b} x_axis={self.x_axis} size={self.size} setting={self.signal_setting[idx].clone()} />}
                             })
                         }
                     </div>

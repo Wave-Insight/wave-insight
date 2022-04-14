@@ -1,23 +1,25 @@
+use std::rc::Rc;
+
 use num::{BigUint,BigInt, bigint::{ToBigInt, Sign}};
+use wave_insight_lib::data_struct::Signal;
 use yew::prelude::*;
 
 use crate::wave_show::{Settings, ShowType};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SignalValue {
-    value: Vec<(i32,BigUint)>,
+    signal: Rc<Signal>,
     height: String,
     bool_signal: bool,
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalValueProps {
-    pub value: Vec<(i32,BigUint)>,
+    pub signal: Rc<Signal>,
     pub bool_signal: bool,
     pub x_axis: f64,
     pub size: f64,
     pub setting: Settings,
-    pub bitcount: usize,
 }
 
 impl Component for SignalValue {
@@ -27,7 +29,7 @@ impl Component for SignalValue {
     fn create(ctx: &Context<Self>) -> Self {
         let props = ctx.props();
         Self {
-            value: props.value.clone(),
+            signal: Rc::clone(&props.signal),
             height: "20px".to_string(),
             bool_signal: props.bool_signal,
         }
@@ -46,14 +48,14 @@ impl Component for SignalValue {
         let x_axis = props.x_axis;
         let size = props.size;
         let show_type = &props.setting.show_type;
-        let bitcount = props.bitcount as u32;
+        let bitcount = props.signal.size as u32;
         let zero_position = 3;
         if self.bool_signal {
             let mut points = String::new();
             let mut last: u32 = 0;
             let mut head: u32 = 0;
             let mut head_used = false;
-            for d in &self.value {
+            for d in &self.signal.value_change {
                 let x = ((d.0 as f64) - x_axis)*size;
                 if (0.0..3000.0).contains(&x) {
                     if !head_used {
@@ -91,7 +93,7 @@ impl Component for SignalValue {
             let mut value: Vec<Html> = vec![];
             let mut head: BigUint = BigUint::new(vec![0]);
             let mut head_used = true;
-            for d in &self.value {
+            for d in &self.signal.value_change {
                 let x = ((d.0 as f64) - x_axis)*size;
                 if (0.0..3000.0).contains(&x) {
                     if !head_used {
