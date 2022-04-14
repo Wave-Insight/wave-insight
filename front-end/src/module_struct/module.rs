@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use yew::prelude::*;
 
 use wave_insight_lib::data_struct::Module;
@@ -12,7 +14,7 @@ pub enum Msg {
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct ModuleStructProps {
-    pub module: Module,
+    pub module: Rc<Module>,
     #[prop_or_default]
     pub signaladd: Callback<SignalPath>,
 }
@@ -52,7 +54,7 @@ impl Component for ModuleStruct {
                     let signals = x.1.signal.iter();
                     html! {
                         <div>
-                            <ModuleComponent space={space.clone()} name={x.0.clone()} module={x.1.clone()} />
+                            <ModuleComponent space={space.clone()} name={x.0.clone()} />
                             {for signals.map(|s| html!{
                                 <SignalComponent space={space.clone()} name={s.0.clone()} signal={s.1.clone()} onclick={callback}/>
                             })}

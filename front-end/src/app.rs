@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use wave_insight_lib::{data_struct::Module,
     data_struct::Signal,
     parser::vcd_parser::vcd_parser,
@@ -22,7 +24,7 @@ pub enum Msg {
 
 pub struct App {
     drawer_state: bool,
-    module: Module,
+    module: Rc<Module>,
     verilog_source: Vec<(String,String)>,
     signal_add: (String,Signal),
 }
@@ -34,7 +36,7 @@ impl Component for App {
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
             drawer_state: true,
-            module: Module::new(),
+            module: Rc::new(Module::new()),
             verilog_source: vec![],
             signal_add: ("".to_string(),Signal::new()),
         }
@@ -48,17 +50,17 @@ impl Component for App {
             }
             Msg::ParserFile(file_type,file_name,text) => {
                 match file_type {
-                    FileType::IsVcd => {self.module = vcd_parser(&text,self.module.clone())},
+                    FileType::IsVcd => {self.module = Rc::new(vcd_parser(&text,Module::new()))},//TODO:module::new()
                     FileType::IsVerilog => {
                         self.verilog_source.push((file_name,text.clone()));
-                        self.module = verilog_parser(&text,self.module.clone());
+                        self.module = Rc::new(verilog_parser(&text,Module::new()));//TODO:module::new()
                     },
                 }
                 console::log_1(&format!("finish parser {}",(match file_type {FileType::IsVcd=>{"vcd"},FileType::IsVerilog=>{"verilog"},})).into());
                 true
             }
             Msg::SignalAdd(input) => {
-                self.signal_add = (input.1.clone(),self.module.get_signal(&input).unwrap().clone());
+                //self.signal_add = (input.1.clone(),self.module.get_signal(&input).unwrap().clone());
                 true
             }
         }
@@ -79,7 +81,7 @@ impl Component for App {
                     html!{
                     <div style="width:20%;float:left;height:100%;overflow-y:auto">
                         <FileLoad ongetfile={link.callback(|i:(FileType,String,String)| Msg::ParserFile(i.0,i.1,i.2))}/>
-                        <ModuleStruct module={self.module.clone()} signaladd={link.callback(Msg::SignalAdd)}/>
+                        <ModuleStruct module={Rc::clone(&self.module)} signaladd={link.callback(Msg::SignalAdd)}/>
                     </div>
                     }
                 }else {

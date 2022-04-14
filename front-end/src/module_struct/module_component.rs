@@ -1,12 +1,9 @@
 use yew::prelude::*;
 
-use wave_insight_lib::data_struct::Module;
-
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct ModuleComponentProps {
     pub space: String,
     pub name: String,
-    pub module: Module,
     #[prop_or_default]
     pub onclick: Callback<Vec<String>>,
 }
