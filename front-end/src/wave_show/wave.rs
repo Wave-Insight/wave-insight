@@ -21,6 +21,7 @@ pub enum Msg {
     Wheel(WheelEvent),
     ShowMenu(usize),
     SetSignal((bool,Settings)),
+    DeleteSig,
 }
 
 pub struct WaveShow {
@@ -83,6 +84,16 @@ impl Component for WaveShow {
                 self.signal_setting[self.on_show_idx] = set;
                 true
             }
+            Msg::DeleteSig => {
+                self.menu_show = false;
+                let idx = self.on_show_idx;
+                self.signal.remove(idx);
+                self.signal_name.remove(idx);
+                self.bool_signal.remove(idx);
+                self.signal_setting.remove(idx);
+                self.load_and_drive.remove(idx);
+                true
+            }
         }
     }
 
@@ -112,7 +123,8 @@ impl Component for WaveShow {
                         setting={self.signal_setting[self.on_show_idx as usize].clone()}
                         load={self.load_and_drive[self.on_show_idx as usize].0.clone()}
                         drive={self.load_and_drive[self.on_show_idx as usize].1.clone()}
-                        onset={link.callback(Msg::SetSignal)} />
+                        onset={link.callback(Msg::SetSignal)}
+                        delete={link.callback(|_| Msg::DeleteSig)} />
                 }
                 <div style="height:90%;overflow-y:auto">
                     <div style="float:left;width:10%">

@@ -3,7 +3,6 @@ use yew::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct SignalName {
-    name: String,
     padding: String,
     menu_show: String,
 }
@@ -23,10 +22,8 @@ impl Component for SignalName {
     type Message = Msg;
     type Properties = SignalNameProps;
 
-    fn create(ctx: &Context<Self>) -> Self {
-        let props = ctx.props();
+    fn create(_ctx: &Context<Self>) -> Self {
         Self {
-            name: props.name.clone(),
             padding: "9px".to_string(),
             menu_show: "hidden".to_string(),
         }
@@ -47,7 +44,9 @@ impl Component for SignalName {
         let link = ctx.link();
         html! {
             <div style={"padding:".to_owned()+&self.padding}>
-                <p oncontextmenu={link.callback(Msg::ContextMenu)} style={"font-size:16px;margin:0px;height:16px"}>{&self.name}</p>
+                <p oncontextmenu={link.callback(Msg::ContextMenu)} style={"font-size:16px;margin:0px;height:16px"}>
+                    {&ctx.props().name}
+                </p>
             </div>
         }
     }

@@ -12,7 +12,8 @@ pub struct CtrlProps {
     pub load: Vec<String>,
     pub drive: Vec<String>,
     #[prop_or_default]
-    pub onset: Callback<(bool,Settings)>,
+    pub onset: Callback<(bool,Settings)>,//<close ctrl menu,new Settings>
+    pub delete: Callback<()>,
 }
 
 pub enum Msg {
@@ -26,6 +27,7 @@ pub enum Msg {
     FlipDriveShow,
     AddAllLoad,
     AddAllDrive,
+    DeleteSig,
 }
 
 pub struct Ctrl {
@@ -93,6 +95,10 @@ impl Component for Ctrl {
                 true
             }
             Msg::AddAllLoad => {
+                true
+            }
+            Msg::DeleteSig => {
+                props.delete.emit(());
                 true
             }
         }
@@ -171,7 +177,10 @@ impl Component for Ctrl {
                         </span>
                     }}else {
                         html!{}
-                    }}   
+                    }}
+                    <button type="button" style={button_style}
+                        onclick={link.callback(|_| Msg::DeleteSig)}>
+                        {"delete"}</button>
                 </div>
             </div>
         }
