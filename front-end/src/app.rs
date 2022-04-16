@@ -52,8 +52,8 @@ impl Component for App {
                 match file_type {
                     FileType::IsVcd => {self.module = Rc::new(vcd_parser(&text,Module::new()))},//TODO:module::new()
                     FileType::IsVerilog => {
-                        self.verilog_source.push((file_name,text.clone()));
                         self.module = Rc::new(verilog_parser(&text,Module::new()));//TODO:module::new()
+                        self.verilog_source.push((file_name,text));
                     },
                 }
                 console::log_1(&format!("finish parser {}",(match file_type {FileType::IsVcd=>{"vcd"},FileType::IsVerilog=>{"verilog"},})).into());
@@ -90,7 +90,7 @@ impl Component for App {
                 <div style={"width:".to_owned()+(if self.drawer_state {"80%"} else {"100%"})+";float:left;display:block;height:100%;overflow-y:auto"} >
                     <div style="display:block;height:100%;overflow-y:auto">
                         <CodeReader file={self.verilog_source.clone()} />
-                        <WaveShow signaladd={(self.signal_add.0.clone(),Rc::clone(&self.signal_add.1))} end_clock={self.module.end_clock} />
+                        <WaveShow signaladd={(self.signal_add.0.clone(),Rc::clone(&self.signal_add.1))} module={Rc::clone(&self.module)} end_clock={self.module.end_clock} />
                     </div>
                 </div>
             </div>

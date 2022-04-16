@@ -40,12 +40,10 @@ fn insert_signal((module,identify_table,module_path,clock): FuncType, mut line_i
     let identify = line_item.next().unwrap();
     let name = line_item.next().unwrap().to_string();
 
-    let same_value_signal = identify_table_out.get(identify).cloned();
     identify_table_out.entry(identify.to_string()).or_insert((module_path.clone(),name.clone()));
     let new_signal = Signal{
         size,
-        value_change: vec![],
-        same_value_signal,
+        value_key: identify.to_string(),
         load: vec![],
         drive: vec![],
         location_define: CodeLocation{file_name:"".to_string(),line:0},
@@ -87,21 +85,19 @@ fn value_change((module,identify_table,module_path,clock): FuncType, mut line_it
         (module,identify_table,module_path,new_clock)
     }else if let Some(value) = this_item.strip_prefix('b') {
         let mut module_out = module;
-        if let Some(s) = identify_table.get(line_item.next().unwrap())
-            .and_then(|x| module_out.get_signal(x))
-            { s.value_change.push((clock,BigUint::parse_bytes(value.as_bytes(),2).unwrap())) }//TODO:wrong! signal size may be larger than i64
+        let identify = line_item.next().unwrap();
+        module_out.value.entry(identify.to_string()).or_insert_with(Vec::new)
+            .push((clock,BigUint::parse_bytes(value.as_bytes(),2).unwrap()));
         (module_out,identify_table,module_path,clock)
     }else if let Some(identify) = this_item.strip_prefix('1') {
         let mut module_out = module;
-        if let Some(s) = identify_table.get(identify)
-            .and_then(|x| module_out.get_signal(x))
-            { s.value_change.push((clock,BigUint::new(vec![1]))) }
+        module_out.value.entry(identify.to_string()).or_insert_with(Vec::new)
+            .push((clock,BigUint::new(vec![1])));
         (module_out,identify_table,module_path,clock)
     }else if let Some(identify) = this_item.strip_prefix('0') {
         let mut module_out = module;
-        if let Some(s) = identify_table.get(identify)
-            .and_then(|x| module_out.get_signal(x))
-            { s.value_change.push((clock,BigUint::new(vec![0]))) }
+        module_out.value.entry(identify.to_string()).or_insert_with(Vec::new)
+            .push((clock,BigUint::new(vec![0])));
         (module_out,identify_table,module_path,clock)
     }else {
         (module,identify_table,module_path,clock)

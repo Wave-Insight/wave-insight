@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use wave_insight_lib::data_struct::Module;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -13,6 +14,7 @@ use super::signal::SignalValue;
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct WaveShowProps {
     pub signaladd: (String,Rc<Signal>),
+    pub module: Rc<Module>,
     pub end_clock: i32,
 }
 
@@ -137,7 +139,7 @@ impl Component for WaveShow {
                     <div onwheel={link.callback(Msg::Wheel)} style="float:right;width:90%;background-color:#202020">
                         {
                             for (&self.signal).iter().zip(&self.bool_signal).enumerate().map(|(idx,(s,b))| {
-                                html!{<SignalValue signal={s} bool_signal={*b} x_axis={self.x_axis} size={self.size} setting={self.signal_setting[idx].clone()} />}
+                                html!{<SignalValue module={Rc::clone(&ctx.props().module)} signal={s} bool_signal={*b} x_axis={self.x_axis} size={self.size} setting={self.signal_setting[idx].clone()} />}
                             })
                         }
                     </div>

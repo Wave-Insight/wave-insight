@@ -1,4 +1,3 @@
-use num::BigUint;
 
 use super::CodeLocation;
 
@@ -6,8 +5,7 @@ use super::CodeLocation;
 #[derive(Debug, PartialEq, Clone)]
 pub struct Signal {
     pub size: usize,
-    pub value_change: Vec<(i32,BigUint)>,
-    pub same_value_signal: Option<(Vec<String>,String)>,//(module_name,signal_name)
+    pub value_key: String,
     pub drive: Vec<String>,
     pub load: Vec<String>,
     pub location_define: CodeLocation,//TODO:need file name
@@ -19,8 +17,7 @@ impl Signal {
     pub fn new() -> Self {
         Self {
             size: 0,
-            value_change: vec![],
-            same_value_signal: None,
+            value_key: "".to_string(),
             load: vec![],
             drive: vec![],
             location_define: CodeLocation::new(),

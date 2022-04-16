@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use num::{BigUint,BigInt, bigint::{ToBigInt, Sign}};
-use wave_insight_lib::data_struct::Signal;
+use wave_insight_lib::data_struct::{Signal, Module};
 use yew::prelude::*;
 
 use crate::wave_show::{Settings, ShowType};
@@ -17,6 +17,7 @@ pub struct SignalValue {
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalValueProps {
+    pub module: Rc<Module>,
     pub signal: Rc<Signal>,
     pub bool_signal: bool,
     pub x_axis: f64,
@@ -42,7 +43,7 @@ impl Component for SignalValue {
             let mut last: u32 = 0;
             let mut head: u32 = 0;
             let mut head_used = false;
-            for d in &props.signal.value_change {
+            for d in props.module.value.get(&props.signal.value_key).unwrap() {
                 let x = ((d.0 as f64) - x_axis)*size;
                 if (0.0..3000.0).contains(&x) {
                     if !head_used {
@@ -74,7 +75,7 @@ impl Component for SignalValue {
             
             let mut head: BigUint = BigUint::new(vec![0]);
             let mut head_used = true;
-            for d in &props.signal.value_change {
+            for d in props.module.value.get(&props.signal.value_key).unwrap() {
                 let x = ((d.0 as f64) - x_axis)*size;
                 if (0.0..3000.0).contains(&x) {
                     if !head_used {
@@ -133,7 +134,7 @@ impl Component for SignalValue {
             let mut last: u32 = 0;
             let mut head: u32 = 0;
             let mut head_used = false;
-            for d in &props.signal.value_change {
+            for d in props.module.value.get(&props.signal.value_key).unwrap() {
                 let x = ((d.0 as f64) - x_axis)*size;
                 if (0.0..3000.0).contains(&x) {
                     if !head_used {
@@ -165,7 +166,7 @@ impl Component for SignalValue {
             
             let mut head: BigUint = BigUint::new(vec![0]);
             let mut head_used = true;
-            for d in &props.signal.value_change {
+            for d in props.module.value.get(&props.signal.value_key).unwrap() {
                 let x = ((d.0 as f64) - x_axis)*size;
                 if (0.0..3000.0).contains(&x) {
                     if !head_used {
