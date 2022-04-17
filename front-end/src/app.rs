@@ -50,7 +50,7 @@ impl Component for App {
             }
             Msg::ParserFile(file_type,file_name,text) => {
                 match file_type {
-                    FileType::IsVcd => {self.module = Rc::new(vcd_parser(&text,Module::new()))},//TODO:module::new()
+                    FileType::IsVcd => {self.module = Rc::new(vcd_parser(&text,&mut Module::new()))},//TODO:module::new()
                     FileType::IsVerilog => {
                         self.module = Rc::new(verilog_parser(&text,Module::new()));//TODO:module::new()
                         self.verilog_source.push((file_name,text));
