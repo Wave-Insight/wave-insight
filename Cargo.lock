@@ -50,6 +50,7 @@ dependencies = [
  "gloo-file 0.2.1",
  "js-sys",
  "material-yew",
+ "monaco",
  "num",
  "serde",
  "wave-insight-lib",
@@ -254,6 +255,18 @@ version = "0.1.0"
 source = "git+https://github.com/hamza1311/material-yew?rev=1bfb89d#1bfb89ddcf32eb71211b68f66c4f916230c83ba1"
 dependencies = [
  "gloo 0.2.1",
+ "js-sys",
+ "paste",
+ "wasm-bindgen",
+ "web-sys",
+ "yew",
+]
+
+[[package]]
+name = "monaco"
+version = "0.3.0"
+source = "git+https://github.com/siku2/rust-monaco#4ada87b559672efd0670e36ffb899249b8589cd2"
+dependencies = [
  "js-sys",
  "paste",
  "wasm-bindgen",

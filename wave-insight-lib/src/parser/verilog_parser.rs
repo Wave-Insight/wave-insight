@@ -1,7 +1,8 @@
+use std::rc::Rc;
 
 use crate::{data_struct::{Module, Signal}, parser::{get_word::{LastType, get_word}, word_parser::{State, state_update, ParserType}, module_verilog::ModuleVerilog}};
 
-pub fn verilog_parser(input: &str, raw_module: Module) -> Module {
+pub fn verilog_parser(input: &str, raw_module: Rc<Module>) -> Module {
     let chars = input.chars();
     //init some states
     let mut word = "".to_string();
@@ -63,14 +64,14 @@ fn which_is_top(modules: &[ModuleVerilog]) -> usize {
         .next().unwrap()//TODO:only get the first top
 }
 
-fn combine_module(raw_module: Module, modules: Vec<ModuleVerilog>) -> Module {
+fn combine_module(raw_module: Rc<Module>, modules: Vec<ModuleVerilog>) -> Module {
     let top_idx = which_is_top(&modules);
     let raw_top = (&raw_module.sub_module).iter().next().unwrap().1;
     if (&raw_top.sub_module).iter()
         .map(|(name,_module)| (modules[top_idx].sub_module.contains_key(name)))
         .reduce(|a,b| a && b).unwrap_or(false)
     {
-        let mut ret = raw_module;
+        let mut ret = (*raw_module).clone();
         (&modules[top_idx].signal).iter().for_each(|s| {
             ret.signal.entry(s.to_string()).or_insert(Signal::new());
         });
@@ -81,7 +82,7 @@ fn combine_module(raw_module: Module, modules: Vec<ModuleVerilog>) -> Module {
         .map(|(name,_module)| (modules[top_idx].sub_module.contains_key(name)))
         .reduce(|a,b| a && b).unwrap_or(false)
     {
-        let mut ret = raw_module;
+        let mut ret = (*raw_module).clone();
         let top = (&mut ret.sub_module).iter_mut().next().unwrap().1
                 .sub_module.iter_mut().next().unwrap().1;
         insert_signal(&modules[top_idx],top);

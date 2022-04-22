@@ -1,4 +1,5 @@
 use yew::prelude::*;
+use monaco::{api::CodeEditorOptions, sys::editor::BuiltinTheme, yew::CodeEditor};
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct CodeBlockProps {
@@ -23,20 +24,18 @@ impl Component for CodeBlock {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let text = &ctx.props().text;
+
+        fn get_options(text: &str) -> CodeEditorOptions {
+            CodeEditorOptions::default()
+            .with_language("verilog".to_owned())
+            .with_value(text.to_owned())
+            .with_builtin_theme(BuiltinTheme::VsDark)
+        }
+
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
             <div style="background-color:#dadada;display:block;height:100%;overflow-y:auto">//;height:400px
-                <pre>
-                <code>
-                    {
-                        for text.lines().map(|l| {
-                            html!{
-                                <span style="color:#945eb8">{l.to_owned()+"\n"}</span>
-                            }
-                        })
-                    }
-                </code>
-                </pre>
+                <CodeEditor options={ get_options(text).to_sys_options() } />
             </div>
         }
     }
