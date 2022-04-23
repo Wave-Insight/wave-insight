@@ -72,9 +72,9 @@ fn combine_module(raw_module: Rc<Module>, modules: Vec<ModuleVerilog>) -> Module
         .reduce(|a,b| a && b).unwrap_or(false)
     {
         let mut ret = (*raw_module).clone();
-        (&modules[top_idx].signal).iter().for_each(|s| {
-            ret.signal.entry(s.to_string()).or_insert(Signal::new());
-        });
+        insert_signal(&modules[top_idx],&mut ret);
+        insert_load(&modules[top_idx],&mut ret);
+        insert_drive(&modules[top_idx],&mut ret);
         //TODO:assignment, and all sub module
         ret
     }else if (raw_top.sub_module.len()==1) &&

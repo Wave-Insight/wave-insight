@@ -3,7 +3,7 @@ use std::rc::Rc;
 use yew::prelude::*;
 
 use wave_insight_lib::data_struct::{Module, Signal};
-use crate::module_struct::{SignalComponent, ModuleComponent};
+use crate::module_struct::ModuleComponent;
 
 pub enum Msg {
     GetClick((String,Rc<Signal>)),
@@ -47,14 +47,10 @@ impl Component for ModuleStruct {
             html! {
                 for (m.sub_module).iter().map(|x| {
                     let space = (0..level*2).map(|_| " ").fold("".to_string(),|a,b| a+b);
-                    let signals = x.1.signal.iter();
                     html! {
                         <div>
-                            <ModuleComponent space={space.clone()} name={x.0.clone()} />
-                            {for signals.map(|s| html!{
-                                <SignalComponent space={space.clone()} name={s.0.clone()} signal={Rc::new(s.1.clone())} onclick={callback}/>
-                            })}
-                            {show_module(x.1,level+1,callback)}//,&callback
+                            <ModuleComponent space={space.clone()} name={x.0.clone()} module={Rc::new(x.1.clone())} onclick={callback} />
+                            {show_module(x.1,level+1,callback)}
                         </div>
                     }
                 })
