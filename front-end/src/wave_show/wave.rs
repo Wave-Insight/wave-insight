@@ -1,8 +1,12 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 
+use wasm_bindgen::JsCast;
 use wave_insight_lib::data_struct::Module;
 use web_sys::HtmlInputElement;
+//use web_sys::console;
 use yew::prelude::*;
+use wasm_bindgen::prelude::*;
 
 use wave_insight_lib::data_struct::Signal;
 
@@ -37,6 +41,8 @@ pub struct WaveShow {
 
     menu_show: bool,
     on_show_idx: usize,
+
+    ctrl_key_press: Rc<RefCell<bool>>,
 }
 
 impl Component for WaveShow {
@@ -55,6 +61,8 @@ impl Component for WaveShow {
 
             menu_show: false,
             on_show_idx: 0,
+
+            ctrl_key_press: Rc::new(RefCell::new(false)),
         }
     }
 
@@ -67,10 +75,18 @@ impl Component for WaveShow {
             Msg::Wheel(e) => {
                 e.prevent_default();
                 let delta_y = e.delta_y();
-                if delta_y < 0.0 {
-                    self.size *= 1.25;
+                if *self.ctrl_key_press.borrow() {
+                    if delta_y < 0.0 {
+                        self.size *= 1.25;
+                    }else {
+                        self.size *= 0.8;
+                    }
+                }else if delta_y > 0.0 {
+                    self.x_axis += 10.0;
+                }else if self.x_axis >= 10.0 {
+                    self.x_axis -= 10.0;
                 }else {
-                    self.size *= 0.8;
+                    self.x_axis = 0.0;
                 }
                 true
             }
@@ -117,6 +133,29 @@ impl Component for WaveShow {
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
         let end_clock = ctx.props().end_clock;
+
+        let window = web_sys::window().expect("should have a window in this context");
+        let ctrl_key_press = self.ctrl_key_press.clone();
+        let keydown = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
+            //17:ctrl, 18:alt, 16:shift, 65:a, 48:0, 49:1
+            if e.key_code() == 17 {
+                *ctrl_key_press.borrow_mut() = true;
+            };
+            //console::log_1(&format!("key down {}",e.key_code()).into());
+        }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+        window.set_onkeydown(Some(keydown.as_ref().unchecked_ref()));
+        keydown.forget();
+
+        let ctrl_key_press2 = self.ctrl_key_press.clone();
+        let keyup = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
+            //17:ctrl, 18:alt, 16:shift, 65:a, 48:0, 49:1
+            if e.key_code() == 17 {
+                *ctrl_key_press2.borrow_mut() = false;
+            };
+            //console::log_1(&format!("key up {}",e.key_code()).into());
+        }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+        window.set_onkeyup(Some(keyup.as_ref().unchecked_ref()));
+        keyup.forget();
         
         html! {
             <div style="display:block;height:50%;overflow-y:auto">

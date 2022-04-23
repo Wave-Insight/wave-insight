@@ -71,7 +71,7 @@ impl Component for App {
 
         let window = web_sys::window().expect("should have a window in this context");
         let win_height = window.inner_height().unwrap().as_f64().unwrap()-64.0;
-        console::log_1(&format!("height2 {:?}",win_height).into());
+        //console::log_1(&format!("height2 {:?}",win_height).into());
 
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
