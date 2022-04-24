@@ -52,7 +52,7 @@ impl Component for App {
                 match file_type {
                     FileType::IsVcd => {self.module = Rc::new(vcd_parser(&text,&mut Module::new()))},//TODO:module::new()
                     FileType::IsVerilog => {
-                        self.module = Rc::new(verilog_parser(&text,Rc::clone(&self.module)));//TODO:module::new()
+                        self.module = Rc::new(verilog_parser(&text,Rc::clone(&self.module)));
                         self.verilog_source.push((file_name,text));
                     },
                 }
