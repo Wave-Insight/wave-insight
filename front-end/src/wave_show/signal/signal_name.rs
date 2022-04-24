@@ -24,7 +24,7 @@ impl Component for SignalName {
 
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
-            padding: "9px".to_string(),
+            padding: "0px".to_string(),
             menu_show: "hidden".to_string(),
         }
     }
@@ -44,7 +44,7 @@ impl Component for SignalName {
         let link = ctx.link();
         html! {
             <div style={"padding:".to_owned()+&self.padding}>
-                <p oncontextmenu={link.callback(Msg::ContextMenu)} style={"font-size:16px;margin:0px;height:16px"}>
+                <p oncontextmenu={link.callback(Msg::ContextMenu)} style={"font-size:16px;margin:0px;height:30px"}>
                     {&ctx.props().name}
                 </p>
             </div>

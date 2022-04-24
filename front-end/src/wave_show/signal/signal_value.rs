@@ -58,12 +58,12 @@ impl Component for SignalValue {
     fn view(&self, _ctx: &Context<Self>) -> Html {
         if self.bool_signal {
             html! {
-                <svg style="height:30px;width:100%">
+                <svg style="height:26px;width:100%">
                     <polyline points={self.points1.clone()} fill="none" stroke={"rgb(0,255,0)"} />
                 </svg>}
         }else {
             html! {
-                <svg style="height:30px;width:100%">
+                <svg style="height:26px;width:100%">
                     <polyline points={self.points1.clone()} fill="none" stroke={"rgb(0,255,0)"} />
                     <polyline points={self.points2.clone()} fill="none" stroke={"rgb(0,255,0)"} />
                     {for self.value.clone()}
@@ -78,6 +78,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
     let show_type = &props.setting.show_type;
     let bitcount = props.signal.size as u32;
     let zero_position = 3;
+    let height = 20;
     let mut points1 = String::new();
     let mut points2 = String::new();
     let mut value: Vec<Html> = vec![];
@@ -89,17 +90,17 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
             let x = ((d.0 as f64) - x_axis)*size;
             if (0.0..3000.0).contains(&x) {
                 if !head_used {
-                    points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*24));
+                    points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*height));
                     head_used = true;
                 }
                 if d.1 == BigUint::new(vec![1]){
-                    points1.push_str(&format!("{:.2},{} ", x, zero_position+24));
+                    points1.push_str(&format!("{:.2},{} ", x, zero_position+height));
                     points1.push_str(&format!("{:.2},{} ", x, zero_position));
                     last = zero_position;
                 }else {
                     points1.push_str(&format!("{:.2},{} ", x, zero_position));
-                    points1.push_str(&format!("{:.2},{} ", x, zero_position+24));
-                    last = zero_position+24;
+                    points1.push_str(&format!("{:.2},{} ", x, zero_position+height));
+                    last = zero_position+height;
                 }
             }else if d.1 == BigUint::new(vec![1]) {
                 head = 1;
@@ -108,8 +109,8 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
             }
         };
         if !head_used {
-            points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*24));
-            last = zero_position+(1-head)*24;
+            points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*height));
+            last = zero_position+(1-head)*height;
         }
         points1.push_str(&format!("{:.2},{} ", 3000, last));
 
@@ -123,18 +124,18 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
             if (0.0..3000.0).contains(&x) {
                 if !head_used {
                     head_used = true;
-                    points1.push_str(&format!("{:.2},{} ", 0, zero_position+24));
+                    points1.push_str(&format!("{:.2},{} ", 0, zero_position+height));
                     points2.push_str(&format!("{:.2},{} ", 0, zero_position));
                     value.push(value_text(0.0, &head, show_type, bitcount));
                 }
                 if x - last_x <= 12.0 {
                     value.pop();
                 }
-                points1.push_str(&format!("{:.2},{} ", x-2.0, zero_position+24));
-                points1.push_str(&format!("{:.2},{} ", x, zero_position+12));
-                points1.push_str(&format!("{:.2},{} ", x+2.0, zero_position+24));
+                points1.push_str(&format!("{:.2},{} ", x-2.0, zero_position+height));
+                points1.push_str(&format!("{:.2},{} ", x, zero_position+height/2));
+                points1.push_str(&format!("{:.2},{} ", x+2.0, zero_position+height));
                 points2.push_str(&format!("{:.2},{} ", x-2.0, zero_position));
-                points2.push_str(&format!("{:.2},{} ", x, zero_position+12));
+                points2.push_str(&format!("{:.2},{} ", x, zero_position+height/2));
                 points2.push_str(&format!("{:.2},{} ", x+2.0, zero_position));
 
                 value.push(value_text(x+2.0, &d.1, show_type, bitcount));
@@ -145,11 +146,11 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
             last_x = x;
         };
         if !head_used {
-            points1.push_str(&format!("{:.2},{} ", 0, zero_position+24));
+            points1.push_str(&format!("{:.2},{} ", 0, zero_position+height));
             points2.push_str(&format!("{:.2},{} ", 0, zero_position));
             value.push(value_text(0.0, &head, show_type, bitcount));
         }
-        points1.push_str(&format!("{:.2},{} ", 3000, zero_position+24));
+        points1.push_str(&format!("{:.2},{} ", 3000, zero_position+height));
         points2.push_str(&format!("{:.2},{} ", 3000, zero_position));
     }
     (points1, points2, value)
@@ -158,7 +159,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
 fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32) -> Html {
     let zero_position = 3;
     html!{
-        <text x={format!("{}",begin)} y={format!("{}",zero_position+21)} fill="rgb(255,255,255)">
+        <text x={format!("{}",begin)} y={format!("{}",zero_position+17)} fill="rgb(255,255,255)">
             {
                 if *show_type==ShowType::Hex {
                     value.to_str_radix(16).to_string()
