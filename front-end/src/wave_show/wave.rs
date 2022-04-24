@@ -28,6 +28,7 @@ pub enum Msg {
     ShowMenu(usize),
     SetSignal((bool,Settings)),
     DeleteSig,
+    KeyEvent(u32),
 }
 
 pub struct WaveShow {
@@ -38,11 +39,12 @@ pub struct WaveShow {
     load_and_drive: Vec<(Vec<String>,Vec<String>)>,
     x_axis: f64,
     size: f64,
+    min_size: RefCell<f64>,
 
     menu_show: bool,
     on_show_idx: usize,
 
-    ctrl_key_press: Rc<RefCell<bool>>,
+    key_press: Rc<RefCell<Vec<bool>>>,
 }
 
 impl Component for WaveShow {
@@ -58,11 +60,12 @@ impl Component for WaveShow {
             load_and_drive: vec![],
             x_axis: 0f64,
             size: 1f64,
+            min_size: RefCell::new(0f64),
 
             menu_show: false,
             on_show_idx: 0,
 
-            ctrl_key_press: Rc::new(RefCell::new(false)),
+            key_press: Rc::new(RefCell::new(vec![false;256])),
         }
     }
 
@@ -75,7 +78,7 @@ impl Component for WaveShow {
             Msg::Wheel(e) => {
                 e.prevent_default();
                 let delta_y = e.delta_y();
-                if *self.ctrl_key_press.borrow() {
+                if *self.key_press.borrow().get(17).unwrap() {
                     if delta_y < 0.0 {
                         self.size *= 1.25;
                     }else {
@@ -112,6 +115,14 @@ impl Component for WaveShow {
                 self.load_and_drive.remove(idx);
                 true
             }
+            Msg::KeyEvent(idx) => {
+                if idx == 90 {//z
+                    self.size *= 0.64;
+                }else if idx == 70 {//f
+                    self.size = *self.min_size.borrow();
+                }
+                true
+            }
         }
     }
 
@@ -134,32 +145,12 @@ impl Component for WaveShow {
         let link = ctx.link();
         let end_clock = ctx.props().end_clock;
 
-        let window = web_sys::window().expect("should have a window in this context");
-        let ctrl_key_press = self.ctrl_key_press.clone();
-        let keydown = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
-            //17:ctrl, 18:alt, 16:shift, 65:a, 48:0, 49:1
-            if e.key_code() == 17 {
-                *ctrl_key_press.borrow_mut() = true;
-            };
-            //console::log_1(&format!("key down {}",e.key_code()).into());
-        }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
-        window.set_onkeydown(Some(keydown.as_ref().unchecked_ref()));
-        keydown.forget();
-
-        let ctrl_key_press2 = self.ctrl_key_press.clone();
-        let keyup = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
-            //17:ctrl, 18:alt, 16:shift, 65:a, 48:0, 49:1
-            if e.key_code() == 17 {
-                *ctrl_key_press2.borrow_mut() = false;
-            };
-            //console::log_1(&format!("key up {}",e.key_code()).into());
-        }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
-        window.set_onkeyup(Some(keyup.as_ref().unchecked_ref()));
-        keyup.forget();
+        self.key_event(ctx);
 
         let window = web_sys::window().expect("should have a window in this context");
         let win_width = window.inner_width().unwrap().as_f64().unwrap();
         let wave_show_width = win_width * 0.8 * 0.9;//TODO:0.8 and 0.9 should be auto set
+        *self.min_size.borrow_mut() = wave_show_width / ((end_clock + 1) as f64);
         //console::log_1(&format!("width {}",win_width).into());
         
         html! {
@@ -199,5 +190,30 @@ impl Component for WaveShow {
                 />
             </div>
         }
+    }
+}
+
+impl WaveShow {
+    fn key_event(&self, ctx: &Context<Self>) {
+        let callback = ctx.link().callback(Msg::KeyEvent);
+        let window = web_sys::window().expect("should have a window in this context");
+        let key_press = self.key_press.clone();
+        let keydown = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
+            //17:ctrl, 18:alt, 16:shift, 65:a, 48:0, 49:1
+            *key_press.borrow_mut().get_mut(e.key_code() as usize).unwrap() = true;
+            callback.emit(e.key_code());
+            //console::log_1(&format!("key down {}",e.key_code()).into());
+        }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+        window.set_onkeydown(Some(keydown.as_ref().unchecked_ref()));
+        keydown.forget();
+
+        let key_press2 = self.key_press.clone();
+        let keyup = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
+            //17:ctrl, 18:alt, 16:shift, 65:a, 48:0, 49:1
+            *key_press2.borrow_mut().get_mut(e.key_code() as usize).unwrap() = false;
+            //console::log_1(&format!("key up {}",e.key_code()).into());
+        }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+        window.set_onkeyup(Some(keyup.as_ref().unchecked_ref()));
+        keyup.forget();
     }
 }
