@@ -156,6 +156,11 @@ impl Component for WaveShow {
         }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
         window.set_onkeyup(Some(keyup.as_ref().unchecked_ref()));
         keyup.forget();
+
+        let window = web_sys::window().expect("should have a window in this context");
+        let win_width = window.inner_width().unwrap().as_f64().unwrap();
+        let wave_show_width = win_width * 0.8 * 0.9;//TODO:0.8 and 0.9 should be auto set
+        //console::log_1(&format!("width {}",win_width).into());
         
         html! {
             <div style="display:block;height:50%;overflow-y:auto">
@@ -178,7 +183,12 @@ impl Component for WaveShow {
                     <div onwheel={link.callback(Msg::Wheel)} style="float:right;width:90%;background-color:#202020">
                         {
                             for (&self.signal).iter().zip(&self.bool_signal).enumerate().map(|(idx,(s,b))| {
-                                html!{<SignalValue module={Rc::clone(&ctx.props().module)} signal={s} bool_signal={*b} x_axis={self.x_axis} size={self.size} setting={self.signal_setting[idx].clone()} />}
+                                html!{<SignalValue
+                                    module={Rc::clone(&ctx.props().module)}
+                                    signal={s} bool_signal={*b}
+                                    x_axis={self.x_axis} size={self.size}
+                                    width = {wave_show_width}
+                                    setting={self.signal_setting[idx].clone()} />}
                             })
                         }
                     </div>

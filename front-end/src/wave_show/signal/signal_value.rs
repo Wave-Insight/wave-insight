@@ -22,6 +22,7 @@ pub struct SignalValueProps {
     pub bool_signal: bool,
     pub x_axis: f64,
     pub size: f64,
+    pub width: f64,
     pub setting: Settings,
 }
 
@@ -79,6 +80,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
     let bitcount = props.signal.size as u32;
     let zero_position = 3;
     let height = 20;
+    let width = props.width;
     let mut points1 = String::new();
     let mut points2 = String::new();
     let mut value: Vec<Html> = vec![];
@@ -88,7 +90,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
         let mut head_used = false;
         for d in props.module.value.get(&props.signal.value_key).unwrap_or(&vec![]) {
             let x = ((d.0 as f64) - x_axis)*size;
-            if (0.0..3000.0).contains(&x) {
+            if (0.0..width).contains(&x) {
                 if !head_used {
                     points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*height));
                     head_used = true;
@@ -112,7 +114,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
             points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*height));
             last = zero_position+(1-head)*height;
         }
-        points1.push_str(&format!("{:.2},{} ", 3000, last));
+        points1.push_str(&format!("{:.2},{} ", width, last));
 
     }else {
             
@@ -121,7 +123,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
         let mut last_x = 0.0;
         for d in props.module.value.get(&props.signal.value_key).unwrap_or(&vec![]) {
             let x = ((d.0 as f64) - x_axis)*size;
-            if (0.0..3000.0).contains(&x) {
+            if (0.0..width).contains(&x) {
                 if !head_used {
                     head_used = true;
                     points1.push_str(&format!("{:.2},{} ", 0, zero_position+height));
@@ -150,8 +152,8 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
             points2.push_str(&format!("{:.2},{} ", 0, zero_position));
             value.push(value_text(0.0, &head, show_type, bitcount));
         }
-        points1.push_str(&format!("{:.2},{} ", 3000, zero_position+height));
-        points2.push_str(&format!("{:.2},{} ", 3000, zero_position));
+        points1.push_str(&format!("{:.2},{} ", width, zero_position+height));
+        points2.push_str(&format!("{:.2},{} ", width, zero_position));
     }
     (points1, points2, value)
 }
