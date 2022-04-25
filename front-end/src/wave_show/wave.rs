@@ -29,6 +29,9 @@ pub enum Msg {
     SetSignal((bool,Settings)),
     DeleteSig,
     KeyEvent(u32),
+    MouseDown(MouseEvent),
+    MouseMove(MouseEvent),
+    MouseUp(MouseEvent),
 }
 
 pub struct WaveShow {
@@ -45,6 +48,11 @@ pub struct WaveShow {
     on_show_idx: usize,
 
     key_press: Rc<RefCell<Vec<bool>>>,
+
+    mouse_press: bool,
+    mouse_start: i32,
+    mouse_offset: RefCell<f64>,
+    mouse_total: RefCell<f64>,
 }
 
 impl Component for WaveShow {
@@ -66,6 +74,11 @@ impl Component for WaveShow {
             on_show_idx: 0,
 
             key_press: Rc::new(RefCell::new(vec![false;256])),
+
+            mouse_press: false,
+            mouse_start: 0,
+            mouse_offset: RefCell::new(0f64),
+            mouse_total: RefCell::new(0f64),
         }
     }
 
@@ -85,9 +98,9 @@ impl Component for WaveShow {
                         self.size *= 0.8;
                     }
                 }else if delta_y > 0.0 {
-                    self.x_axis += 10.0;
-                }else if self.x_axis >= 10.0 {
-                    self.x_axis -= 10.0;
+                    self.x_axis += 30.0;
+                }else if self.x_axis >= 30.0 {
+                    self.x_axis -= 30.0;
                 }else {
                     self.x_axis = 0.0;
                 }
@@ -117,12 +130,48 @@ impl Component for WaveShow {
             }
             Msg::KeyEvent(idx) => {
                 if idx == 90 {//z
-                    self.size *= 0.64;
+                    if *self.key_press.borrow().get(16).unwrap() {
+                        self.size *= 1.25*1.25;
+                    }else {
+                        self.size *= 0.64;
+                    }
                 }else if idx == 70 {//f
+                    self.x_axis = 0.0;
                     self.size = *self.min_size.borrow();
                 }
                 true
             }
+
+            Msg::MouseDown(e) =>{
+                self.mouse_press = true;
+                let x = e.x();
+                self.mouse_start = x;
+                //console::log_1(&format!("x:{}",x).into());
+                e.prevent_default();
+                true
+            }
+            Msg::MouseMove(_e) => {
+                //let x = e.x();
+                //if self.mouse_press {
+                //    console::log_1(&format!("x:{}",x).into());
+                //}
+                //TODO:to show the range
+                true
+            }
+            Msg::MouseUp(e) => {
+                self.mouse_press = false;
+                let x = e.x();
+                let (start,end) = if self.mouse_start < x {
+                    (self.mouse_start, x)
+                }else {
+                    (x, self.mouse_start)
+                };
+                self.x_axis += (start as f64 - *self.mouse_offset.borrow()) / self.size;
+                self.size *= *self.mouse_total.borrow() / (end - start) as f64;
+                //console::log_1(&format!("x:{}",x).into());
+                true
+            }
+            //TODO:MouseOut
         }
     }
 
@@ -151,6 +200,8 @@ impl Component for WaveShow {
         let win_width = window.inner_width().unwrap().as_f64().unwrap();
         let wave_show_width = win_width * 0.8 * 0.9;//TODO:0.8 and 0.9 should be auto set
         *self.min_size.borrow_mut() = wave_show_width / ((end_clock + 1) as f64);
+        *self.mouse_offset.borrow_mut() = win_width * (1.0 - 0.8*0.9);
+        *self.mouse_total.borrow_mut() = wave_show_width;
         //console::log_1(&format!("width {}",win_width).into());
         
         html! {
@@ -171,7 +222,11 @@ impl Component for WaveShow {
                             })
                         }
                     </div>
-                    <div onwheel={link.callback(Msg::Wheel)} style="float:right;width:90%;background-color:#202020">
+                    <div onwheel={link.callback(Msg::Wheel)}
+                        onmousedown={link.callback(Msg::MouseDown)}
+                        onmouseup={link.callback(Msg::MouseUp)}
+                        onmousemove={link.callback(Msg::MouseMove)}
+                        style="float:right;width:90%;background-color:#202020">
                         {
                             for (&self.signal).iter().zip(&self.bool_signal).enumerate().map(|(idx,(s,b))| {
                                 html!{<SignalValue
