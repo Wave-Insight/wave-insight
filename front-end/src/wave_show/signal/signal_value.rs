@@ -104,10 +104,12 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
                     points1.push_str(&format!("{:.2},{} ", x, zero_position+height));
                     last = zero_position+height;
                 }
-            }else if d.1 == BigUint::new(vec![1]) {
-                head = 1;
-            }else {
-                head = 0;
+            }else if x < 0.0 {
+                if d.1 == BigUint::new(vec![1]) {
+                    head = 1;
+                }else {
+                    head = 0;
+                }
             }
         };
         if !head_used {
