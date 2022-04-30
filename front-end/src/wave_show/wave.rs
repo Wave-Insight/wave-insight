@@ -32,6 +32,8 @@ pub enum Msg {
     MouseDown(MouseEvent),
     MouseMove(MouseEvent),
     MouseUp(MouseEvent),
+    NameMouseDown(MouseEvent),
+    NameMouseUp(MouseEvent),
 }
 
 pub struct WaveShow {
@@ -53,6 +55,10 @@ pub struct WaveShow {
     mouse_start: i32,
     mouse_offset: RefCell<f64>,
     mouse_total: RefCell<f64>,
+
+    name_choose_valid: bool,
+    name_choose: usize,
+    name_offset: RefCell<f64>,
 }
 
 impl Component for WaveShow {
@@ -79,6 +85,10 @@ impl Component for WaveShow {
             mouse_start: 0,
             mouse_offset: RefCell::new(0f64),
             mouse_total: RefCell::new(0f64),
+
+            name_choose_valid: false,
+            name_choose: 0,
+            name_offset: RefCell::new(0f64),
         }
     }
 
@@ -172,6 +182,37 @@ impl Component for WaveShow {
                 true
             }
             //TODO:MouseOut
+
+            Msg::NameMouseDown(e) => {
+                self.name_choose_valid = true;
+                self.name_choose = ((e.y() as f64 - *self.name_offset.borrow()) / 30.0) as usize;
+                //console::log_1(&format!("x:{}",self.name_choose).into());
+                e.prevent_default();
+                true
+            }
+            Msg::NameMouseUp(e) => {
+                self.name_choose_valid = false;
+                let set_location = (e.y() as f64 - *self.name_offset.borrow()) / 30.0;
+                let dest_idx = if set_location > self.name_choose as f64 + 0.5 {
+                    (set_location - 0.5) as usize
+                }else {
+                    (set_location + 0.5) as usize
+                };
+                let signal_name    = self.signal_name.remove(self.name_choose);
+                let signal         = self.signal.remove(self.name_choose);
+                let bool_signal    = self.bool_signal.remove(self.name_choose);
+                let signal_setting = self.signal_setting.remove(self.name_choose);
+                let load_and_drive = self.load_and_drive.remove(self.name_choose);
+                self.signal_name.insert(dest_idx,signal_name);
+                self.signal.insert(dest_idx,signal);
+                self.bool_signal.insert(dest_idx,bool_signal);
+                self.signal_setting.insert(dest_idx,signal_setting);
+                self.load_and_drive.insert(dest_idx,load_and_drive);
+                true
+            }
+            //TODO:show the destiny when is dragging
+            //TODO:drag to the button not work
+            //TODO:drag out of the area may cause bug
         }
     }
 
@@ -198,10 +239,13 @@ impl Component for WaveShow {
 
         let window = web_sys::window().expect("should have a window in this context");
         let win_width = window.inner_width().unwrap().as_f64().unwrap();
+        let win_height = window.inner_height().unwrap().as_f64().unwrap();
         let wave_show_width = win_width * 0.8 * 0.9;//TODO:0.8 and 0.9 should be auto set
         *self.min_size.borrow_mut() = wave_show_width / ((end_clock + 1) as f64);
         *self.mouse_offset.borrow_mut() = win_width * (1.0 - 0.8*0.9);
         *self.mouse_total.borrow_mut() = wave_show_width;
+
+        *self.name_offset.borrow_mut() = (win_height-64.0)*0.5+64.0;
         //console::log_1(&format!("width {}",win_width).into());
         
         html! {
@@ -215,7 +259,9 @@ impl Component for WaveShow {
                         delete={link.callback(|_| Msg::DeleteSig)} />
                 }
                 <div style="height:90%;overflow-y:auto">
-                    <div style="float:left;width:10%">
+                    <div onmousedown={link.callback(Msg::NameMouseDown)}
+                        onmouseup={link.callback(Msg::NameMouseUp)}
+                        style="float:left;width:10%">
                         {
                             for (&self.signal_name).iter().enumerate().map(|(idx,s)| {
                                 html!{<SignalName name={s.clone()} menu={link.callback(move |()| Msg::ShowMenu(idx))} />}
