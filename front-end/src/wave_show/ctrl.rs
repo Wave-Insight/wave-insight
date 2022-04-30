@@ -19,6 +19,7 @@ pub struct CtrlProps {
 pub enum Msg {
     ExitMenu(MouseEvent),
     ChooseShowType(ShowType),
+    ChooseColor((u8,u8,u8)),
     ActiveFixed,
     SetFixed(u32),
     ActiveAnalog,
@@ -56,6 +57,12 @@ impl Component for Ctrl {
             Msg::ChooseShowType(show_type) => {
                 let mut set = props.setting.clone();
                 set.show_type = show_type;
+                props.onset.emit((true,set));
+                true
+            }
+            Msg::ChooseColor((r,g,b)) => {
+                let mut set = props.setting.clone();
+                set.color = (r,g,b);
                 props.onset.emit((true,set));
                 true
             }
@@ -126,6 +133,22 @@ impl Component for Ctrl {
             color:#666666;font-size:15px;font-weight:bold;
             margin:2% 6.5%;height:5%;width:20%;";
 
+        let color_style = |(r,g,b):(u8,u8,u8)| format!("
+            background-color:#{:02X?}{:02X?}{:02X?};
+            border-radius:6px;
+            border:2px solid #dcdcdc;
+            display:inline-block;
+            cursor:pointer;
+            margin:2% 1.5%;height:5%;width:10%;",r,g,b);
+
+        let color_style_onselect = |(r,g,b):(u8,u8,u8)| format!("
+            background-color:#{:02X?}{:02X?}{:02X?};
+            border-radius:6px;
+            border:3px solid #008800;
+            display:inline-block;
+            cursor:pointer;
+            margin:2% 1.5%;height:5%;width:10%;",r,g,b);
+
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
             <div>
@@ -181,6 +204,14 @@ impl Component for Ctrl {
                     <button type="button" style={button_style}
                         onclick={link.callback(|_| Msg::DeleteSig)}>
                         {"delete"}</button>
+
+                    <button type="button" style={if props.setting.color==(255,0,0  ) {color_style_onselect((255,0,0))  } else {color_style((255,0,0))  }} onclick={link.callback(|_| Msg::ChooseColor((255,0,0)))}></button>
+                    <button type="button" style={if props.setting.color==(255,128,0) {color_style_onselect((255,128,0))} else {color_style((255,128,0))}} onclick={link.callback(|_| Msg::ChooseColor((255,128,0)))}></button>
+                    <button type="button" style={if props.setting.color==(255,255,0) {color_style_onselect((255,255,0))} else {color_style((255,255,0))}} onclick={link.callback(|_| Msg::ChooseColor((255,255,0)))}></button>
+                    <button type="button" style={if props.setting.color==(0,255,0  ) {color_style_onselect((0,255,0))  } else {color_style((0,255,0))  }} onclick={link.callback(|_| Msg::ChooseColor((0,255,0)))}></button>
+                    <button type="button" style={if props.setting.color==(0,255,255) {color_style_onselect((0,255,255))} else {color_style((0,255,255))}} onclick={link.callback(|_| Msg::ChooseColor((0,255,255)))}></button>
+                    <button type="button" style={if props.setting.color==(0,0,255  ) {color_style_onselect((0,0,255))  } else {color_style((0,0,255))  }} onclick={link.callback(|_| Msg::ChooseColor((0,0,255)))}></button>
+                    <button type="button" style={if props.setting.color==(255,0,255) {color_style_onselect((255,0,255))} else {color_style((255,0,255))}} onclick={link.callback(|_| Msg::ChooseColor((255,0,255)))}></button>
                 </div>
             </div>
         }

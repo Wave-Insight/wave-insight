@@ -56,17 +56,19 @@ impl Component for SignalValue {
         true
     }
 
-    fn view(&self, _ctx: &Context<Self>) -> Html {
+    fn view(&self, ctx: &Context<Self>) -> Html {
+        let props = ctx.props();
+        let color = format!("rgb({},{},{})",props.setting.color.0,props.setting.color.1,props.setting.color.2);
         if self.bool_signal {
             html! {
                 <svg style="height:26px;width:100%">
-                    <polyline points={self.points1.clone()} fill="none" stroke={"rgb(0,255,0)"} />
+                    <polyline points={self.points1.clone()} fill="none" stroke={color} />
                 </svg>}
         }else {
             html! {
                 <svg style="height:26px;width:100%">
-                    <polyline points={self.points1.clone()} fill="none" stroke={"rgb(0,255,0)"} />
-                    <polyline points={self.points2.clone()} fill="none" stroke={"rgb(0,255,0)"} />
+                    <polyline points={self.points1.clone()} fill="none" stroke={color.clone()} />
+                    <polyline points={self.points2.clone()} fill="none" stroke={color} />
                     {for self.value.clone()}
                 </svg> }
         }

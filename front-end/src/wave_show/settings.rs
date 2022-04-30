@@ -13,6 +13,7 @@ pub enum ShowType {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Settings {
     pub show_type: ShowType,
+    pub color: (u8,u8,u8),
 
     pub fixed_active: bool,
     pub fixed_point: u32,
@@ -25,16 +26,13 @@ pub struct Settings {
     pub drive_all: bool,
     pub drive_one: i32,
 
-    pub color_r: u32,
-    pub color_g: u32,
-    pub color_b: u32,
-
 }
 
 impl Settings {
     pub fn new() -> Self {
         Self {
             show_type: ShowType::Hex,
+            color: (0,255,0),
 
             fixed_active: false,
             fixed_point: 0,
@@ -46,10 +44,6 @@ impl Settings {
             load_one: -1,
             drive_all: false,
             drive_one: -1,
-
-            color_r: 0,
-            color_g: 0,
-            color_b: 255,
         }
     }
 }
