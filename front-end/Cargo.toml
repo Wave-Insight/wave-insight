@@ -30,3 +30,8 @@ version = "0.3.0"
 default-features = false
 features = ["yew-components"]
 git = "https://github.com/siku2/rust-monaco"
+
+[features]
+default = ["wasm"]
+wasm = []
+backend = []

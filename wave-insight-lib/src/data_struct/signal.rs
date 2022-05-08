@@ -1,8 +1,9 @@
 
+use serde::{Deserialize, Serialize};
 use super::CodeLocation;
 
 //no need of name because name is key
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
 pub struct Signal {
     pub size: usize,
     pub value_key: String,

@@ -7,3 +7,15 @@ edition = "2021"
 
 [dependencies]
 wave-insight-lib = { path = "../wave-insight-lib" }
+
+futures-channel = "0.3"
+tokio-tungstenite = "*"
+tokio = { version = "1.0.0", features = ["full", "io-util"] }
+futures-util = { version = "0.3", features = ["sink", "std"] }
+
+warp = "0.3.2"
+ 
+[dependencies.tungstenite]
+version = "0.17.2"
+default-features = false
+ 

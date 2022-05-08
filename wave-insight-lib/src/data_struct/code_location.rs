@@ -1,5 +1,6 @@
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
 pub struct CodeLocation {
     pub file_name: String,//TODO: choose another type
     pub line: u32,

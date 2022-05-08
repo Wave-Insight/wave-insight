@@ -187,7 +187,7 @@ fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32) 
                     let value_to_bytes = value.to_bytes_be();
                     let s = match std::str::from_utf8(&value_to_bytes) {
                         Ok(v) => v,
-                        Err(_e) => "invalid",//TODO:do not panic
+                        Err(_e) => "invalid",
                     };
                     s.to_string()
                 }
