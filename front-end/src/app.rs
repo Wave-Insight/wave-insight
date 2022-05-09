@@ -43,6 +43,8 @@ pub struct App {
     drawer_state: bool,
     module: Rc<Module>,
     signal_value: Rc<HashMap<String, Vec<(i32, BigUint)>>>,
+    #[cfg(feature = "backend")]
+    signal_value_raw: HashMap<String, Vec<(i32, BigUint)>>,//TODO:not a good implement
     verilog_source: Vec<(String,String)>,
     signal_add: (String,Rc<Signal>),
     #[cfg(feature = "backend")]
@@ -60,6 +62,8 @@ impl Component for App {
             drawer_state: true,
             module: Rc::new(Module::new()),
             signal_value: Rc::new(HashMap::new()),
+            #[cfg(feature = "backend")]
+            signal_value_raw: HashMap::new(),
             verilog_source: vec![],
             signal_add: ("".to_string(),Rc::new(Signal::new())),
             #[cfg(feature = "backend")]
@@ -67,7 +71,7 @@ impl Component for App {
         }
     }
 
-    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Msg::NavIconClick => {
                 self.drawer_state = !self.drawer_state;
@@ -90,6 +94,8 @@ impl Component for App {
                 true
             }
             Msg::SignalAdd(input) => {
+                #[cfg(feature = "backend")]
+                ctx.link().callback(Msg::WsSend).emit(format!("s:{}",input.1.value_key));
                 self.signal_add = (input.0,input.1);
                 true
             }
@@ -108,6 +114,13 @@ impl Component for App {
                 if let Some(module_string) = m.strip_prefix("module:") {
                     let module: Module = serde_json::from_str(module_string).unwrap();//TODO:do not unwrap
                     self.module = Rc::new(module);
+                }else if let Some(signal_string) = m.strip_prefix("sig:") {
+                    if let Some((key, value)) = signal_string.split_once(":") {
+                        let value_parse: Vec<(i32, BigUint)> = serde_json::from_str(value).unwrap();//TODO:do not unwrap
+                        self.signal_value_raw.insert(key.to_string(), value_parse);
+                        self.signal_value = Rc::new(self.signal_value_raw.clone());
+                        //TODO:value update here will cause an adition signal add on wave show
+                    }
                 }
                 true
             }

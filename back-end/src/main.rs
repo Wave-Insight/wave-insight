@@ -1,6 +1,7 @@
-use std::{env, io::Error};
+use std::{env, io::Error, collections::HashMap};
 
 use futures_util::{future, StreamExt, TryStreamExt, SinkExt};
+use num::BigUint;
 use tokio::net::{TcpListener, TcpStream};
 
 use tungstenite::Message;
@@ -31,13 +32,13 @@ async fn main() -> std::result::Result<(), Error> {
     println!("Listening on: {}", addr);
 
     while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(accept_connection(stream, module.clone()));
+        tokio::spawn(accept_connection(stream, module.clone(), signal_value.clone()));
     }
 
     Ok(())
 }
 
-async fn accept_connection(stream: TcpStream, module: Box<Module>) {
+async fn accept_connection(stream: TcpStream, module: Box<Module>, signal_value: Box<HashMap<String,Vec<(i32, BigUint)>>>) {
     let addr = stream.peer_addr().expect("connected streams should have a peer address");
     println!("Peer address: {}", addr);
 
@@ -54,7 +55,19 @@ async fn accept_connection(stream: TcpStream, module: Box<Module>) {
     write.send(Message::Text(format!("module:{}",instantiated.unwrap()))).await.expect("Failed to send module");//TODO:do not panic
     
     read.try_filter(|msg| future::ready(msg.is_text() || msg.is_binary()))
+        .map(|msg| msg_to_str(msg, signal_value.clone()))
         .forward(write)
         .await
         .expect("Failed to forward messages")
+
+    
+}
+
+fn msg_to_str(msg: Result<Message, tungstenite::Error>, signal_value: Box<HashMap<String,Vec<(i32, BigUint)>>>) -> Result<Message, tungstenite::Error> {
+    let msg_text = msg.ok().and_then(|m| m.into_text().ok());
+    let key = msg_text.and_then(|t| t.strip_prefix("s:").map(|tt| tt.to_string()));
+    let is_sig_key = key.clone().and_then(|k| signal_value.get(&k));
+    let get_value = is_sig_key;
+    let sig = get_value.and_then(|v| serde_json::to_string_pretty(v).ok()).unwrap();//TODO:do not unwrap
+    Ok(Message::Text(format!("sig:{}:{}", key.unwrap(), sig)))//TODO:do not unwrap
 }
