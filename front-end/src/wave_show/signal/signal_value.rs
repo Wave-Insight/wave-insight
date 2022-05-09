@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{rc::Rc, collections::HashMap};
 
 use num::{BigUint,BigInt, bigint::{ToBigInt, Sign}};
 use wave_insight_lib::data_struct::{Signal, Module};
@@ -18,6 +18,7 @@ pub struct SignalValue {
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalValueProps {
     pub module: Rc<Module>,
+    pub signal_value: Rc<HashMap<String, Vec<(i32, BigUint)>>>,
     pub signal: Rc<Signal>,
     pub bool_signal: bool,
     pub x_axis: f64,
@@ -90,7 +91,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
         let mut last: u32 = 0;
         let mut head: u32 = 0;
         let mut head_used = false;
-        for d in props.module.value.get(&props.signal.value_key).unwrap_or(&vec![]) {
+        for d in props.signal_value.get(&props.signal.value_key).unwrap_or(&vec![]) {
             let x = ((d.0 as f64) - x_axis)*size;
             if (0.0..width).contains(&x) {
                 if !head_used {
@@ -125,7 +126,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
         let mut head: BigUint = BigUint::new(vec![0]);
         let mut head_used = true;
         let mut last_x = 0.0;
-        for d in props.module.value.get(&props.signal.value_key).unwrap_or(&vec![]) {
+        for d in props.signal_value.get(&props.signal.value_key).unwrap_or(&vec![]) {
             let x = ((d.0 as f64) - x_axis)*size;
             if (0.0..width).contains(&x) {
                 if !head_used {

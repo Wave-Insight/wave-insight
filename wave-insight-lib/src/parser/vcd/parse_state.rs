@@ -1,11 +1,13 @@
 use crate::data_struct::Module;
 
 use super::parse_action::ParseAction;
-
+use std::collections::HashMap;
+use num::BigUint;
 
 pub struct ParseState {
     pub clk: i32,
     pub module: Module,
+    pub value: HashMap<String,Vec<(i32,BigUint)>>,
     pub stack: Vec<(String,Module)>,
 }
 
@@ -33,7 +35,7 @@ impl ParseState {
                     }
                 },
                 ParseAction::Value(key, value) => {
-                    self.module.value.entry(key).or_insert_with(Vec::new)
+                    self.value.entry(key).or_insert_with(Vec::new)
                         .push((self.clk,value));
                 },
             }

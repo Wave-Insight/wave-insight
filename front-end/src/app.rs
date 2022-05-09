@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::rc::Rc;
 
+use num::BigUint;
 use wave_insight_lib::{data_struct::Module,
     data_struct::Signal};
 
@@ -38,6 +40,7 @@ pub enum Msg {
 pub struct App {
     drawer_state: bool,
     module: Rc<Module>,
+    signal_value: Rc<HashMap<String, Vec<(i32, BigUint)>>>,
     verilog_source: Vec<(String,String)>,
     signal_add: (String,Rc<Signal>),
     #[cfg(feature = "backend")]
@@ -52,6 +55,7 @@ impl Component for App {
         Self {
             drawer_state: true,
             module: Rc::new(Module::new()),
+            signal_value: Rc::new(HashMap::new()),
             verilog_source: vec![],
             signal_add: ("".to_string(),Rc::new(Signal::new())),
             #[cfg(feature = "backend")]
@@ -85,7 +89,11 @@ impl Component for App {
             #[cfg(feature = "wasm")]
             Msg::ParserFile(file_type,file_name,text) => {
                 match file_type {
-                    FileType::IsVcd => {self.module = Rc::new(vcd_parser(&text,&mut Module::new()))},//TODO:module::new()
+                    FileType::IsVcd => {
+                        let (module, value) = vcd_parser(&text,&mut Module::new());
+                        self.module = Rc::new(module);
+                        self.signal_value = Rc::new(value);
+                    },//TODO:module::new()
                     FileType::IsVerilog => {
                         self.module = Rc::new(verilog_parser(&text,Rc::clone(&self.module)));
                         self.verilog_source.push((file_name,text));
@@ -135,7 +143,11 @@ impl Component for App {
                 <div style={"width:".to_owned()+(if self.drawer_state {"80%"} else {"100%"})+";float:left;display:block;height:100%;overflow-y:auto"} >
                     <div style="display:block;height:100%;overflow-y:auto">
                         <CodeReader file={self.verilog_source.clone()} />
-                        <WaveShow signaladd={(self.signal_add.0.clone(),Rc::clone(&self.signal_add.1))} module={Rc::clone(&self.module)} end_clock={self.module.end_clock} />
+                        <WaveShow
+                            signaladd={(self.signal_add.0.clone(),Rc::clone(&self.signal_add.1))}
+                            module={Rc::clone(&self.module)}
+                            signal_value={Rc::clone(&self.signal_value)}
+                            end_clock={self.module.end_clock} />
                     </div>
                 </div>
             </div>

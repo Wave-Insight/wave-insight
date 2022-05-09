@@ -1,19 +1,16 @@
-use std::collections::HashMap;
-
 use crate::data_struct::signal::Signal;
 use linked_hash_map::LinkedHashMap;
-use num::BigUint;
+use serde::{Deserialize, Serialize};
 
 type SignalPath = (Vec<String>,String);
 type ModulePath = [String];
 
 //except for top module, name is key
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
 pub struct Module {
     pub sub_module: LinkedHashMap<String,Module>,
     pub signal: LinkedHashMap<String,Signal>,
     pub end_clock: i32,
-    pub value: HashMap<String,Vec<(i32,BigUint)>>,
 }
 
 impl Module {
@@ -22,7 +19,6 @@ impl Module {
             sub_module: LinkedHashMap::new(),
             signal: LinkedHashMap::new(),
             end_clock: 0,
-            value: HashMap::new(),
         }
     }
     pub fn get_module(&mut self, path: &ModulePath) -> Option<&mut Module> {

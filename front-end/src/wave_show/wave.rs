@@ -1,6 +1,8 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
+use num::BigUint;
 use wasm_bindgen::JsCast;
 use wave_insight_lib::data_struct::Module;
 use web_sys::HtmlInputElement;
@@ -19,6 +21,7 @@ use super::signal::SignalValue;
 pub struct WaveShowProps {
     pub signaladd: (String,Rc<Signal>),
     pub module: Rc<Module>,
+    pub signal_value: Rc<HashMap<String, Vec<(i32, BigUint)>>>,
     pub end_clock: i32,
 }
 
@@ -277,6 +280,7 @@ impl Component for WaveShow {
                             for (&self.signal).iter().zip(&self.bool_signal).enumerate().map(|(idx,(s,b))| {
                                 html!{<SignalValue
                                     module={Rc::clone(&ctx.props().module)}
+                                    signal_value={Rc::clone(&ctx.props().signal_value)}
                                     signal={s} bool_signal={*b}
                                     x_axis={self.x_axis} size={self.size}
                                     width = {wave_show_width}

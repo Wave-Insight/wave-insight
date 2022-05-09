@@ -1,7 +1,13 @@
 use std::{env, io::Error};
 
-use futures_util::{future, StreamExt, TryStreamExt};
+use futures_util::{future, StreamExt, TryStreamExt, SinkExt};
 use tokio::net::{TcpListener, TcpStream};
+
+use tungstenite::Message;
+use wave_insight_lib::{
+    parser::vcd_parser::vcd_parser,
+    parser::verilog_parser::verilog_parser, data_struct::Module};
+use std::io::Read;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Error> {
@@ -10,7 +16,12 @@ async fn main() -> std::result::Result<(), Error> {
     //    .run(([127, 0, 0, 1], 3030))
     //    .await;
 
-
+    let mut file = std::fs::File::open("test.vcd").unwrap();
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    let (module_raw, signal_value_raw) = vcd_parser(&contents, &mut Module::new());
+    let module = Box::new(module_raw);
+    let signal_value = Box::new(signal_value_raw);
 
     let addr = env::args().nth(1).unwrap_or_else(|| "0.0.0.0:2992".to_string());
 
@@ -20,13 +31,13 @@ async fn main() -> std::result::Result<(), Error> {
     println!("Listening on: {}", addr);
 
     while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(accept_connection(stream));
+        tokio::spawn(accept_connection(stream, module.clone()));
     }
 
     Ok(())
 }
 
-async fn accept_connection(stream: TcpStream) {
+async fn accept_connection(stream: TcpStream, module: Box<Module>) {
     let addr = stream.peer_addr().expect("connected streams should have a peer address");
     println!("Peer address: {}", addr);
 
@@ -36,8 +47,12 @@ async fn accept_connection(stream: TcpStream) {
 
     println!("New WebSocket connection: {}", addr);
 
-    let (write, read) = ws_stream.split();
+    let (mut write, read) = ws_stream.split();
     // We should not forward messages other than text or binary.
+    
+    let instantiated = serde_json::to_string_pretty(&Box::leak(module));
+
+    write.send(Message::Text(instantiated.unwrap())).await.expect("Failed to send module");
     read.try_filter(|msg| future::ready(msg.is_text() || msg.is_binary()))
         .forward(write)
         .await
