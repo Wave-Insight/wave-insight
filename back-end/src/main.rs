@@ -51,8 +51,8 @@ async fn accept_connection(stream: TcpStream, module: Box<Module>) {
     // We should not forward messages other than text or binary.
     
     let instantiated = serde_json::to_string_pretty(&Box::leak(module));
-
-    write.send(Message::Text(instantiated.unwrap())).await.expect("Failed to send module");
+    write.send(Message::Text(format!("module:{}",instantiated.unwrap()))).await.expect("Failed to send module");//TODO:do not panic
+    
     read.try_filter(|msg| future::ready(msg.is_text() || msg.is_binary()))
         .forward(write)
         .await

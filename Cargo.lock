@@ -175,6 +175,7 @@ dependencies = [
  "monaco",
  "num",
  "serde",
+ "serde_json",
  "wasm-bindgen",
  "wave-insight-lib",
  "web-sys",

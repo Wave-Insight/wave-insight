@@ -35,6 +35,8 @@ pub enum Msg {
     SignalAdd((String,Rc<Signal>)),
     #[cfg(feature = "backend")]
     WsSend(String),
+    #[cfg(feature = "backend")]
+    GetWebsocket(String),
 }
 
 pub struct App {
@@ -51,7 +53,9 @@ impl Component for App {
     type Message = Msg;
     type Properties = ();
 
-    fn create(_ctx: &Context<Self>) -> Self {
+    fn create(ctx: &Context<Self>) -> Self {
+        #[cfg(feature = "backend")]
+        let websocket = create_websocket(ctx);
         Self {
             drawer_state: true,
             module: Rc::new(Module::new()),
@@ -59,25 +63,8 @@ impl Component for App {
             verilog_source: vec![],
             signal_add: ("".to_string(),Rc::new(Signal::new())),
             #[cfg(feature = "backend")]
-            websocket: None,
+            websocket: Some(websocket),
         }
-    }
-
-    #[cfg(feature = "backend")]
-    fn rendered(&mut self, _ctx: &Context<Self>, _first_render: bool) {
-        let ws = WebSocket::new("ws://127.0.0.1:2992").unwrap();//TODO:when not connect
-
-        let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
-            if let Ok(txt) = e.data().dyn_into::<js_sys::JsString>() {
-                console::log_1(&format!("message event, received Text: {:?}", txt).into());
-            } else {
-                console::log_1(&format!("message event, received Unknown: {:?}", e.data()).into());
-            }
-        }) as Box<dyn FnMut(MessageEvent)>);
-        ws.set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
-        onmessage_callback.forget();
-
-        self.websocket = Some(ws);
     }
 
     fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
@@ -113,6 +100,14 @@ impl Component for App {
                        if ws.send_with_str(&e).is_ok() {};
                     },
                     None => {},
+                }
+                true
+            }
+            #[cfg(feature = "backend")]
+            Msg::GetWebsocket(m) => {
+                if let Some(module_string) = m.strip_prefix("module:") {
+                    let module: Module = serde_json::from_str(module_string).unwrap();//TODO:do not unwrap
+                    self.module = Rc::new(module);
                 }
                 true
             }
@@ -168,4 +163,24 @@ impl App {
             <button onclick={ctx.link().callback(|_| Msg::WsSend("file".to_string()))}>{"ws"}</button>
         }
     }
+    
+}
+
+#[cfg(feature = "backend")]
+fn create_websocket(ctx: &Context<App>) -> WebSocket {
+    let callback: Callback<String> = ctx.link().callback(Msg::GetWebsocket);
+
+    let ws = WebSocket::new("ws://127.0.0.1:2992").unwrap();//TODO:when not connect
+
+    let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
+        if let Ok(txt) = e.data().dyn_into::<js_sys::JsString>() {
+            console::log_1(&format!("message event, received Text: {:?}", txt).into());
+            callback.emit(txt.as_string().unwrap())
+        } else {
+            console::log_1(&format!("message event, received Unknown: {:?}", e.data()).into());
+        }
+    }) as Box<dyn FnMut(MessageEvent)>);
+    ws.set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
+    onmessage_callback.forget();
+    ws
 }

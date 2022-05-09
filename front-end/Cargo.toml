@@ -14,6 +14,7 @@ wave-insight-lib = { path = "../wave-insight-lib" }
 material-yew = { git = "https://github.com/hamza1311/material-yew", features = ["full"], rev = "1bfb89d" }
 
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 wasm-bindgen = "0.2.80"
 js-sys = "0.3"
