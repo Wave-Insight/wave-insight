@@ -15,14 +15,16 @@ async fn main() -> std::result::Result<(), Error> {
 
     tokio::spawn(serve_html());
 
-    let mut file = std::fs::File::open("test.vcd").unwrap();
+    let mut file_args = std::env::args().nth(1);
+    let filename = file_args.get_or_insert("test.vcd".to_string());
+    let mut file = std::fs::File::open(filename).unwrap();
     let mut contents = String::new();
     file.read_to_string(&mut contents).unwrap();
     let (module_raw, signal_value_raw) = vcd_parser(&contents, &mut Module::new());
     let module = Box::new(module_raw);
     let signal_value = Box::new(signal_value_raw);
 
-    let addr = env::args().nth(1).unwrap_or_else(|| "0.0.0.0:2993".to_string());
+    let addr = env::args().nth(2).unwrap_or_else(|| "0.0.0.0:2993".to_string());
 
     // Create the event loop and TCP listener we'll accept connections on.
     let try_socket = TcpListener::bind(&addr).await;
