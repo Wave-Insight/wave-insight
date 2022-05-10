@@ -221,7 +221,7 @@ impl Component for WaveShow {
 
     fn changed(&mut self, ctx: &Context<Self>) -> bool {
         let (signal_name,signal) = &ctx.props().signaladd;
-        if !signal_name.is_empty() {
+        if !signal_name.is_empty() && !self.signal.contains(signal) {//TODO:has influence on perform?
             let bool_signal = signal.size==1;
             self.signal_name.push(
                 if bool_signal {signal_name.clone()}
