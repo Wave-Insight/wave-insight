@@ -183,7 +183,10 @@ impl App {
 fn create_websocket(ctx: &Context<App>) -> WebSocket {
     let callback: Callback<String> = ctx.link().callback(Msg::GetWebsocket);
 
-    let ws = WebSocket::new("ws://127.0.0.1:2992").unwrap();//TODO:when not connect
+    let window = web_sys::window().expect("should have a window in this context");
+    let addr = window.location().hostname().unwrap();
+
+    let ws = WebSocket::new(&format!("ws://{}:2993",addr)).unwrap();//TODO:when not connect
 
     let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
         if let Ok(txt) = e.data().dyn_into::<js_sys::JsString>() {

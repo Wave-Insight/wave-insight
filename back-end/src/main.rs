@@ -13,9 +13,7 @@ use std::io::Read;
 #[tokio::main]
 async fn main() -> std::result::Result<(), Error> {
 
-    //warp::serve(warp::fs::dir("front-end/dist"))
-    //    .run(([127, 0, 0, 1], 3030))
-    //    .await;
+    tokio::spawn(serve_html());
 
     let mut file = std::fs::File::open("test.vcd").unwrap();
     let mut contents = String::new();
@@ -24,7 +22,7 @@ async fn main() -> std::result::Result<(), Error> {
     let module = Box::new(module_raw);
     let signal_value = Box::new(signal_value_raw);
 
-    let addr = env::args().nth(1).unwrap_or_else(|| "0.0.0.0:2992".to_string());
+    let addr = env::args().nth(1).unwrap_or_else(|| "0.0.0.0:2993".to_string());
 
     // Create the event loop and TCP listener we'll accept connections on.
     let try_socket = TcpListener::bind(&addr).await;
@@ -70,4 +68,10 @@ fn msg_to_str(msg: Result<Message, tungstenite::Error>, signal_value: Box<HashMa
     let get_value = is_sig_key;
     let sig = get_value.and_then(|v| serde_json::to_string_pretty(v).ok()).unwrap();//TODO:do not unwrap
     Ok(Message::Text(format!("sig:{}:{}", key.unwrap(), sig)))//TODO:do not unwrap
+}
+
+async fn serve_html() {
+    warp::serve(warp::fs::dir("front-end/dist"))
+        .run(([127, 0, 0, 1], 2992))
+        .await;
 }
