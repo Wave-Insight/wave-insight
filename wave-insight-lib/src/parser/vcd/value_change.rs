@@ -1,6 +1,6 @@
 use std::str::SplitWhitespace;
 
-use num::BigUint;
+use crate::data_struct::ValueType;
 
 use super::parse_action::ParseAction;
 
@@ -10,11 +10,11 @@ pub fn value_change(mut line_item: SplitWhitespace<'_>, this_item: &str) -> Opti
             .map(ParseAction::Clk)
     }else if let Some(value) = this_item.strip_prefix('b') {
         let identify = line_item.next()?;
-        Some(ParseAction::Value(identify.to_string(),BigUint::parse_bytes(value.as_bytes(),2).unwrap()))
+        Some(ParseAction::Value(identify.to_string(),ValueType::parse_bin_string(value)))
     }else if let Some(identify) = this_item.strip_prefix('1') {
-        Some(ParseAction::Value(identify.to_string(),BigUint::new(vec![1])))
+        Some(ParseAction::Value(identify.to_string(),ValueType::from_u8(1)))
     }else { 
         this_item.strip_prefix('0')
-            .map(|identify| ParseAction::Value(identify.to_string(),BigUint::new(vec![0])))
+            .map(|identify| ParseAction::Value(identify.to_string(),ValueType::from_u8(0)))
     }
 }

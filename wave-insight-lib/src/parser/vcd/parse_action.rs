@@ -1,12 +1,10 @@
-use num::BigUint;
-
-use crate::data_struct::{Module, Signal};
+use crate::data_struct::{Module, Signal, ValueType};
 
 
 pub enum ParseAction {
     Module(String,Module),
     EndModule,
     Signal(String,Signal),
-    Value(String,BigUint),
+    Value(String,ValueType),
     Clk(i32),
 }

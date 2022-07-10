@@ -1,7 +1,6 @@
 use std::{rc::Rc, collections::HashMap};
 
-use num::{BigUint,BigInt, bigint::{ToBigInt, Sign}};
-use wave_insight_lib::data_struct::{Signal, Module};
+use wave_insight_lib::data_struct::{Signal, Module, ValueType};
 use yew::prelude::*;
 
 use crate::wave_show::{Settings, ShowType};
@@ -18,7 +17,7 @@ pub struct SignalValue {
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalValueProps {
     pub module: Rc<Module>,
-    pub signal_value: Rc<HashMap<String, Vec<(i32, BigUint)>>>,
+    pub signal_value: Rc<HashMap<String, Vec<(i32, ValueType)>>>,
     pub signal: Rc<Signal>,
     pub bool_signal: bool,
     pub x_axis: f64,
@@ -98,7 +97,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
                     points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*height));
                     head_used = true;
                 }
-                if d.1 == BigUint::new(vec![1]){
+                if d.1 == ValueType::new(vec![1]){
                     points1.push_str(&format!("{:.2},{} ", x, zero_position+height));
                     points1.push_str(&format!("{:.2},{} ", x, zero_position));
                     last = zero_position;
@@ -108,7 +107,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
                     last = zero_position+height;
                 }
             }else if x < 0.0 {
-                if d.1 == BigUint::new(vec![1]) {
+                if d.1 == ValueType::new(vec![1]) {
                     head = 1;
                 }else {
                     head = 0;
@@ -123,7 +122,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
 
     }else {
             
-        let mut head: BigUint = BigUint::new(vec![0]);
+        let mut head = ValueType::new(vec![0]);
         let mut head_used = true;
         let mut last_x = 0.0;
         for d in props.signal_value.get(&props.signal.value_key).unwrap_or(&vec![]) {
@@ -163,34 +162,25 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
     (points1, points2, value)
 }
 
-fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32) -> Html {
+fn value_text(begin: f64, value: &ValueType, show_type: &ShowType, bitcount: u32) -> Html {
     let zero_position = 3;
     html!{
         <text x={format!("{}",begin)} y={format!("{}",zero_position+17)} fill="rgb(255,255,255)">
             {
                 if *show_type==ShowType::Hex {
-                    value.to_str_radix(16).to_string()
+                    let width = (bitcount >> 2) + (bitcount & 0x03 != 0) as u32;
+                    //TODO:width should be calculated at a higher level
+                    value.to_hex_string(width as usize)
                 }else if *show_type==ShowType::Oct {
-                    value.to_str_radix(8).to_string()
+                    value.to_oct_string()
                 }else if *show_type==ShowType::Bin {
-                    value.to_str_radix(2).to_string()
+                    value.to_bin_string()
                 }else if *show_type==ShowType::UInt {
-                    format!("{}",value)
+                    value.to_uint_string()
                 }else if *show_type==ShowType::SInt {
-                    let bound = BigUint::new(vec![2]).pow(bitcount-1);
-                    let value_to_sint = if *value >= bound {
-                        value.to_bigint().unwrap() - BigInt::new(Sign::Plus,vec![2]).pow(bitcount)
-                    }else {
-                        value.to_bigint().unwrap()
-                    };
-                    format!("{}",value_to_sint)
+                    value.to_sint_string(bitcount as usize)
                 }else {
-                    let value_to_bytes = value.to_bytes_be();
-                    let s = match std::str::from_utf8(&value_to_bytes) {
-                        Ok(v) => v,
-                        Err(_e) => "invalid",
-                    };
-                    s.to_string()
+                    value.to_ascii_string()
                 }
             }
         </text>

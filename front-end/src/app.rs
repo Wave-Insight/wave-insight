@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use num::BigUint;
 use wave_insight_lib::{data_struct::Module,
-    data_struct::Signal};
+    data_struct::Signal,
+    data_struct::ValueType};
 
 use yew::prelude::*;
 use web_sys::console;//TODO:for debug
@@ -42,9 +42,9 @@ pub enum Msg {
 pub struct App {
     drawer_state: bool,
     module: Rc<Module>,
-    signal_value: Rc<HashMap<String, Vec<(i32, BigUint)>>>,
+    signal_value: Rc<HashMap<String, Vec<(i32, ValueType)>>>,
     #[cfg(feature = "backend")]
-    signal_value_raw: HashMap<String, Vec<(i32, BigUint)>>,//TODO:not a good implement
+    signal_value_raw: HashMap<String, Vec<(i32, ValueType)>>,//TODO:not a good implement
     verilog_source: Vec<(String,String)>,
     signal_add: (String,Rc<Signal>),
     #[cfg(feature = "backend")]

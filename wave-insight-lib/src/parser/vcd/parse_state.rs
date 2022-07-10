@@ -1,13 +1,12 @@
-use crate::data_struct::Module;
+use crate::data_struct::{Module, ValueType};
 
 use super::parse_action::ParseAction;
 use std::collections::HashMap;
-use num::BigUint;
 
 pub struct ParseState {
     pub clk: i32,
     pub module: Module,
-    pub value: HashMap<String,Vec<(i32,BigUint)>>,
+    pub value: HashMap<String,Vec<(i32,ValueType)>>,
     pub stack: Vec<(String,Module)>,
 }
 

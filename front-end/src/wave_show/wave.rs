@@ -2,9 +2,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use num::BigUint;
 use wasm_bindgen::JsCast;
-use wave_insight_lib::data_struct::Module;
+use wave_insight_lib::data_struct::{Module, ValueType};
 use web_sys::HtmlInputElement;
 //use web_sys::console;
 use yew::prelude::*;
@@ -21,7 +20,7 @@ use super::signal::SignalValue;
 pub struct WaveShowProps {
     pub signaladd: (String,Rc<Signal>),
     pub module: Rc<Module>,
-    pub signal_value: Rc<HashMap<String, Vec<(i32, BigUint)>>>,
+    pub signal_value: Rc<HashMap<String, Vec<(i32, ValueType)>>>,
     pub end_clock: i32,
 }
 
