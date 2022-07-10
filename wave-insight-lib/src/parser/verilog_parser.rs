@@ -13,7 +13,24 @@ pub fn verilog_parser(input: &str, raw_module: Rc<Module>) -> Module {
     let mut module = ModuleVerilog::new();
     let mut assignment: (Vec<String>,Vec<String>) = (Vec::new(),Vec::new());
     let mut submodule_define = "".to_string();
-    chars.map(|c| {
+    chars.scan((' ',false), |(last_char, jump),c| {
+        if *jump {
+            if c == '\n' {
+                *jump = false;
+                Some(' ')
+            }else {
+                Some(' ')
+            }
+        }else if *last_char == '/' && c == '/' {
+            *jump = true;
+            Some(' ')
+        }else {
+            let temp = *last_char;
+            *last_char = c;
+            Some(temp)
+        }
+    })//skip the comment
+    .map(|c| {
         let ret = get_word(c,word.to_string(),last_type,line_idx);
         word = ret.1;
         last_type = ret.2;
