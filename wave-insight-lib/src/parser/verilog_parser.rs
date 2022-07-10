@@ -48,15 +48,15 @@ pub fn verilog_parser(input: &str, raw_module: Rc<Module>) -> Module {
     })//get what these words mean
     .for_each(|ret| {
         if let Some(x) = ret {
-            match x.0 {
-                ParserType::ModuleDefine => {module=ModuleVerilog::new();module.name=x.1;},
+            match x {
+                ParserType::ModuleDefine(name) => {module=ModuleVerilog::new();module.name=name;},
                 ParserType::EndModule => {modules.push(module.clone());},
-                ParserType::SignalDefine => {module.signal.push(x.1)},
-                ParserType::AssignLeft => {assignment.0.push(x.1)},
-                ParserType::AssignRight => {assignment.1.push(x.1)},
+                ParserType::SignalDefine(name) => {module.signal.push(name)},
+                ParserType::AssignLeft(name) => {assignment.0.push(name)},
+                ParserType::AssignRight(name) => {assignment.1.push(name)},
                 ParserType::EndAssign => {module.assignment.push(assignment.clone());assignment=(Vec::new(),Vec::new())},
-                ParserType::SubModuleDefine => {submodule_define = x.1},
-                ParserType::SubModuleUse => {module.sub_module.insert(x.1,submodule_define.clone());},
+                ParserType::SubModuleDefine(name) => {submodule_define = name},
+                ParserType::SubModuleUse(name) => {module.sub_module.insert(name,submodule_define.clone());},
             }
         }
     });
