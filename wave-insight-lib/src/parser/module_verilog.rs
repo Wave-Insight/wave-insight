@@ -4,8 +4,8 @@ use std::collections::HashMap;
 pub struct ModuleVerilog {
     pub name: String,
     pub sub_module: HashMap<String,String>,
-    pub signal: Vec<String>,
-    pub assignment: Vec<(Vec<String>,Vec<String>)>,
+    pub signal: Vec<(String,u32)>,
+    pub assignment: Vec<(Vec<String>,Vec<String>,u32)>,
 }
 
 impl ModuleVerilog {

@@ -1,23 +1,20 @@
 use std::rc::Rc;
 
-use crate::{data_struct::{Module, Signal}, parser::{get_word::{LastType, get_word}, word_parser::{State, state_update, ParserType}, module_verilog::ModuleVerilog}};
+use crate::{data_struct::{Module, Signal, CodeLocation}, parser::{get_word::{LastType, get_word}, word_parser::{State, state_update, ParserType}, module_verilog::ModuleVerilog}};
 
 pub fn verilog_parser(input: &str, raw_module: Rc<Module>) -> Module {
     let chars = input.chars();
     //init some states
-    let mut word = "".to_string();
-    let mut last_type = LastType::Space;
-    let mut line_idx = 1;
     let mut state = (State::OutOfModule,0);
     let mut modules: Vec<ModuleVerilog> = Vec::new();
     let mut module = ModuleVerilog::new();
-    let mut assignment: (Vec<String>,Vec<String>) = (Vec::new(),Vec::new());
+    let mut assignment: (Vec<String>,Vec<String>,u32) = (Vec::new(),Vec::new(),0);
     let mut submodule_define = "".to_string();
     chars.scan((' ',false), |(last_char, jump),c| {
         if *jump {
             if c == '\n' {
                 *jump = false;
-                Some(' ')
+                Some('\n')
             }else {
                 Some(' ')
             }
@@ -30,33 +27,31 @@ pub fn verilog_parser(input: &str, raw_module: Rc<Module>) -> Module {
             Some(temp)
         }
     })//skip the comment
-    .map(|c| {
-        let ret = get_word(c,word.to_string(),last_type,line_idx);
-        word = ret.1;
-        last_type = ret.2;
-        line_idx = ret.3;
-        ret.0
+    .scan(("".to_string(),LastType::Space,1), |(word, last_type, line_idx),c| {
+        let ret = get_word(c,word.to_string(),*last_type,*line_idx);
+        *word = ret.1;
+        *last_type = ret.2;
+        *line_idx = ret.3;
+        Some((ret.0,ret.3))
     })//split the verilog to words
-    .map(|ret| {
-        if let Some(x) = ret {
-            let (new_state,ret) = state_update(x, state);
+    .map(|word| {
+        word.0.and_then(|x| {
+            let (new_state,ret) = state_update(x, word.1, state);
             state = new_state;
             ret
-        }else {
-            None
-        }
+        })
     })//get what these words mean
     .for_each(|ret| {
         if let Some(x) = ret {
             match x {
-                ParserType::ModuleDefine(name) => {module=ModuleVerilog::new();module.name=name;},
+                ParserType::ModuleDefine(name, _line_idx) => {module=ModuleVerilog::new();module.name=name;},
                 ParserType::EndModule => {modules.push(module.clone());},
-                ParserType::SignalDefine(name) => {module.signal.push(name)},
-                ParserType::AssignLeft(name) => {assignment.0.push(name)},
-                ParserType::AssignRight(name) => {assignment.1.push(name)},
-                ParserType::EndAssign => {module.assignment.push(assignment.clone());assignment=(Vec::new(),Vec::new())},
-                ParserType::SubModuleDefine(name) => {submodule_define = name},
-                ParserType::SubModuleUse(name) => {module.sub_module.insert(name,submodule_define.clone());},
+                ParserType::SignalDefine(name, line_idx) => {module.signal.push((name, line_idx))},
+                ParserType::AssignLeft(name, line_idx) => {assignment.0.push(name);assignment.2 = line_idx},
+                ParserType::AssignRight(name, _line_idx) => {assignment.1.push(name)},
+                ParserType::EndAssign => {module.assignment.push(assignment.clone());assignment=(Vec::new(),Vec::new(),0)},
+                ParserType::SubModuleDefine(name, _line_idx) => {submodule_define = name},
+                ParserType::SubModuleUse(name, _line_idx) => {module.sub_module.insert(name,submodule_define.clone());},
             }
         }
     });
@@ -119,14 +114,16 @@ fn combine_module(raw_module: Rc<Module>, modules: Vec<ModuleVerilog>) -> Module
 }
 
 fn insert_signal(from: &ModuleVerilog, to: &mut Module) {
-    from.signal.iter().for_each(|s| {to.signal.entry(s.to_string()).or_insert(Signal::new());})
+    from.signal.iter().for_each(|s| {to.signal.entry(s.0.to_string()).or_insert(Signal::new()).location_define.line = s.1;})
 }
 fn insert_load(from: &ModuleVerilog, to: &mut Module) {
     (from.assignment).iter().for_each(|s| {
         s.0.iter()
             .for_each(|left| {
-                if let Some(sig) = to.signal.get_mut(left)
-                    { sig.load.extend(s.1.clone()) }
+                if let Some(sig) = to.signal.get_mut(left){
+                    sig.load.extend(s.1.clone());
+                    sig.location_load.push(CodeLocation{ file_name: "".to_string(), line: s.2 });
+                }
             });
     });
 }
@@ -134,8 +131,10 @@ fn insert_drive(from: &ModuleVerilog, to: &mut Module) {
     (from.assignment).iter().for_each(|s| {
         s.1.iter()
             .for_each(|left| {
-                if let Some(sig) = to.signal.get_mut(left)
-                    { sig.drive.extend(s.0.clone()) }
+                if let Some(sig) = to.signal.get_mut(left){
+                    sig.drive.extend(s.0.clone());
+                    sig.location_drive.push(CodeLocation { file_name: "".to_string(), line: s.2 });
+                }
             });
     });
 }
