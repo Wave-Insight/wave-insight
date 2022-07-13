@@ -150,7 +150,9 @@ impl Component for App {
                 }}
                 <div style={"width:".to_owned()+(if self.drawer_state {"80%"} else {"100%"})+";float:left;display:block;height:100%;overflow-y:auto"} >
                     <div style="display:block;height:100%;overflow-y:auto">
-                        <CodeReader file={self.verilog_source.clone()} />
+                        <CodeReader
+                            file={self.verilog_source.clone()}
+                            line={self.signal_add.1.location_define.line} />
                         <WaveShow
                             signaladd={(self.signal_add.0.clone(),Rc::clone(&self.signal_add.1))}
                             module={Rc::clone(&self.module)}

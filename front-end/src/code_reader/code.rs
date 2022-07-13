@@ -6,6 +6,7 @@ use crate::code_reader::code_block::CodeBlock;
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct CodeReaderProps {
     pub file: Vec<(String,String)>,
+    pub line: u32,
 }
 
 pub enum Msg {
@@ -60,7 +61,7 @@ impl Component for CodeReader {
                     })
                 }
                 </MatTabBar>
-                <CodeBlock text={ text.clone() }/>
+                <CodeBlock text={ text.clone() } line={ props.line }/>
                 //{ <Highlighted code={props.file[0].1} /> }
             </div>
         }
