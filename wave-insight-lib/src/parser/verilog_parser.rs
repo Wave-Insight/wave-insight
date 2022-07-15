@@ -79,17 +79,14 @@ fn which_is_top(modules: &[ModuleVerilog]) -> usize {
 fn combine_module(raw_module: Rc<Module>, modules: Vec<ModuleVerilog>) -> Module {
     let top_idx = which_is_top(&modules);
     let raw_top = (&raw_module.sub_module).iter().next().unwrap().1;
-    if (&raw_top.sub_module).iter()
+    if (&raw_top.sub_module).iter()// top of raw_module and modules is the same
         .map(|(name,_module)| (modules[top_idx].sub_module.contains_key(name)))
         .reduce(|a,b| a && b).unwrap_or(false)
     {
         let mut ret = (*raw_module).clone();
-        insert_signal(&modules[top_idx],&mut ret);
-        insert_load(&modules[top_idx],&mut ret);
-        insert_drive(&modules[top_idx],&mut ret);
-        //TODO:assignment, and all sub module
+        recursive_combine_module(&mut ret, &modules, top_idx);
         ret
-    }else if (raw_top.sub_module.len()==1) &&
+    }else if (raw_top.sub_module.len()==1) &&//top of modules is 1 level higher than raw_module
         (&raw_top.sub_module.iter().next().unwrap().1.sub_module).iter()//TODO:dangerous to unwrap here
         .map(|(name,_module)| (modules[top_idx].sub_module.contains_key(name)))
         .reduce(|a,b| a && b).unwrap_or(false)
@@ -97,9 +94,7 @@ fn combine_module(raw_module: Rc<Module>, modules: Vec<ModuleVerilog>) -> Module
         let mut ret = (*raw_module).clone();
         let top = (&mut ret.sub_module).iter_mut().next().unwrap().1
                 .sub_module.iter_mut().next().unwrap().1;
-        insert_signal(&modules[top_idx],top);
-        insert_load(&modules[top_idx],top);
-        insert_drive(&modules[top_idx],top);
+        recursive_combine_module(top, &modules, top_idx);
         ret
     }else {
         //raw_module//TODO:
@@ -111,6 +106,28 @@ fn combine_module(raw_module: Rc<Module>, modules: Vec<ModuleVerilog>) -> Module
         ret
     }
 
+}
+
+fn recursive_combine_module(raw: &mut Module, verilog: &[ModuleVerilog], now_idx: usize) {
+    insert_signal(&verilog[now_idx],raw);
+    insert_load(&verilog[now_idx],raw);
+    insert_drive(&verilog[now_idx],raw);
+    raw.sub_module.iter_mut().for_each(|s| {
+        let define_name = verilog[now_idx].sub_module
+                                          .iter()
+                                          .filter(|(name,_)| **name == *s.0)
+                                          .map(|(_,def)| def)
+                                          .next();
+        let this_idx = define_name.and_then(|def| {verilog.iter()
+                              .enumerate()
+                              .filter(|(_idx,module)| module.name == *def)
+                              .map(|(idx, _module)| idx)
+                              .next()
+        });//TODO:what if not found
+        if let Some(idx) = this_idx {
+            recursive_combine_module(s.1, verilog, idx);//TODO:clone?
+        }
+    });
 }
 
 fn insert_signal(from: &ModuleVerilog, to: &mut Module) {
