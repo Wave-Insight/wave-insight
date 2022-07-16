@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use std::rc::Rc;
 
-use num::BigUint;
-use wave_insight_lib::{data_struct::Module,
-    data_struct::Signal};
+use wave_insight_lib::data_struct::{
+    Module,
+    Signal,
+    ModuleValue};
 
 use yew::prelude::*;
 use web_sys::console;//TODO:for debug
@@ -42,7 +42,7 @@ pub enum Msg {
 pub struct App {
     drawer_state: bool,
     module: Rc<Module>,
-    signal_value: Rc<HashMap<String, Vec<(i32, BigUint)>>>,
+    signal_value: Rc<ModuleValue>,//Rc<HashMap<String, Vec<(i32, BigUint)>>>,
     #[cfg(feature = "backend")]
     signal_value_raw: HashMap<String, Vec<(i32, BigUint)>>,//TODO:not a good implement
     verilog_source: Vec<(String,String)>,
@@ -61,7 +61,7 @@ impl Component for App {
         Self {
             drawer_state: true,
             module: Rc::new(Module::new()),
-            signal_value: Rc::new(HashMap::new()),
+            signal_value: Rc::new(ModuleValue::new()),
             #[cfg(feature = "backend")]
             signal_value_raw: HashMap::new(),
             verilog_source: vec![],
@@ -81,7 +81,7 @@ impl Component for App {
             Msg::ParserFile(file_type,file_name,text) => {
                 match file_type {
                     FileType::IsVcd => {
-                        let (module, value) = vcd_parser(&text,&mut Module::new());
+                        let (module, value) = vcd_parser(text,&mut Module::new());
                         self.module = Rc::new(module);
                         self.signal_value = Rc::new(value);
                     },//TODO:module::new()

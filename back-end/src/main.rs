@@ -1,13 +1,14 @@
-use std::{env, io::Error, collections::HashMap};
+use std::{env, io::Error};
 
 use futures_util::{future, StreamExt, TryStreamExt, SinkExt};
-use num::BigUint;
 use tokio::net::{TcpListener, TcpStream};
 
 use tungstenite::Message;
 use wave_insight_lib::{
     parser::vcd_parser::vcd_parser,
-    parser::verilog_parser::verilog_parser, data_struct::Module};
+    //parser::verilog_parser::verilog_parser,
+    data_struct::Module,
+    data_struct::ModuleValue};
 use std::io::Read;
 
 #[tokio::main]
@@ -20,7 +21,7 @@ async fn main() -> std::result::Result<(), Error> {
     let mut file = std::fs::File::open(filename).unwrap();
     let mut contents = String::new();
     file.read_to_string(&mut contents).unwrap();
-    let (module_raw, signal_value_raw) = vcd_parser(&contents, &mut Module::new());
+    let (module_raw, signal_value_raw) = vcd_parser(contents, &mut Module::new());
     let module = Box::new(module_raw);
     let signal_value = Box::new(signal_value_raw);
 
@@ -38,7 +39,7 @@ async fn main() -> std::result::Result<(), Error> {
     Ok(())
 }
 
-async fn accept_connection(stream: TcpStream, module: Box<Module>, signal_value: Box<HashMap<String,Vec<(i32, BigUint)>>>) {
+async fn accept_connection(stream: TcpStream, module: Box<Module>, signal_value: Box<ModuleValue>) {
     let addr = stream.peer_addr().expect("connected streams should have a peer address");
     println!("Peer address: {}", addr);
 
@@ -63,12 +64,11 @@ async fn accept_connection(stream: TcpStream, module: Box<Module>, signal_value:
     
 }
 
-fn msg_to_str(msg: Result<Message, tungstenite::Error>, signal_value: Box<HashMap<String,Vec<(i32, BigUint)>>>) -> Result<Message, tungstenite::Error> {
+fn msg_to_str(msg: Result<Message, tungstenite::Error>, signal_value: Box<ModuleValue>) -> Result<Message, tungstenite::Error> {
     let msg_text = msg.ok().and_then(|m| m.into_text().ok());
     let key = msg_text.and_then(|t| t.strip_prefix("s:").map(|tt| tt.to_string()));
-    let is_sig_key = key.clone().and_then(|k| signal_value.get(&k));
-    let get_value = is_sig_key;
-    let sig = get_value.and_then(|v| serde_json::to_string_pretty(v).ok()).unwrap();//TODO:do not unwrap
+    let value_to_send = key.clone().map(|k| signal_value.get(&k));
+    let sig = value_to_send.and_then(|v| serde_json::to_string_pretty(&v).ok()).unwrap();//TODO:do not unwrap
     Ok(Message::Text(format!("sig:{}:{}", key.unwrap(), sig)))//TODO:do not unwrap
 }
 
