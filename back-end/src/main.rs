@@ -67,9 +67,9 @@ async fn accept_connection(stream: TcpStream, module: Box<Module>, signal_value:
 fn msg_to_str(msg: Result<Message, tungstenite::Error>, signal_value: Box<ModuleValue>) -> Result<Message, tungstenite::Error> {
     let msg_text = msg.ok().and_then(|m| m.into_text().ok());
     let key = msg_text.and_then(|t| t.strip_prefix("s:").map(|tt| tt.to_string()));
-    let value_to_send = key.clone().map(|k| signal_value.get(&k));
+    let value_to_send = key.clone().and_then(|k| signal_value.value.get(&k));
     let sig = value_to_send.and_then(|v| serde_json::to_string_pretty(&v).ok()).unwrap();//TODO:do not unwrap
-    Ok(Message::Text(format!("sig:{}:{}", key.unwrap(), sig)))//TODO:do not unwrap
+    Ok(Message::Text(format!("sig:{}{}{}", key.unwrap(), 29u8 as char, sig)))//TODO:do not unwrap
 }
 
 async fn serve_html() {

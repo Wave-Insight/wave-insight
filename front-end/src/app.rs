@@ -44,7 +44,7 @@ pub struct App {
     module: Rc<Module>,
     signal_value: Rc<ModuleValue>,//Rc<HashMap<String, Vec<(i32, BigUint)>>>,
     #[cfg(feature = "backend")]
-    signal_value_raw: HashMap<String, Vec<(i32, BigUint)>>,//TODO:not a good implement
+    signal_value_raw: ModuleValue,//TODO:not a good implement
     verilog_source: Vec<(String,String)>,
     signal_add: (String,Rc<Signal>),
     #[cfg(feature = "backend")]
@@ -63,7 +63,7 @@ impl Component for App {
             module: Rc::new(Module::new()),
             signal_value: Rc::new(ModuleValue::new()),
             #[cfg(feature = "backend")]
-            signal_value_raw: HashMap::new(),
+            signal_value_raw: ModuleValue::new(),
             verilog_source: vec![],
             signal_add: ("".to_string(),Rc::new(Signal::new())),
             #[cfg(feature = "backend")]
@@ -115,9 +115,9 @@ impl Component for App {
                     let module: Module = serde_json::from_str(module_string).unwrap();//TODO:do not unwrap
                     self.module = Rc::new(module);
                 }else if let Some(signal_string) = m.strip_prefix("sig:") {
-                    if let Some((key, value)) = signal_string.split_once(":") {
-                        let value_parse: Vec<(i32, BigUint)> = serde_json::from_str(value).unwrap();//TODO:do not unwrap
-                        self.signal_value_raw.insert(key.to_string(), value_parse);
+                    if let Some((key, value)) = signal_string.split_once(29u8 as char) {
+                        let value_parse: (Vec<i32>, Vec<u8>) = serde_json::from_str(value).unwrap();//TODO:do not unwrap
+                        self.signal_value_raw.value.insert(key.to_string(), value_parse);
                         self.signal_value = Rc::new(self.signal_value_raw.clone());
                         //TODO:value update here will cause an adition signal add on wave show
                     }
