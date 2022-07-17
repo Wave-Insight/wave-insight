@@ -42,7 +42,7 @@ pub enum Msg {
 pub struct App {
     drawer_state: bool,
     module: Rc<Module>,
-    signal_value: Rc<ModuleValue>,//Rc<HashMap<String, Vec<(i32, BigUint)>>>,
+    signal_value: Rc<ModuleValue>,
     #[cfg(feature = "backend")]
     signal_value_raw: ModuleValue,//TODO:not a good implement
     verilog_source: Vec<(String,String)>,

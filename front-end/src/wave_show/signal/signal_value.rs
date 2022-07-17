@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{rc::Rc, cmp::Ordering};
 
 use num::{BigUint,BigInt, bigint::{ToBigInt, Sign}};
 use wave_insight_lib::data_struct::{Signal, Module, ModuleValue};
@@ -169,11 +169,41 @@ fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32) 
         <text x={format!("{}",begin)} y={format!("{}",zero_position+17)} fill="rgb(255,255,255)">
             {
                 if *show_type==ShowType::Hex {
-                    value.to_str_radix(16).to_string()
+                    let ret = value.to_str_radix(16).to_string();
+                    let width = ((bitcount-1)/4+1) as usize;
+                    match ret.len().cmp(&width) {
+                        Ordering::Less => {
+                            (0..(width-ret.len())).map(|_x| "0".to_string())
+                            .reduce(|a,b| a+&b)
+                            .unwrap() + &ret
+                        },
+                        Ordering::Equal => ret,
+                        Ordering::Greater => ret.split_at(1).1.to_string()
+                    }
                 }else if *show_type==ShowType::Oct {
-                    value.to_str_radix(8).to_string()
+                    let ret = value.to_str_radix(8).to_string();
+                    let width = ((bitcount-1)/3+1) as usize;
+                    match ret.len().cmp(&width) {
+                        Ordering::Less => {
+                            (0..(width-ret.len())).map(|_x| "0".to_string())
+                            .reduce(|a,b| a+&b)
+                            .unwrap() + &ret
+                        },
+                        Ordering::Equal => ret,
+                        Ordering::Greater => ret.split_at(1).1.to_string()
+                    }
                 }else if *show_type==ShowType::Bin {
-                    value.to_str_radix(2).to_string()
+                    let ret = value.to_str_radix(2).to_string();
+                    let width = bitcount as usize;
+                    match ret.len().cmp(&width) {
+                        Ordering::Less => {
+                            (0..(width-ret.len())).map(|_x| "0".to_string())
+                            .reduce(|a,b| a+&b)
+                            .unwrap() + &ret
+                        },
+                        Ordering::Equal => ret,
+                        Ordering::Greater => ret.split_at(1).1.to_string()
+                    }
                 }else if *show_type==ShowType::UInt {
                     format!("{}",value)
                 }else if *show_type==ShowType::SInt {
