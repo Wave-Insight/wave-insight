@@ -1,7 +1,7 @@
 pub use module::ModuleStruct;
-pub use signal_component::SignalComponent;
 pub use module_component::ModuleComponent;
+pub use signal_struct::SignalStruct;
 
 mod module;
-mod signal_component;
 mod module_component;
+mod signal_struct;

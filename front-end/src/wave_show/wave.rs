@@ -110,9 +110,9 @@ impl Component for WaveShow {
                         self.size *= 0.8;
                     }
                 }else if delta_y > 0.0 {
-                    self.x_axis += 30.0;
-                }else if self.x_axis >= 30.0 {
-                    self.x_axis -= 30.0;
+                    self.x_axis += 30.0/self.size;
+                }else if self.x_axis >= 30.0/self.size {
+                    self.x_axis -= 30.0/self.size;
                 }else {
                     self.x_axis = 0.0;
                 }

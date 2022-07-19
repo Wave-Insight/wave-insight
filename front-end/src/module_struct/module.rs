@@ -3,10 +3,11 @@ use std::rc::Rc;
 use yew::prelude::*;
 
 use wave_insight_lib::data_struct::{Module, Signal};
-use crate::module_struct::ModuleComponent;
+use crate::module_struct::{ModuleComponent, SignalStruct};
 
 pub enum Msg {
-    GetClick((String,Rc<Signal>)),
+    GetClick(Rc<Module>),
+    SignalAdd((String,Rc<Signal>)),
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
@@ -17,14 +18,16 @@ pub struct ModuleStructProps {
 }
 
 pub struct ModuleStruct {
+    show_module: Rc<Module>,
 }
 
 impl Component for ModuleStruct {
     type Message = Msg;
     type Properties = ModuleStructProps;
 
-    fn create(_ctx: &Context<Self>) -> Self {
+    fn create(ctx: &Context<Self>) -> Self {
         Self {
+            show_module: ctx.props().module.clone(),
         }
     }
 
@@ -32,9 +35,13 @@ impl Component for ModuleStruct {
         let props = ctx.props();
         match msg {
             Msg::GetClick(s) => {
-                props.signaladd.emit(s);
+                self.show_module = s;
                 true
             },
+            Msg::SignalAdd(s) => {
+                props.signaladd.emit(s);
+                true
+            }
         }
     }
 
@@ -43,13 +50,17 @@ impl Component for ModuleStruct {
         let link = ctx.link();
         
         let callback = link.callback(Msg::GetClick);
-        fn show_module(m:&Module, level: i32, callback: &Callback<(String,Rc<Signal>)>) -> Html {
+        fn show_module(m:&Module, level: i32, callback: &Callback<Rc<Module>>) -> Html {
             html! {
                 for (m.sub_module).iter().map(|x| {
                     let space = (0..level*2).map(|_| " ").fold("".to_string(),|a,b| a+b);
                     html! {
                         <div>
-                            <ModuleComponent space={space.clone()} name={x.0.clone()} module={Rc::new(x.1.clone())} onclick={callback} />
+                            <ModuleComponent
+                                space={space.clone()}
+                                name={x.0.clone()}
+                                module={Rc::new(x.1.clone())}
+                                onclick={callback} />
                             {show_module(x.1,level+1,callback)}
                         </div>
                     }
@@ -59,9 +70,12 @@ impl Component for ModuleStruct {
         
         html! {
             <div>
+                <div>    
                 {
                     show_module(module,0,&callback)
                 }
+                </div>
+                <SignalStruct module={self.show_module.clone()} signaladd={ctx.link().callback(Msg::SignalAdd)}/>
             </div>
         }
     }

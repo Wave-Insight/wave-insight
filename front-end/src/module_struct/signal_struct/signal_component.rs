@@ -8,7 +8,6 @@ use wave_insight_lib::data_struct::Signal;
 pub struct SignalComponentProps {
     pub name: String,
     pub signal: Rc<Signal>,
-    pub space: String,
     #[prop_or_default]
     pub onclick: Callback<(String,Rc<Signal>)>,
 }
@@ -18,7 +17,6 @@ pub enum Msg {
 }
 
 pub struct SignalComponent {
-    space: String,
     show_name: String,
     signal: Rc<Signal>,
 }
@@ -30,7 +28,6 @@ impl Component for SignalComponent {
     fn create(ctx: &Context<Self>) -> Self {
         let props = ctx.props();
         Self {
-            space: props.space.clone(),
             show_name: props.name.clone(),//TODO: with size
             signal: Rc::clone(&props.signal),
         }
@@ -53,7 +50,7 @@ impl Component for SignalComponent {
             <div>
                 <p style="line-height:0.2;white-space:pre"
                     onclick={link.callback(|_| Msg::Click)}>{
-                        self.space.clone()+&self.show_name
+                        &self.show_name
                     }
                 </p>
             </div>
