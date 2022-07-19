@@ -69,8 +69,8 @@ impl Component for ModuleStruct {
         }
         
         html! {
-            <div>
-                <div>    
+            <div style="height:95%">
+                <div style="display:block;height:50%;overflow-y:auto">
                 {
                     show_module(module,0,&callback)
                 }

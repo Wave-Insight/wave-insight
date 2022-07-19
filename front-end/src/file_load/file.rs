@@ -83,7 +83,7 @@ impl Component for FileLoad {
                         Msg::Files(result)
                     });
         html! {
-            <div>
+            <div style="height:5%">
                 <input type="file" multiple=true onchange={onchangefunc}/>
             </div>
         }

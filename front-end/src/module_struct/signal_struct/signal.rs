@@ -51,6 +51,11 @@ impl Component for SignalStruct {
         }
     }
 
+    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+        self.signal_show = vec![true;ctx.props().module.signal.len()];
+        true
+    }
+
     fn view(&self, ctx: &Context<Self>) -> Html {
 
         let signals = ctx.props()
@@ -59,7 +64,8 @@ impl Component for SignalStruct {
             .iter();
         
         html! {
-            <div>
+            <div style="display:block;height:50%;overflow-y:auto">
+                <div style="display:block;height:90%;overflow-y:auto">
                 {
                     html! {
                     {for signals.zip(&self.signal_show).map(|(s,&v)| if v { html!{
@@ -69,6 +75,7 @@ impl Component for SignalStruct {
                     })}
                     }
                 }
+                </div>
                 <input type="text" oninput={ctx.link().callback(|e: InputEvent| Msg::SetFilter(e.target_unchecked_into::<HtmlInputElement>().value()))} />
             </div>
         }
