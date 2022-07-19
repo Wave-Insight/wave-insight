@@ -18,17 +18,16 @@ pub struct SignalStructProps {
 }
 
 pub struct SignalStruct {
-    signal_show: Vec<bool>,
+    filter: String,
 }
 
 impl Component for SignalStruct {
     type Message = Msg;
     type Properties = SignalStructProps;
 
-    fn create(ctx: &Context<Self>) -> Self {
-        let size = ctx.props().module.signal.len();
+    fn create(_ctx: &Context<Self>) -> Self {
         Self {
-            signal_show: vec![true; size],
+            filter: "".to_string(),
         }
     }
 
@@ -40,39 +39,24 @@ impl Component for SignalStruct {
                 true
             },
             Msg::SetFilter(s) => {
-                let signals = ctx.props()
-                    .module
-                    .signal
-                    .iter()
-                    .map(|x| x.0.contains(&s));
-                self.signal_show = signals.collect();
+                self.filter = s;
                 true
             }
         }
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
-        self.signal_show = vec![true;ctx.props().module.signal.len()];
-        true
-    }
-
     fn view(&self, ctx: &Context<Self>) -> Html {
-
-        let signals = ctx.props()
-            .module
-            .signal
-            .iter();
         
         html! {
             <div style="display:block;height:50%;overflow-y:auto">
                 <div style="display:block;height:90%;overflow-y:auto">
                 {
                     html! {
-                    {for signals.zip(&self.signal_show).map(|(s,&v)| if v { html!{
-                        <SignalComponent name={s.0.clone()} signal={Rc::new(s.1.clone())} onclick={ctx.link().callback(Msg::GetClick)}/>
-                    }}else {
-                        html!{}
-                    })}
+                    {for ctx.props().module.signal.iter()
+                        .filter(|x| x.0.contains(&self.filter))
+                        .map(|s| { html!{
+                        <SignalComponent name={s.0.to_string()} signal={Rc::new(s.1.clone())} onclick={ctx.link().callback(Msg::GetClick)}/>
+                    }})}
                     }
                 }
                 </div>

@@ -17,19 +17,14 @@ pub enum Msg {
 }
 
 pub struct SignalComponent {
-    show_name: String,
-    signal: Rc<Signal>,
 }
 
 impl Component for SignalComponent {
     type Message = Msg;
     type Properties = SignalComponentProps;
 
-    fn create(ctx: &Context<Self>) -> Self {
-        let props = ctx.props();
+    fn create(_ctx: &Context<Self>) -> Self {
         Self {
-            show_name: props.name.clone(),//TODO: with size
-            signal: Rc::clone(&props.signal),
         }
     }
 
@@ -37,10 +32,14 @@ impl Component for SignalComponent {
         let props = ctx.props();
         match msg {
             Msg::Click => {
-                props.onclick.emit((self.show_name.clone(),Rc::clone(&self.signal)));
+                props.onclick.emit((props.name.clone(),Rc::clone(&props.signal)));
                 true
             }
         }
+    }
+
+    fn changed(&mut self, _ctx: &Context<Self>) -> bool {
+        true
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
@@ -50,7 +49,7 @@ impl Component for SignalComponent {
             <div>
                 <p style="line-height:0.2;white-space:pre"
                     onclick={link.callback(|_| Msg::Click)}>{
-                        &self.show_name
+                        &ctx.props().name
                     }
                 </p>
             </div>
