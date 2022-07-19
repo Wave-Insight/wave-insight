@@ -53,7 +53,7 @@ impl Component for SignalStruct {
                 {
                     html! {
                     {for ctx.props().module.signal.iter()
-                        .filter(|x| x.0.contains(&self.filter))
+                        .filter(|x| x.0.to_ascii_lowercase().contains(&self.filter.to_ascii_lowercase()))
                         .map(|s| { html!{
                         <SignalComponent name={s.0.to_string()} signal={Rc::new(s.1.clone())} onclick={ctx.link().callback(Msg::GetClick)}/>
                     }})}
