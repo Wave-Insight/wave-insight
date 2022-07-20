@@ -126,17 +126,20 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
         let mut head: BigUint = BigUint::new(vec![0]);
         let mut head_used = true;
         let mut last_x = 0.0;
-        for d in props.signal_value.get(&props.signal.value_key) {
+        let mut all_signal_value = props.signal_value.get(&props.signal.value_key);
+        all_signal_value.push((1<<30,BigUint::new(vec![0])));//TODO:end clk
+        for (d, d_next) in (&all_signal_value).iter().zip((&all_signal_value).iter().skip(1)) {
             let x = ((d.0 as f64) - x_axis)*size;
+            let x_next = ((d_next.0 as f64) - x_axis)*size;
             if (0.0..width).contains(&x) {
                 if !head_used {
                     head_used = true;
                     points1.push_str(&format!("{:.2},{} ", 0, zero_position+height));
                     points2.push_str(&format!("{:.2},{} ", 0, zero_position));
-                    value.push(value_text(0.0, &head, show_type, bitcount));
+                    value.push(value_text(0.0, &head, show_type, bitcount, x));
                 }
                 if x - last_x <= 12.0 {
-                    value.pop();
+                    value.pop();//TODO:pop it in fn value_text? or no need to pop?
                 }
                 points1.push_str(&format!("{:.2},{} ", x-2.0, zero_position+height));
                 points1.push_str(&format!("{:.2},{} ", x, zero_position+height/2));
@@ -145,7 +148,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
                 points2.push_str(&format!("{:.2},{} ", x, zero_position+height/2));
                 points2.push_str(&format!("{:.2},{} ", x+2.0, zero_position));
 
-                value.push(value_text(x+2.0, &d.1, show_type, bitcount));
+                value.push(value_text(x+2.0, &d.1, show_type, bitcount, x_next-x));
             }else if x < 0.0 {
                 head = d.1.clone();
                 head_used = false;
@@ -155,7 +158,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
         if !head_used {
             points1.push_str(&format!("{:.2},{} ", 0, zero_position+height));
             points2.push_str(&format!("{:.2},{} ", 0, zero_position));
-            value.push(value_text(0.0, &head, show_type, bitcount));
+            value.push(value_text(0.0, &head, show_type, bitcount, 100.0));
         }
         points1.push_str(&format!("{:.2},{} ", width, zero_position+height));
         points2.push_str(&format!("{:.2},{} ", width, zero_position));
@@ -163,13 +166,10 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
     (points1, points2, value)
 }
 
-fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32) -> Html {
+fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32, show_width: f64) -> Html {
     let zero_position = 3;
-    html!{
-        <text x={format!("{}",begin)} y={format!("{}",zero_position+17)} fill="rgb(255,255,255)">
-            {
-                if *show_type==ShowType::Hex {
-                    let ret = value.to_str_radix(16).to_string();
+    let text_raw = if *show_type==ShowType::Hex {
+                    let ret = value.to_str_radix(16);
                     let width = ((bitcount-1)/4+1) as usize;
                     match ret.len().cmp(&width) {
                         Ordering::Less => {
@@ -181,7 +181,7 @@ fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32) 
                         Ordering::Greater => ret.split_at(1).1.to_string()
                     }
                 }else if *show_type==ShowType::Oct {
-                    let ret = value.to_str_radix(8).to_string();
+                    let ret = value.to_str_radix(8);
                     let width = ((bitcount-1)/3+1) as usize;
                     match ret.len().cmp(&width) {
                         Ordering::Less => {
@@ -193,7 +193,7 @@ fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32) 
                         Ordering::Greater => ret.split_at(1).1.to_string()
                     }
                 }else if *show_type==ShowType::Bin {
-                    let ret = value.to_str_radix(2).to_string();
+                    let ret = value.to_str_radix(2);
                     let width = bitcount as usize;
                     match ret.len().cmp(&width) {
                         Ordering::Less => {
@@ -221,7 +221,19 @@ fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32) 
                         Err(_e) => "invalid",
                     };
                     s.to_string()
-                }
+                };
+    let avaliable = (show_width/9.0) as usize;
+    let text = if avaliable<= 1 {
+        "".to_string()
+    }else if text_raw.len() < avaliable {
+        text_raw
+    }else {
+        text_raw.get(..avaliable-1).unwrap().to_string()+"."
+    };
+    html!{
+        <text x={format!("{}",begin)} y={format!("{}",zero_position+17)} fill="rgb(255,255,255)">
+            {
+                text
             }
         </text>
     }
