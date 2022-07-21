@@ -61,7 +61,6 @@ impl Component for ModuleStruct {
                                 name={x.0.clone()}
                                 module={Rc::new(x.1.clone())}
                                 onclick={callback} />
-                            {show_module(x.1,level+1,callback)}
                         </div>
                     }
                 })
