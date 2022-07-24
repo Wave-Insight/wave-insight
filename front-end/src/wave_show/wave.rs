@@ -60,6 +60,9 @@ pub struct WaveShow {
     name_choose_valid: bool,
     name_choose: usize,
     name_offset: RefCell<f64>,
+
+    cursor1: Option<i32>,
+    cursor2: Option<i32>,
 }
 
 impl Component for WaveShow {
@@ -90,6 +93,9 @@ impl Component for WaveShow {
             name_choose_valid: false,
             name_choose: 0,
             name_offset: RefCell::new(0f64),
+
+            cursor1: None,
+            cursor2: None,
         }
     }
 
@@ -150,6 +156,7 @@ impl Component for WaveShow {
             }
 
             Msg::MouseDown(e) =>{
+                e.prevent_default();
                 self.mouse_press = true;
                 let x = e.x();
                 self.mouse_start = x;
@@ -166,16 +173,33 @@ impl Component for WaveShow {
                 true
             }
             Msg::MouseUp(e) => {
+                e.prevent_default();
                 self.mouse_press = false;
                 let x = e.x();
-                let (start,end) = if self.mouse_start < x {
-                    (self.mouse_start, x)
+                if (self.mouse_start - x).abs() < 1 {
+                    if e.button() == 0 {
+                        if self.cursor1.map(|c| c==x).unwrap_or(false) {
+                            self.cursor1 = None;
+                        }else {
+                            let cursor_time = (x as f64 - *self.mouse_offset.borrow()) / self.size + self.x_axis;
+                            self.cursor1 = Some(cursor_time as i32);//TODO:attach to the edge
+                        }
+                    }else if self.cursor2.map(|c| c==x).unwrap_or(false) {
+                        self.cursor2 = None;
+                    }else {
+                        let cursor_time = (x as f64 - *self.mouse_offset.borrow()) / self.size + self.x_axis;
+                        self.cursor2 = Some(cursor_time as i32);//TODO:attach to the edge
+                    }
                 }else {
-                    (x, self.mouse_start)
-                };
-                self.x_axis += (start as f64 - *self.mouse_offset.borrow()) / self.size;
-                self.size *= *self.mouse_total.borrow() / (end - start) as f64;
-                //console::log_1(&format!("x:{}",x).into());
+                    let (start,end) = if self.mouse_start < x {
+                        (self.mouse_start, x)
+                    }else {
+                        (x, self.mouse_start)
+                    };
+                    self.x_axis += (start as f64 - *self.mouse_offset.borrow()) / self.size;
+                    self.size *= *self.mouse_total.borrow() / (end - start) as f64;
+                    //console::log_1(&format!("x:{}",x).into());
+                }
                 true
             }
             //TODO:MouseOut
@@ -255,7 +279,11 @@ impl Component for WaveShow {
                         onset={link.callback(Msg::SetSignal)}
                         delete={link.callback(|_| Msg::DeleteSig)} />
                 }
-                <Time x_axis={self.x_axis} size={self.size} width={wave_show_width} />
+                <Time x_axis={self.x_axis}
+                    size={self.size}
+                    width={wave_show_width}
+                    cursor1={self.cursor1}
+                    cursor2={self.cursor2} />
                 <div style="height:90%;overflow-y:auto">
                     <div onmousedown={link.callback(Msg::NameMouseDown)}
                         onmouseup={link.callback(Msg::NameMouseUp)}
@@ -279,7 +307,9 @@ impl Component for WaveShow {
                                     signal={s} bool_signal={*b}
                                     x_axis={self.x_axis} size={self.size}
                                     width = {wave_show_width}
-                                    setting={self.signal_setting[idx].clone()} />}
+                                    setting={self.signal_setting[idx].clone()}
+                                    cursor1={self.cursor1}
+                                    cursor2={self.cursor2} />}
                             })
                         }
                     </div>

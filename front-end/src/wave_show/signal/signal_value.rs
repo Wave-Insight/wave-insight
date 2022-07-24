@@ -25,6 +25,9 @@ pub struct SignalValueProps {
     pub size: f64,
     pub width: f64,
     pub setting: Settings,
+
+    pub cursor1: Option<i32>,
+    pub cursor2: Option<i32>,
 }
 
 impl Component for SignalValue {
@@ -64,6 +67,28 @@ impl Component for SignalValue {
             html! {
                 <svg style="height:26px;width:100%">
                     <polyline points={self.points1.clone()} fill="none" stroke={color} />
+                    {
+                        if let Some(c1) = ctx.props().cursor1 {html!{
+                            <line x1={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                                x2={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                                y1={0}
+                                y2={26}
+                                style="stroke:rgb(255,255,0);stroke-width:3" />
+                        }}else {
+                            html!{}
+                        }
+                    }
+                    {
+                        if let Some(c2) = ctx.props().cursor2 {html!{
+                            <line x1={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                                x2={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                                y1={0}
+                                y2={26}
+                                style="stroke:rgb(255,255,255);stroke-width:3" />
+                        }}else {
+                            html!{}
+                        }
+                    }
                 </svg>}
         }else {
             html! {
@@ -71,6 +96,28 @@ impl Component for SignalValue {
                     <polyline points={self.points1.clone()} fill="none" stroke={color.clone()} />
                     <polyline points={self.points2.clone()} fill="none" stroke={color} />
                     {for self.value.clone()}
+                    {
+                        if let Some(c1) = ctx.props().cursor1 {html!{
+                            <line x1={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                                x2={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                                y1={0}
+                                y2={26}
+                                style="stroke:rgb(255,255,0);stroke-width:3" />
+                        }}else {
+                            html!{}
+                        }
+                    }
+                    {
+                        if let Some(c2) = ctx.props().cursor2 {html!{
+                            <line x1={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                                x2={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                                y1={0}
+                                y2={26}
+                                style="stroke:rgb(255,255,255);stroke-width:3" />
+                        }}else {
+                            html!{}
+                        }
+                    }
                 </svg> }
         }
     }
