@@ -4,13 +4,13 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wave_insight_lib::data_struct::Module;
 use wave_insight_lib::data_struct::ModuleValue;
-use web_sys::HtmlInputElement;
 //use web_sys::console;
 use yew::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use wave_insight_lib::data_struct::Signal;
 
+use super::time::Time;
 use super::ctrl::Ctrl;
 use super::settings::Settings;
 use super::signal::SignalName;
@@ -25,7 +25,6 @@ pub struct WaveShowProps {
 }
 
 pub enum Msg {
-    SetX(f64),
     Wheel(WheelEvent),
     ShowMenu(usize),
     SetSignal((bool,Settings)),
@@ -96,10 +95,6 @@ impl Component for WaveShow {
 
     fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::SetX(x) => {
-                self.x_axis = x;
-                true
-            }
             Msg::Wheel(e) => {
                 e.prevent_default();
                 let delta_y = e.delta_y();
@@ -260,6 +255,7 @@ impl Component for WaveShow {
                         onset={link.callback(Msg::SetSignal)}
                         delete={link.callback(|_| Msg::DeleteSig)} />
                 }
+                <Time x_axis={self.x_axis} size={self.size} width={wave_show_width} />
                 <div style="height:90%;overflow-y:auto">
                     <div onmousedown={link.callback(Msg::NameMouseDown)}
                         onmouseup={link.callback(Msg::NameMouseUp)}
@@ -288,10 +284,10 @@ impl Component for WaveShow {
                         }
                     </div>
                 </div>
-                <input id="slider" type="range"
+                /*<input id="slider" type="range"
                     min="0" max={end_clock.to_string()} step="1" style="margin:0px;width:99%;height:9%"
                     oninput={link.callback(|e: InputEvent| Msg::SetX(e.target_unchecked_into::<HtmlInputElement>().value_as_number()))}
-                />
+                />*/
             </div>
         }
     }
