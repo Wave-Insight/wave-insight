@@ -176,19 +176,18 @@ impl Component for WaveShow {
                 e.prevent_default();
                 self.mouse_press = false;
                 let x = e.x();
-                if (self.mouse_start - x).abs() < 1 {
+                if (self.mouse_start - x).abs() <= 2 {
+                    let cursor_time = ((x as f64 - *self.mouse_offset.borrow()) / self.size + self.x_axis) as i32;
                     if e.button() == 0 {
-                        if self.cursor1.map(|c| c==x).unwrap_or(false) {
+                        if self.cursor1.map(|c| c==cursor_time).unwrap_or(false) {
                             self.cursor1 = None;
                         }else {
-                            let cursor_time = (x as f64 - *self.mouse_offset.borrow()) / self.size + self.x_axis;
-                            self.cursor1 = Some(cursor_time as i32);//TODO:attach to the edge
+                            self.cursor1 = Some(cursor_time);//TODO:attach to the edge
                         }
-                    }else if self.cursor2.map(|c| c==x).unwrap_or(false) {
+                    }else if self.cursor2.map(|c| c==cursor_time).unwrap_or(false) {
                         self.cursor2 = None;
                     }else {
-                        let cursor_time = (x as f64 - *self.mouse_offset.borrow()) / self.size + self.x_axis;
-                        self.cursor2 = Some(cursor_time as i32);//TODO:attach to the edge
+                        self.cursor2 = Some(cursor_time);//TODO:attach to the edge
                     }
                 }else {
                     let (start,end) = if self.mouse_start < x {
@@ -284,7 +283,7 @@ impl Component for WaveShow {
                     width={wave_show_width}
                     cursor1={self.cursor1}
                     cursor2={self.cursor2} />
-                <div style="height:90%;overflow-y:auto">
+                <div style="height:90%;overflow-y:auto">//TODO:height of time is 30 px, this should be calculated
                     <div onmousedown={link.callback(Msg::NameMouseDown)}
                         onmouseup={link.callback(Msg::NameMouseUp)}
                         style="float:left;width:10%">
