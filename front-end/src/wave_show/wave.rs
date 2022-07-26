@@ -265,7 +265,7 @@ impl Component for WaveShow {
         *self.mouse_offset.borrow_mut() = win_width * (1.0 - 0.8*0.9);
         *self.mouse_total.borrow_mut() = wave_show_width;
 
-        *self.name_offset.borrow_mut() = (win_height-64.0)*0.5+64.0;
+        *self.name_offset.borrow_mut() = (win_height-64.0)*0.5+64.0+30.0;//TODO:this should be auto calculate
         //console::log_1(&format!("width {}",win_width).into());
         
         html! {
