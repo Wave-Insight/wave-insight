@@ -26,7 +26,14 @@ impl SignalThings {
             let name_size = 
                 if bool_signal {name.to_owned()}
                 else {name.to_owned()+"["+&(signal.size-1).to_string()+":0]"};
-            self.item.push(SignalItem {
+            let insert_idx = self.item.iter()
+                .enumerate()
+                .filter(|(_,i)| i.choose)
+                .map(|(idx,_)| idx)
+                .last()
+                .map(|x| x+1)
+                .unwrap_or(self.item.len());
+            self.item.insert(insert_idx, SignalItem {
                 name: name_size,
                 signal: Rc::clone(signal),
                 is_bool: bool_signal,
