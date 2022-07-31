@@ -1,7 +1,7 @@
 use std::{rc::Rc, cmp::Ordering};
 
 use num::{BigUint,BigInt, bigint::{ToBigInt, Sign}};
-use wave_insight_lib::data_struct::{Signal, Module, ModuleValue};
+use wave_insight_lib::data_struct::{Signal, ModuleValue};
 use yew::prelude::*;
 
 use crate::wave_show::{Settings, ShowType};
@@ -17,7 +17,6 @@ pub struct SignalValue {
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalValueProps {
-    pub module: Rc<Module>,
     pub signal_value: Rc<ModuleValue>,
     pub signal: Rc<Signal>,
     pub bool_signal: bool,

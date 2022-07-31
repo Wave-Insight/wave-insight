@@ -15,6 +15,7 @@ use super::ctrl::Ctrl;
 use super::settings::Settings;
 use super::signal::SignalName;
 use super::signal::SignalValue;
+use super::util::signal_things::SignalThings;
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct WaveShowProps {
@@ -38,11 +39,7 @@ pub enum Msg {
 }
 
 pub struct WaveShow {
-    signal_name: Vec<String>,
-    signal: Vec<Rc<Signal>>,
-    bool_signal: Vec<bool>,
-    signal_setting: Vec<Settings>,
-    load_and_drive: Vec<(Vec<String>,Vec<String>)>,
+    signal_things: SignalThings,
     x_axis: f64,
     size: f64,
     min_size: RefCell<f64>,
@@ -71,11 +68,7 @@ impl Component for WaveShow {
 
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
-            signal_name: vec![],
-            signal: vec![],
-            bool_signal: vec![],
-            signal_setting: vec![],
-            load_and_drive: vec![],
+            signal_things: SignalThings::new(),
             x_axis: 0f64,
             size: 1f64,
             min_size: RefCell::new(0f64),
@@ -128,17 +121,13 @@ impl Component for WaveShow {
                 if close {
                     self.menu_show = false;
                 }
-                self.signal_setting[self.on_show_idx] = set;
+                self.signal_things[self.on_show_idx].setting = set;
                 true
             }
             Msg::DeleteSig => {
                 self.menu_show = false;
                 let idx = self.on_show_idx;
-                self.signal.remove(idx);
-                self.signal_name.remove(idx);
-                self.bool_signal.remove(idx);
-                self.signal_setting.remove(idx);
-                self.load_and_drive.remove(idx);
+                self.signal_things.remove(idx);
                 true
             }
             Msg::KeyEvent(idx) => {
@@ -218,16 +207,7 @@ impl Component for WaveShow {
                 }else {
                     (set_location + 0.5) as usize
                 };
-                let signal_name    = self.signal_name.remove(self.name_choose);
-                let signal         = self.signal.remove(self.name_choose);
-                let bool_signal    = self.bool_signal.remove(self.name_choose);
-                let signal_setting = self.signal_setting.remove(self.name_choose);
-                let load_and_drive = self.load_and_drive.remove(self.name_choose);
-                self.signal_name.insert(dest_idx,signal_name);
-                self.signal.insert(dest_idx,signal);
-                self.bool_signal.insert(dest_idx,bool_signal);
-                self.signal_setting.insert(dest_idx,signal_setting);
-                self.load_and_drive.insert(dest_idx,load_and_drive);
+                self.signal_things.exchange(self.name_choose, dest_idx);
                 true
             }
             //TODO:show the destiny when is dragging
@@ -238,16 +218,7 @@ impl Component for WaveShow {
 
     fn changed(&mut self, ctx: &Context<Self>) -> bool {
         let (signal_name,signal) = &ctx.props().signaladd;
-        if !signal_name.is_empty() && !self.signal.contains(signal) {//TODO:has influence on perform?
-            let bool_signal = signal.size==1;
-            self.signal_name.push(
-                if bool_signal {signal_name.clone()}
-                else {signal_name.clone()+"["+&(signal.size-1).to_string()+":0]"});
-            self.signal.push(Rc::clone(signal));
-            self.bool_signal.push(bool_signal);
-            self.signal_setting.push(Settings::new());
-            self.load_and_drive.push((signal.load.clone(),signal.drive.clone()));
-        }
+        self.signal_things.push(signal_name, signal);
         true
     }
 
@@ -271,10 +242,10 @@ impl Component for WaveShow {
         html! {
             <div style="display:block;height:50%;overflow-y:auto">
                 if self.menu_show {
-                    <Ctrl name={self.signal_name[self.on_show_idx as usize].clone()}
-                        setting={self.signal_setting[self.on_show_idx as usize].clone()}
-                        load={self.load_and_drive[self.on_show_idx as usize].0.clone()}
-                        drive={self.load_and_drive[self.on_show_idx as usize].1.clone()}
+                    <Ctrl name={self.signal_things[self.on_show_idx as usize].name.clone()}
+                        setting={self.signal_things[self.on_show_idx as usize].setting.clone()}
+                        load={self.signal_things[self.on_show_idx as usize].load.clone()}
+                        drive={self.signal_things[self.on_show_idx as usize].driver.clone()}
                         onset={link.callback(Msg::SetSignal)}
                         delete={link.callback(|_| Msg::DeleteSig)} />
                 }
@@ -288,8 +259,8 @@ impl Component for WaveShow {
                         onmouseup={link.callback(Msg::NameMouseUp)}
                         style="float:left;width:10%">
                         {
-                            for (&self.signal_name).iter().enumerate().map(|(idx,s)| {
-                                html!{<SignalName name={s.clone()} menu={link.callback(move |()| Msg::ShowMenu(idx))} />}
+                            for (&self.signal_things).iter().enumerate().map(|(idx,s)| {
+                                html!{<SignalName name={s.name.clone()} menu={link.callback(move |()| Msg::ShowMenu(idx))} />}
                             })
                         }
                     </div>
@@ -299,14 +270,13 @@ impl Component for WaveShow {
                         onmousemove={link.callback(Msg::MouseMove)}
                         style="float:right;width:90%;background-color:#202020">
                         {
-                            for (&self.signal).iter().zip(&self.bool_signal).enumerate().map(|(idx,(s,b))| {
+                            for (&self.signal_things).iter().enumerate().map(|(idx,s)| {
                                 html!{<SignalValue
-                                    module={Rc::clone(&ctx.props().module)}
                                     signal_value={Rc::clone(&ctx.props().signal_value)}
-                                    signal={s} bool_signal={*b}
+                                    signal={Rc::clone(&s.signal)} bool_signal={s.is_bool}
                                     x_axis={self.x_axis} size={self.size}
                                     width = {wave_show_width}
-                                    setting={self.signal_setting[idx].clone()}
+                                    setting={self.signal_things[idx].setting.clone()}
                                     cursor1={self.cursor1}
                                     cursor2={self.cursor2} />}
                             })
