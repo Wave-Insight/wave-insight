@@ -9,10 +9,10 @@ pub struct SignalItem {
     pub setting: Settings,
     pub load: Vec<String>,
     pub driver: Vec<String>,
+    pub choose: bool,
 }
 
 pub struct SignalThings {
-
     item: Vec<SignalItem>,
 }
 
@@ -32,7 +32,9 @@ impl SignalThings {
                 is_bool: bool_signal,
                 setting: Settings::new(),
                 load: signal.load.clone(),
-                driver: signal.drive.clone() })
+                driver: signal.drive.clone(),
+                choose: false,
+            })
         }
     }
     pub fn remove(&mut self, idx: usize) {
@@ -44,6 +46,54 @@ impl SignalThings {
     }
     pub fn iter(&self) -> Iter<SignalItem> {
         self.item.iter()
+    }
+    pub fn onchoose(&mut self, idx: usize, ctrl: bool, shift: bool) {
+        if ctrl {
+            self.item[idx].choose = !self.item[idx].choose
+        }else if shift {
+            let choosed_idx: Vec<usize> = self.item.iter()
+                .enumerate()
+                .filter(|(_,i)| i.choose)
+                .map(|(idx,_)| idx)
+                .collect();
+            if !choosed_idx.is_empty() {
+                let head_idx = choosed_idx[0];
+                let tail_idx = choosed_idx.last().unwrap();
+                if choosed_idx.contains(&idx) {
+                    self.item.iter_mut().for_each(|i| i.choose = false);
+                }else if *tail_idx < idx {
+                    self.item.iter_mut().for_each(|i| i.choose = false);
+                    self.item.get_mut(head_idx..(idx+1))
+                        .unwrap()
+                        .iter_mut()
+                        .for_each(|i| i.choose = true);
+                }else if idx < head_idx {
+                    self.item.iter_mut().for_each(|i| i.choose = false);
+                    self.item.get_mut(idx..(tail_idx+1))
+                        .unwrap()
+                        .iter_mut()
+                        .for_each(|i| i.choose = true);
+                }else if ((head_idx as isize) - (idx as isize)).abs() <= ((idx as isize) - (*tail_idx as isize)).abs() {
+                    self.item.iter_mut().for_each(|i| i.choose = false);
+                    self.item.get_mut(head_idx..(idx+1))
+                        .unwrap()
+                        .iter_mut()
+                        .for_each(|i| i.choose = true);
+                }else {
+                    self.item.iter_mut().for_each(|i| i.choose = false);
+                    self.item.get_mut(idx..(tail_idx+1))
+                        .unwrap()
+                        .iter_mut()
+                        .for_each(|i| i.choose = true);
+                }
+            }else {
+                self.item[idx].choose = true;
+            }
+        }else {
+            let choose = self.item[idx].choose;
+            self.item.iter_mut().for_each(|i| i.choose = false);
+            self.item[idx].choose = !choose;
+        }
     }
 }
 

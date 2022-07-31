@@ -14,8 +14,11 @@ pub enum Msg {
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalNameProps {
     pub name: String,
+    pub choose: bool,
     #[prop_or_default]
     pub menu: Callback<()>,
+    #[prop_or_default]
+    pub onclick: Callback<()>,
 }
 
 impl Component for SignalName {
@@ -42,9 +45,12 @@ impl Component for SignalName {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
+        let background = if ctx.props().choose {"#aaaaff"} else {"#ffffff"};
         html! {
-            <div style={"padding:".to_owned()+&self.padding}>
-                <p oncontextmenu={link.callback(Msg::ContextMenu)} style={"font-size:16px;margin:0px;height:30px"}>
+            <div style={"padding:".to_owned()+&self.padding+";background-color:"+background}>
+                <p oncontextmenu={link.callback(Msg::ContextMenu)}
+                    onclick={ctx.props().onclick.reform(|_| ())}
+                    style={"font-size:16px;margin:0px;height:30px"}>
                     {&ctx.props().name}
                 </p>
             </div>

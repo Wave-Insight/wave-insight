@@ -36,6 +36,7 @@ pub enum Msg {
     MouseUp(MouseEvent),
     NameMouseDown(MouseEvent),
     NameMouseUp(MouseEvent),
+    NameClick(usize),
 }
 
 pub struct WaveShow {
@@ -213,6 +214,13 @@ impl Component for WaveShow {
             //TODO:show the destiny when is dragging
             //TODO:drag to the button not work
             //TODO:drag out of the area may cause bug
+            Msg::NameClick(idx) => {
+                self.signal_things.onchoose(idx,
+                    *self.key_press.borrow().get(17).unwrap(),
+                    *self.key_press.borrow().get(16).unwrap()
+                );
+                true
+            }
         }
     }
 
@@ -260,7 +268,11 @@ impl Component for WaveShow {
                         style="float:left;width:10%">
                         {
                             for (&self.signal_things).iter().enumerate().map(|(idx,s)| {
-                                html!{<SignalName name={s.name.clone()} menu={link.callback(move |()| Msg::ShowMenu(idx))} />}
+                                html!{<SignalName
+                                    name={s.name.clone()}
+                                    choose={s.choose}
+                                    menu={link.callback(move |()| Msg::ShowMenu(idx))}
+                                    onclick={link.callback(move |()| Msg::NameClick(idx))}/>}
                             })
                         }
                     </div>
