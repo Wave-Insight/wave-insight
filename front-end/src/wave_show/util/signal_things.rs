@@ -44,8 +44,10 @@ impl SignalThings {
             })
         }
     }
-    pub fn remove(&mut self, idx: usize) {
-        self.item.remove(idx);
+    pub fn remove(&mut self, idx: &[usize]) {
+        idx.iter().enumerate().for_each(|(r,&x)| {
+            self.item.remove(x-r);
+        });
     }
     pub fn exchange(&mut self, from: usize, to: usize) {
         let item = self.item.remove(from);
@@ -54,15 +56,18 @@ impl SignalThings {
     pub fn iter(&self) -> Iter<SignalItem> {
         self.item.iter()
     }
+    pub fn get_choose_idx(&self) -> Vec<usize> {
+        self.item.iter()
+                .enumerate()
+                .filter(|(_,i)| i.choose)
+                .map(|(idx,_)| idx)
+                .collect()
+    }
     pub fn onchoose(&mut self, idx: usize, ctrl: bool, shift: bool) {
         if ctrl {
             self.item[idx].choose = !self.item[idx].choose
         }else if shift {
-            let choosed_idx: Vec<usize> = self.item.iter()
-                .enumerate()
-                .filter(|(_,i)| i.choose)
-                .map(|(idx,_)| idx)
-                .collect();
+            let choosed_idx = self.get_choose_idx();
             if !choosed_idx.is_empty() {
                 let head_idx = choosed_idx[0];
                 let tail_idx = choosed_idx.last().unwrap();

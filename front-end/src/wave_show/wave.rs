@@ -46,7 +46,7 @@ pub struct WaveShow {
     min_size: RefCell<f64>,
 
     menu_show: bool,
-    on_show_idx: usize,
+    on_setting_idx: Vec<usize>,
 
     key_press: Rc<RefCell<Vec<bool>>>,
 
@@ -75,7 +75,7 @@ impl Component for WaveShow {
             min_size: RefCell::new(0f64),
 
             menu_show: false,
-            on_show_idx: 0,
+            on_setting_idx: Vec::new(),
 
             key_press: Rc::new(RefCell::new(vec![false;256])),
 
@@ -115,20 +115,26 @@ impl Component for WaveShow {
             }
             Msg::ShowMenu(idx) => {
                 self.menu_show = true;
-                self.on_show_idx = idx;
+                let choosed_idx = self.signal_things.get_choose_idx();
+                if choosed_idx.is_empty() {
+                    self.on_setting_idx = vec![idx];
+                }else {
+                    self.on_setting_idx = choosed_idx;
+                }
                 true
             }
             Msg::SetSignal((close,set)) => {
                 if close {
                     self.menu_show = false;
                 }
-                self.signal_things[self.on_show_idx].setting = set;
+                (&self.on_setting_idx).iter().for_each(|&x| {
+                    self.signal_things[x].setting = set.clone();
+                });
                 true
             }
             Msg::DeleteSig => {
                 self.menu_show = false;
-                let idx = self.on_show_idx;
-                self.signal_things.remove(idx);
+                self.signal_things.remove(&self.on_setting_idx);
                 true
             }
             Msg::KeyEvent(idx) => {
@@ -250,10 +256,10 @@ impl Component for WaveShow {
         html! {
             <div style="display:block;height:50%;overflow-y:auto">
                 if self.menu_show {
-                    <Ctrl name={self.signal_things[self.on_show_idx as usize].name.clone()}
-                        setting={self.signal_things[self.on_show_idx as usize].setting.clone()}
-                        load={self.signal_things[self.on_show_idx as usize].load.clone()}
-                        drive={self.signal_things[self.on_show_idx as usize].driver.clone()}
+                    <Ctrl name={self.signal_things[self.on_setting_idx[0]].name.clone()}//TODO:not [0] but all
+                        setting={self.signal_things[self.on_setting_idx[0]].setting.clone()}
+                        load={self.signal_things[self.on_setting_idx[0]].load.clone()}
+                        drive={self.signal_things[self.on_setting_idx[0]].driver.clone()}
                         onset={link.callback(Msg::SetSignal)}
                         delete={link.callback(|_| Msg::DeleteSig)} />
                 }
