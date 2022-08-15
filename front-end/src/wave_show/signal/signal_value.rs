@@ -204,7 +204,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
         if !head_used {
             points1.push_str(&format!("{:.2},{} ", 0, zero_position+height));
             points2.push_str(&format!("{:.2},{} ", 0, zero_position));
-            value.push(value_text(0.0, &head, show_type, bitcount, 100.0));
+            value.push(value_text(0.0, &head, show_type, bitcount, width));
         }
         points1.push_str(&format!("{:.2},{} ", width, zero_position+height));
         points2.push_str(&format!("{:.2},{} ", width, zero_position));
