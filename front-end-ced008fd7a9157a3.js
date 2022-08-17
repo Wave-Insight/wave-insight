@@ -225,19 +225,19 @@ function addBorrowedObject(obj) {
 }
 function __wbg_adapter_26(arg0, arg1, arg2) {
     try {
-        wasm._dyn_core__ops__function__FnMut___A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__hadac3e4c149df41a(arg0, arg1, addBorrowedObject(arg2));
+        wasm._dyn_core__ops__function__FnMut___A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h4ad1e122cb8b31f8(arg0, arg1, addBorrowedObject(arg2));
     } finally {
         heap[stack_pointer++] = undefined;
     }
 }
 
 function __wbg_adapter_29(arg0, arg1, arg2) {
-    wasm._dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__hb5c80c84919aebe8(arg0, arg1, addHeapObject(arg2));
+    wasm._dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h6d2984e0940ee860(arg0, arg1, addHeapObject(arg2));
 }
 
 function __wbg_adapter_32(arg0, arg1, arg2) {
     try {
-        wasm._dyn_core__ops__function__FnMut___A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h9712f2f423f2e394(arg0, arg1, addBorrowedObject(arg2));
+        wasm._dyn_core__ops__function__FnMut___A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h7050ed26dbb7352e(arg0, arg1, addBorrowedObject(arg2));
     } finally {
         heap[stack_pointer++] = undefined;
     }
@@ -265,7 +265,7 @@ function makeClosure(arg0, arg1, dtor, f) {
     return real;
 }
 function __wbg_adapter_35(arg0, arg1, arg2) {
-    wasm._dyn_core__ops__function__Fn__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__hf7c6d1ea3f9e731c(arg0, arg1, addHeapObject(arg2));
+    wasm._dyn_core__ops__function__Fn__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h84283f80ee17ac2e(arg0, arg1, addHeapObject(arg2));
 }
 
 let cachegetUint32Memory0 = null;
@@ -327,7 +327,7 @@ async function load(module, imports) {
 
 async function init(input) {
     if (typeof input === 'undefined') {
-        input = new URL('front-end-f3e3cc38d385f919_bg.wasm', import.meta.url);
+        input = new URL('front-end-ced008fd7a9157a3_bg.wasm', import.meta.url);
     }
     const imports = {};
     imports.wbg = {};
@@ -419,21 +419,21 @@ async function init(input) {
         const ret = Tab._dummy_loader;
         return addHeapObject(ret);
     };
+    imports.wbg.__wbg_index_97b2aebad382ee7c = function(arg0) {
+        const ret = getObject(arg0).index;
+        return ret;
+    };
     imports.wbg.__wbg_dummyloader_313224f6ca3e3b60 = function() {
         const ret = TopAppBarFixed._dummy_loader;
-        return addHeapObject(ret);
-    };
-    imports.wbg.__wbg_dummyloader_4bfadd1b771350cb = function() {
-        const ret = IconButton._dummy_loader;
         return addHeapObject(ret);
     };
     imports.wbg.__wbg_dummyloader_d52a2c6642f70dd0 = function() {
         const ret = TabBar._dummy_loader;
         return addHeapObject(ret);
     };
-    imports.wbg.__wbg_index_97b2aebad382ee7c = function(arg0) {
-        const ret = getObject(arg0).index;
-        return ret;
+    imports.wbg.__wbg_dummyloader_4bfadd1b771350cb = function() {
+        const ret = IconButton._dummy_loader;
+        return addHeapObject(ret);
     };
     imports.wbg.__wbg_new_693216e109162396 = function() {
         const ret = new Error();
@@ -749,11 +749,11 @@ async function init(input) {
         const ret = makeMutClosure(arg0, arg1, 206, __wbg_adapter_29);
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper1131 = function(arg0, arg1, arg2) {
-        const ret = makeMutClosure(arg0, arg1, 569, __wbg_adapter_32);
+    imports.wbg.__wbindgen_closure_wrapper1133 = function(arg0, arg1, arg2) {
+        const ret = makeMutClosure(arg0, arg1, 572, __wbg_adapter_32);
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper1376 = function(arg0, arg1, arg2) {
+    imports.wbg.__wbindgen_closure_wrapper1373 = function(arg0, arg1, arg2) {
         const ret = makeClosure(arg0, arg1, 615, __wbg_adapter_35);
         return addHeapObject(ret);
     };
