@@ -134,20 +134,20 @@ impl Component for Ctrl {
             margin:2% 6.5%;height:5%;width:20%;";
 
         let color_style = |(r,g,b):(u8,u8,u8)| format!("
-            background-color:#{:02X?}{:02X?}{:02X?};
+            background-color:#{r:02X?}{g:02X?}{b:02X?};
             border-radius:6px;
             border:2px solid #dcdcdc;
             display:inline-block;
             cursor:pointer;
-            margin:2% 1.5%;height:5%;width:10%;",r,g,b);
+            margin:2% 1.5%;height:5%;width:10%;");
 
         let color_style_onselect = |(r,g,b):(u8,u8,u8)| format!("
-            background-color:#{:02X?}{:02X?}{:02X?};
+            background-color:#{r:02X?}{g:02X?}{b:02X?};
             border-radius:6px;
             border:3px solid #008800;
             display:inline-block;
             cursor:pointer;
-            margin:2% 1.5%;height:5%;width:10%;",r,g,b);
+            margin:2% 1.5%;height:5%;width:10%;");
 
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
@@ -181,7 +181,7 @@ impl Component for Ctrl {
                         onmouseout={link.callback(|_| Msg::FlipLoadShow)}>{"load"}</button>
                     { if self.show_load {html!{
                         <span style="position:absolute;background-color:#ffffff">
-                            {for (&props.load).iter().map(|l| {
+                            {for props.load.iter().map(|l| {
                                 html!{<p>{l}</p>}
                             })}
                         </span>
@@ -194,7 +194,7 @@ impl Component for Ctrl {
                         onmouseout={link.callback(|_| Msg::FlipDriveShow)}>{"drive"}</button>
                     { if self.show_drive {html!{
                         <span style="position:absolute;background-color:#ffffff">
-                            {for (&props.drive).iter().map(|l| {
+                            {for props.drive.iter().map(|l| {
                                 html!{<p>{l}</p>}
                             })}
                         </span>

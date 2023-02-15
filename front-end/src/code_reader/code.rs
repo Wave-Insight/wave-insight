@@ -56,7 +56,7 @@ impl Component for CodeReader {
                     }
                 }
                 {
-                    for (&props.file).iter().map(|(file_name,_text)| {
+                    for props.file.iter().map(|(file_name,_text)| {
                         html! {<MatTab label={file_name.clone()} />}
                     })
                 }

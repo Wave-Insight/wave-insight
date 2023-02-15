@@ -146,10 +146,10 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
                 }
                 if d.1 == BigUint::new(vec![1]){
                     points1.push_str(&format!("{:.2},{} ", x, zero_position+height));
-                    points1.push_str(&format!("{:.2},{} ", x, zero_position));
+                    points1.push_str(&format!("{x:.2},{zero_position} "));
                     last = zero_position;
                 }else {
-                    points1.push_str(&format!("{:.2},{} ", x, zero_position));
+                    points1.push_str(&format!("{x:.2},{zero_position} "));
                     points1.push_str(&format!("{:.2},{} ", x, zero_position+height));
                     last = zero_position+height;
                 }
@@ -165,7 +165,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
             points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*height));
             last = zero_position+(1-head)*height;
         }
-        points1.push_str(&format!("{:.2},{} ", width, last));
+        points1.push_str(&format!("{width:.2},{last} "));
 
     }else {
             
@@ -174,7 +174,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
         let mut last_x = 0.0;
         let mut all_signal_value = props.signal_value.get(&props.signal.value_key);
         all_signal_value.push((1<<30,BigUint::new(vec![0])));//TODO:end clk
-        for (d, d_next) in (&all_signal_value).iter().zip((&all_signal_value).iter().skip(1)) {
+        for (d, d_next) in all_signal_value.iter().zip(all_signal_value.iter().skip(1)) {
             let x = ((d.0 as f64) - x_axis)*size;
             let x_next = ((d_next.0 as f64) - x_axis)*size;
             if (0.0..width).contains(&x) {
@@ -207,7 +207,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
             value.push(value_text(0.0, &head, show_type, bitcount, width));
         }
         points1.push_str(&format!("{:.2},{} ", width, zero_position+height));
-        points2.push_str(&format!("{:.2},{} ", width, zero_position));
+        points2.push_str(&format!("{width:.2},{zero_position} "));
     }
     (points1, points2, value)
 }
@@ -251,7 +251,7 @@ fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32, 
                         Ordering::Greater => ret.split_at(1).1.to_string()
                     }
                 }else if *show_type==ShowType::UInt {
-                    format!("{}",value)
+                    format!("{value}")
                 }else if *show_type==ShowType::SInt {
                     let bound = BigUint::new(vec![2]).pow(bitcount-1);
                     let value_to_sint = if *value >= bound {
@@ -259,7 +259,7 @@ fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32, 
                     }else {
                         value.to_bigint().unwrap()
                     };
-                    format!("{}",value_to_sint)
+                    format!("{value_to_sint}")
                 }else {
                     let value_to_bytes = value.to_bytes_be();
                     let s = match std::str::from_utf8(&value_to_bytes) {
@@ -277,7 +277,7 @@ fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32, 
         text_raw.get(..avaliable-1).unwrap().to_string()+"."
     };
     html!{
-        <text x={format!("{}",begin)} y={format!("{}",zero_position+17)} fill="rgb(255,255,255)">
+        <text x={format!("{begin}")} y={format!("{}",zero_position+17)} fill="rgb(255,255,255)">
             {
                 text
             }

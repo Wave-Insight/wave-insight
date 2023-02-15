@@ -46,7 +46,7 @@ impl Component for Time {
                 <div style="float:left;width:10%">
                     <code>{
                         if let Some(cur) = self.cursor1.zip(self.cursor2).map(|(x,y)| y - x){
-                            format!("{}",cur)
+                            format!("{cur}")
                         } else {"".to_string()}
                     }</code>
                 </div>
@@ -57,7 +57,7 @@ impl Component for Time {
                                 y={format!("{}",18)}
                                 fill="rgb(255,255,0)" >
                                 {
-                                    format!("{}", c1)
+                                    format!("{c1}")
                                 }
                             </text>
                             //<line x1={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
@@ -75,7 +75,7 @@ impl Component for Time {
                                 y={format!("{}",18)}
                                 fill="rgb(255,255,255)">
                                 {
-                                    format!("{}", c2)
+                                    format!("{c2}")
                                 }
                             </text>
                             //<line x1={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}

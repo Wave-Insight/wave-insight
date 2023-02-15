@@ -48,7 +48,7 @@ impl Component for FileLoad {
                 for file in result.into_iter() {
                     let link = ctx.link().clone();
                     let file_name = file.name();
-                    console::log_1(&format!("file name:{}",file_name).into());
+                    console::log_1(&format!("file name:{file_name}").into());
                     let file_type = if file_name.ends_with(".vcd") {FileType::IsVcd}
                                             else {FileType::IsVerilog};
                     let task = gloo_file::callbacks::read_as_text(&file, move |res| {

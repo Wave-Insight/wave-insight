@@ -127,7 +127,7 @@ impl Component for WaveShow {
                 if close {
                     self.menu_show = false;
                 }
-                (&self.on_setting_idx).iter().for_each(|&x| {
+                self.on_setting_idx.iter().for_each(|&x| {
                     self.signal_things[x].setting = set.clone();
                 });
                 true
@@ -273,7 +273,7 @@ impl Component for WaveShow {
                         onmouseup={link.callback(Msg::NameMouseUp)}
                         style="float:left;width:10%">
                         {
-                            for (&self.signal_things).iter().enumerate().map(|(idx,s)| {
+                            for self.signal_things.iter().enumerate().map(|(idx,s)| {
                                 html!{<SignalName
                                     name={s.name.clone()}
                                     choose={s.choose}
@@ -288,7 +288,7 @@ impl Component for WaveShow {
                         onmousemove={link.callback(Msg::MouseMove)}
                         style="float:right;width:90%;background-color:#202020">
                         {
-                            for (&self.signal_things).iter().enumerate().map(|(idx,s)| {
+                            for self.signal_things.iter().enumerate().map(|(idx,s)| {
                                 html!{<SignalValue
                                     signal_value={Rc::clone(&ctx.props().signal_value)}
                                     signal={Rc::clone(&s.signal)} bool_signal={s.is_bool}
