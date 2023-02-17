@@ -62,7 +62,7 @@ fn which_is_top(modules: &[ModuleVerilog]) -> usize {
     let module_number = modules.len();
     let mut has_father = vec![0;module_number];
     for m in modules {
-        let sub_idx = (&m.sub_module).iter()
+        let sub_idx = m.sub_module.iter()
             .map(|s| {modules
                 .iter()
                 .enumerate()
@@ -78,8 +78,8 @@ fn which_is_top(modules: &[ModuleVerilog]) -> usize {
 
 fn combine_module(raw_module: Rc<Module>, modules: Vec<ModuleVerilog>) -> Module {
     let top_idx = which_is_top(&modules);
-    let raw_top = (&raw_module.sub_module).iter().next().unwrap().1;
-    if (&raw_top.sub_module).iter()// top of raw_module and modules is the same
+    let raw_top = raw_module.sub_module.iter().next().unwrap().1;
+    if raw_top.sub_module.iter()// top of raw_module and modules is the same
         .map(|(name,_module)| (modules[top_idx].sub_module.contains_key(name)))
         .reduce(|a,b| a && b).unwrap_or(false)
     {
@@ -87,12 +87,12 @@ fn combine_module(raw_module: Rc<Module>, modules: Vec<ModuleVerilog>) -> Module
         recursive_combine_module(&mut ret, &modules, top_idx);
         ret
     }else if (raw_top.sub_module.len()==1) &&//top of modules is 1 level higher than raw_module
-        (&raw_top.sub_module.iter().next().unwrap().1.sub_module).iter()//TODO:dangerous to unwrap here
+        raw_top.sub_module.iter().next().unwrap().1.sub_module.iter()//TODO:dangerous to unwrap here
         .map(|(name,_module)| (modules[top_idx].sub_module.contains_key(name)))
         .reduce(|a,b| a && b).unwrap_or(false)
     {
         let mut ret = (*raw_module).clone();
-        let top = (&mut ret.sub_module).iter_mut().next().unwrap().1
+        let top = ret.sub_module.iter_mut().next().unwrap().1
                 .sub_module.iter_mut().next().unwrap().1;
         recursive_combine_module(top, &modules, top_idx);
         ret
@@ -100,7 +100,7 @@ fn combine_module(raw_module: Rc<Module>, modules: Vec<ModuleVerilog>) -> Module
         //raw_module//TODO:
 
         let mut ret = Module::new();
-        (&modules[top_idx].sub_module).iter()
+        modules[top_idx].sub_module.iter()
         //(&(&(&raw_module.sub_module).iter().next().unwrap().1.sub_module).iter().next().unwrap().1.sub_module).into_iter()
             .for_each(|s| {ret.sub_module.insert(s.0.to_string(),Module::new());});
         ret
