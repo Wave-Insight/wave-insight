@@ -1,7 +1,7 @@
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
-use crate::wave_show::ShowType;
+use wave_insight_lib::data_struct::ShowType;
 
 use super::settings::Settings;
 

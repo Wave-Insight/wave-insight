@@ -1,14 +1,5 @@
 use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub enum ShowType {
-    Hex,
-    UInt,
-    SInt,
-    Oct,
-    Bin,
-    Ascii,
-}
+use wave_insight_lib::data_struct::ShowType;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Settings {

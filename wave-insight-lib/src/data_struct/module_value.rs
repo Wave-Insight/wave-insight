@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use num::BigUint;
 use serde::{Deserialize, Serialize};
+
+use super::signal_data::SignalData;
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
 pub struct ModuleValue {
@@ -16,16 +17,15 @@ impl ModuleValue {
             clk: 0,
         }
     }
-    pub fn get(&self, key: &str) -> Vec<(i32,BigUint)> {//TODO:create own type instead of BigUint to support 'x' and 'z'
+    pub fn get(&self, key: &str) -> Vec<(i32,SignalData)> {//TODO:create own type instead of BigUint to support 'x' and 'z'
         let data = self.value.get(key).unwrap_or(&(Vec::new(),Vec::new())).to_owned();
         if data.0.is_empty() {
             Vec::new()
         }else {
             let chunk_size = data.1.len()/data.0.len();
-            let num = data.1.into_iter().map(|x| x.1).collect::<Vec<u8>>();
-            let to_big = num
-                .chunks(chunk_size).map(BigUint::from_bytes_be);
-            data.0.into_iter().zip(to_big).map(|(l,r)| (l,r)).collect()
+            let sig = data.1.chunks(chunk_size)
+                .map(|x| SignalData::new(x.to_vec()));
+            data.0.into_iter().zip(sig).map(|(l,r)| (l,r)).collect()
         }
     }
     pub fn new_clk(&mut self, clk: i32) {

@@ -1,10 +1,9 @@
-use std::{rc::Rc, cmp::Ordering};
+use std::rc::Rc;
 
-use num::{BigUint,BigInt, bigint::{ToBigInt, Sign}};
-use wave_insight_lib::data_struct::{Signal, ModuleValue};
+use wave_insight_lib::data_struct::{Signal, ModuleValue, SignalData, ShowType};
 use yew::prelude::*;
 
-use crate::wave_show::{Settings, ShowType};
+use crate::wave_show::Settings;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SignalValue {
@@ -144,7 +143,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
                     points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*height));
                     head_used = true;
                 }
-                if d.1 == BigUint::new(vec![1]){
+                if d.1.is_one(){//TODO: d.1 is x or z
                     points1.push_str(&format!("{:.2},{} ", x, zero_position+height));
                     points1.push_str(&format!("{x:.2},{zero_position} "));
                     last = zero_position;
@@ -154,7 +153,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
                     last = zero_position+height;
                 }
             }else if x < 0.0 {
-                if d.1 == BigUint::new(vec![1]) {
+                if d.1.is_one() {
                     head = 1;
                 }else {
                     head = 0;
@@ -169,11 +168,11 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
 
     }else {
             
-        let mut head: BigUint = BigUint::new(vec![0]);
+        let mut head = SignalData::new(vec![(0,0)]);
         let mut head_used = true;
         let mut last_x = 0.0;
         let mut all_signal_value = props.signal_value.get(&props.signal.value_key);
-        all_signal_value.push((1<<30,BigUint::new(vec![0])));//TODO:end clk
+        all_signal_value.push((1<<30, SignalData::new(vec![(0, 0)])));//TODO:end clk
         for (d, d_next) in all_signal_value.iter().zip(all_signal_value.iter().skip(1)) {
             let x = ((d.0 as f64) - x_axis)*size;
             let x_next = ((d_next.0 as f64) - x_axis)*size;
@@ -212,62 +211,9 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
     (points1, points2, value)
 }
 
-fn value_text(begin: f64, value: &BigUint, show_type: &ShowType, bitcount: u32, show_width: f64) -> Html {
+fn value_text(begin: f64, value: &SignalData, show_type: &ShowType, bitcount: u32, show_width: f64) -> Html {
     let zero_position = 3;
-    let text_raw = if *show_type==ShowType::Hex {
-                    let ret = value.to_str_radix(16);
-                    let width = ((bitcount-1)/4+1) as usize;
-                    match ret.len().cmp(&width) {
-                        Ordering::Less => {
-                            (0..(width-ret.len())).map(|_x| "0".to_string())
-                            .reduce(|a,b| a+&b)
-                            .unwrap() + &ret
-                        },
-                        Ordering::Equal => ret,
-                        Ordering::Greater => ret.split_at(1).1.to_string()
-                    }
-                }else if *show_type==ShowType::Oct {
-                    let ret = value.to_str_radix(8);
-                    let width = ((bitcount-1)/3+1) as usize;
-                    match ret.len().cmp(&width) {
-                        Ordering::Less => {
-                            (0..(width-ret.len())).map(|_x| "0".to_string())
-                            .reduce(|a,b| a+&b)
-                            .unwrap() + &ret
-                        },
-                        Ordering::Equal => ret,
-                        Ordering::Greater => ret.split_at(1).1.to_string()
-                    }
-                }else if *show_type==ShowType::Bin {
-                    let ret = value.to_str_radix(2);
-                    let width = bitcount as usize;
-                    match ret.len().cmp(&width) {
-                        Ordering::Less => {
-                            (0..(width-ret.len())).map(|_x| "0".to_string())
-                            .reduce(|a,b| a+&b)
-                            .unwrap() + &ret
-                        },
-                        Ordering::Equal => ret,
-                        Ordering::Greater => ret.split_at(1).1.to_string()
-                    }
-                }else if *show_type==ShowType::UInt {
-                    format!("{value}")
-                }else if *show_type==ShowType::SInt {
-                    let bound = BigUint::new(vec![2]).pow(bitcount-1);
-                    let value_to_sint = if *value >= bound {
-                        value.to_bigint().unwrap() - BigInt::new(Sign::Plus,vec![2]).pow(bitcount)
-                    }else {
-                        value.to_bigint().unwrap()
-                    };
-                    format!("{value_to_sint}")
-                }else {
-                    let value_to_bytes = value.to_bytes_be();
-                    let s = match std::str::from_utf8(&value_to_bytes) {
-                        Ok(v) => v,
-                        Err(_e) => "invalid",
-                    };
-                    s.to_string()
-                };
+    let text_raw = value.to_string(bitcount as usize, show_type);
     let avaliable = (show_width/9.0) as usize;
     let text = if avaliable<= 1 {
         "".to_string()
