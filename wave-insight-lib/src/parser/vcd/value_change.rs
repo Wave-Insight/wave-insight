@@ -15,7 +15,7 @@ pub fn value_change(mut line_item: SplitWhitespace<'_>, this_item: &str) -> Opti
     }else if let Some(identify) = this_item.strip_prefix('x'){ 
         Some(ParseAction::Value(identify.to_string(), vec![(1,0)]))
     }else {
-        this_item.strip_prefix('0')
+        this_item.strip_prefix('z')
             .map(|identify| ParseAction::Value(identify.to_string(),vec![(1,1)]))
     }
     
