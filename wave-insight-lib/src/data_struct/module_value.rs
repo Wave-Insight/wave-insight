@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
-use super::signal_data::SignalData;
+use super::{BitsData, BoolData};
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
 pub struct ModuleValue {
@@ -17,14 +17,20 @@ impl ModuleValue {
             clk: 0,
         }
     }
-    pub fn get(&self, key: &str) -> Vec<(i32,SignalData)> {//TODO:create own type instead of BigUint to support 'x' and 'z'
+    pub fn get_bool(&self, key: &str) -> Vec<(i32, BoolData)> {
+        let data = self.value.get(key).unwrap_or(&(Vec::new(),Vec::new())).to_owned();
+        let sig = data.1.into_iter()
+            .map(BoolData::new);
+        data.0.into_iter().zip(sig).map(|(l,r)| (l,r)).collect()
+    }
+    pub fn get_bits(&self, key: &str) -> Vec<(i32, BitsData)> {
         let data = self.value.get(key).unwrap_or(&(Vec::new(),Vec::new())).to_owned();
         if data.0.is_empty() {
             Vec::new()
         }else {
             let chunk_size = data.1.len()/data.0.len();
             let sig = data.1.chunks(chunk_size)
-                .map(|x| SignalData::new(x.to_vec()));
+                .map(|x| BitsData::new(x.to_vec()));
             data.0.into_iter().zip(sig).map(|(l,r)| (l,r)).collect()
         }
     }

@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use wave_insight_lib::data_struct::{Signal, ModuleValue, SignalData, ShowType};
+use wave_insight_lib::data_struct::{Signal, ModuleValue, ShowType, BitsData, BoolData};
 use yew::prelude::*;
 
 use crate::wave_show::Settings;
@@ -127,52 +127,68 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
     let show_type = &props.setting.show_type;
     let bitcount = props.signal.size as u32;
     let zero_position = 3;
-    let height = 20;
+    let base_height = 10;
+    let height = 2*base_height;
     let width = props.width;
     let mut points1 = String::new();
     let mut points2 = String::new();
     let mut value: Vec<Html> = vec![];
     if props.bool_signal {
-        let mut last: u32 = 0;
+        let mut last: u32 = zero_position;
         let mut head: u32 = 0;
         let mut head_used = false;
-        for d in props.signal_value.get(&props.signal.value_key) {
+        for d in props.signal_value.get_bool(&props.signal.value_key) {
             let x = ((d.0 as f64) - x_axis)*size;
             if (0.0..width).contains(&x) {
                 if !head_used {
-                    points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*height));
+                    points1.push_str(&format!("{:.2},{} ", 0, zero_position+(2-head)*base_height));
+                    last = zero_position+(2-head)*base_height;
                     head_used = true;
                 }
-                if d.1.is_one(){//TODO: d.1 is x or z
-                    points1.push_str(&format!("{:.2},{} ", x, zero_position+height));
-                    points1.push_str(&format!("{x:.2},{zero_position} "));
-                    last = zero_position;
-                }else {
-                    points1.push_str(&format!("{x:.2},{zero_position} "));
-                    points1.push_str(&format!("{:.2},{} ", x, zero_position+height));
-                    last = zero_position+height;
+                match d.1 {
+                    BoolData::Zero => {
+                        points1.push_str(&format!("{x:.2},{last} "));
+                        last = zero_position+height;
+                        points1.push_str(&format!("{x:.2},{last} "));
+                    },
+                    BoolData::One => {
+                        points1.push_str(&format!("{x:.2},{last} "));
+                        last = zero_position;
+                        points1.push_str(&format!("{x:.2},{last} "));
+                    },
+                    BoolData::X => {//TODO:X and Z should have different color
+                        points1.push_str(&format!("{x:.2},{last} "));
+                        last = zero_position+base_height;
+                        points1.push_str(&format!("{x:.2},{last} "));
+                    },
+                    BoolData::Z => {
+                        points1.push_str(&format!("{x:.2},{last} "));
+                        last = zero_position+base_height;
+                        points1.push_str(&format!("{x:.2},{last} "));
+                    },
                 }
             }else if x < 0.0 {
-                if d.1.is_one() {
-                    head = 1;
-                }else {
-                    head = 0;
+                head = match d.1 {
+                    BoolData::Zero => 0,
+                    BoolData::One => 2,
+                    BoolData::X => 1,
+                    BoolData::Z => 1,
                 }
             }
         };
         if !head_used {
-            points1.push_str(&format!("{:.2},{} ", 0, zero_position+(1-head)*height));
-            last = zero_position+(1-head)*height;
+            points1.push_str(&format!("{:.2},{} ", 0, zero_position+(2-head)*base_height));
+            last = zero_position+(2-head)*base_height;
         }
         points1.push_str(&format!("{width:.2},{last} "));
 
     }else {
             
-        let mut head = SignalData::new(vec![(0,0)]);
+        let mut head = BitsData::new(vec![(0,0)]);
         let mut head_used = true;
         let mut last_x = 0.0;
-        let mut all_signal_value = props.signal_value.get(&props.signal.value_key);
-        all_signal_value.push((1<<30, SignalData::new(vec![(0, 0)])));//TODO:end clk
+        let mut all_signal_value = props.signal_value.get_bits(&props.signal.value_key);
+        all_signal_value.push((1<<30, BitsData::new(vec![(0, 0)])));//TODO:end clk
         for (d, d_next) in all_signal_value.iter().zip(all_signal_value.iter().skip(1)) {
             let x = ((d.0 as f64) - x_axis)*size;
             let x_next = ((d_next.0 as f64) - x_axis)*size;
@@ -211,7 +227,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
     (points1, points2, value)
 }
 
-fn value_text(begin: f64, value: &SignalData, show_type: &ShowType, bitcount: u32, show_width: f64) -> Html {
+fn value_text(begin: f64, value: &BitsData, show_type: &ShowType, bitcount: u32, show_width: f64) -> Html {
     let zero_position = 3;
     let text_raw = value.to_string(bitcount as usize, show_type);
     let avaliable = (show_width/9.0) as usize;

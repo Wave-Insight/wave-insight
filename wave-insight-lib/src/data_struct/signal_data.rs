@@ -2,23 +2,34 @@ use num::{BigUint, BigInt, bigint::{ToBigInt, Sign}};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
-pub struct SignalData {
+pub enum BoolData {
+    Zero,
+    One,
+    X,
+    Z,
+}
+
+impl BoolData {
+    pub fn new(value: (u8, u8)) -> Self {
+        match value {
+            (0, 0) => BoolData::Zero,
+            (0, 1) => BoolData::One,
+            (1, 0) => BoolData::X,
+            _ => BoolData::Z,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
+pub struct BitsData {
                  // xz,number
     value: Vec<(u8,u8)>,//when xz == 1, num == 0 -> x and num == 1 -> z
 }
 
-impl SignalData {
+impl BitsData {
     pub fn new(value: Vec<(u8,u8)>) -> Self {
         Self { value }
     }
-
-    pub fn is_one(&self) -> bool {
-        //TODO: SignalData should be enum { booldata, bitsdata }
-        // booldata: enum { zero, one, x, z }
-        // bitsdata: this
-        self.value.first().map(|x| *x == (0, 1)).unwrap_or(false)
-    }
-
     pub fn to_string(&self, bitcount: usize, showtype: &ShowType) -> String {
         match showtype {
             ShowType::Hex => self.hex_string(bitcount),
@@ -148,28 +159,28 @@ pub enum ShowType {
 
 #[test]
 fn test() {
-    assert_eq!(SignalData::new(vec![(0,1),(0,23)]).bin_string(10), "0100010111".to_owned());
-    assert_eq!(SignalData::new(vec![(0,1),(0,123)]).bin_string(10), "0101111011".to_owned());
-    assert_eq!(SignalData::new(vec![(1,1),(0,123)]).bin_string(10), "0z01111011".to_owned());
-    assert_eq!(SignalData::new(vec![(1,32),(0,123)]).bin_string(14), "10000x01111011".to_owned());
-    assert_eq!(SignalData::new(vec![(1,2),(6,123)]).bin_string(15), "000001x01111xz1".to_owned());
+    assert_eq!(BitsData::new(vec![(0,1),(0,23)]).bin_string(10), "0100010111".to_owned());
+    assert_eq!(BitsData::new(vec![(0,1),(0,123)]).bin_string(10), "0101111011".to_owned());
+    assert_eq!(BitsData::new(vec![(1,1),(0,123)]).bin_string(10), "0z01111011".to_owned());
+    assert_eq!(BitsData::new(vec![(1,32),(0,123)]).bin_string(14), "10000x01111011".to_owned());
+    assert_eq!(BitsData::new(vec![(1,2),(6,123)]).bin_string(15), "000001x01111xz1".to_owned());
 
-    assert_eq!(SignalData::new(vec![(0,1),(0,23)]).oct_string(10), "0427".to_owned());
-    assert_eq!(SignalData::new(vec![(0,1),(0,123)]).oct_string(10), "0573".to_owned());
-    assert_eq!(SignalData::new(vec![(1,1),(0,123)]).oct_string(10), "0z73".to_owned());
-    assert_eq!(SignalData::new(vec![(1,32),(0,123)]).oct_string(14), "20x73".to_owned());
-    assert_eq!(SignalData::new(vec![(1,2),(6,123)]).oct_string(15), "01x7x".to_owned());
+    assert_eq!(BitsData::new(vec![(0,1),(0,23)]).oct_string(10), "0427".to_owned());
+    assert_eq!(BitsData::new(vec![(0,1),(0,123)]).oct_string(10), "0573".to_owned());
+    assert_eq!(BitsData::new(vec![(1,1),(0,123)]).oct_string(10), "0z73".to_owned());
+    assert_eq!(BitsData::new(vec![(1,32),(0,123)]).oct_string(14), "20x73".to_owned());
+    assert_eq!(BitsData::new(vec![(1,2),(6,123)]).oct_string(15), "01x7x".to_owned());
 
-    assert_eq!(SignalData::new(vec![(0,1),(0,23)]).hex_string(10), "117".to_owned());
-    assert_eq!(SignalData::new(vec![(0,1),(0,123)]).hex_string(10), "17b".to_owned());
-    assert_eq!(SignalData::new(vec![(1,1),(0,123)]).hex_string(10), "z7b".to_owned());
-    assert_eq!(SignalData::new(vec![(1,32),(0,123)]).hex_string(14), "2x7b".to_owned());
-    assert_eq!(SignalData::new(vec![(1,2),(6,123)]).hex_string(15), "0x7x".to_owned());
+    assert_eq!(BitsData::new(vec![(0,1),(0,23)]).hex_string(10), "117".to_owned());
+    assert_eq!(BitsData::new(vec![(0,1),(0,123)]).hex_string(10), "17b".to_owned());
+    assert_eq!(BitsData::new(vec![(1,1),(0,123)]).hex_string(10), "z7b".to_owned());
+    assert_eq!(BitsData::new(vec![(1,32),(0,123)]).hex_string(14), "2x7b".to_owned());
+    assert_eq!(BitsData::new(vec![(1,2),(6,123)]).hex_string(15), "0x7x".to_owned());
 
-    assert_eq!(SignalData::new(vec![(0,1),(0,23)]).uint_string(), "279".to_owned());
-    assert_eq!(SignalData::new(vec![(1,1),(0,23)]).uint_string(), "X".to_owned());
+    assert_eq!(BitsData::new(vec![(0,1),(0,23)]).uint_string(), "279".to_owned());
+    assert_eq!(BitsData::new(vec![(1,1),(0,23)]).uint_string(), "X".to_owned());
 
-    assert_eq!(SignalData::new(vec![(0,1),(0,23)]).sint_string(10), "279".to_owned());
-    assert_eq!(SignalData::new(vec![(0,2),(0,23)]).sint_string(10), "-489".to_owned());
-    assert_eq!(SignalData::new(vec![(1,1),(0,23)]).sint_string(10), "X".to_owned());
+    assert_eq!(BitsData::new(vec![(0,1),(0,23)]).sint_string(10), "279".to_owned());
+    assert_eq!(BitsData::new(vec![(0,2),(0,23)]).sint_string(10), "-489".to_owned());
+    assert_eq!(BitsData::new(vec![(1,1),(0,23)]).sint_string(10), "X".to_owned());
 }
