@@ -23,7 +23,6 @@ use wasm_bindgen::{prelude::Closure, JsCast};
 use wave_insight_lib::{
     parser::vcd_parser::vcd_parser,
     parser::verilog_parser::verilog_parser};
-#[cfg(feature = "wasm")]
 use crate::file_load::FileLoad;
 #[cfg(feature = "wasm")]
 use crate::file_load::FileType;
@@ -33,9 +32,9 @@ pub enum Msg {
     #[cfg(feature = "wasm")]
     ParserFile(FileType,String,String),
     SignalAdd((String,Rc<Signal>)),
-    #[cfg(feature = "backend")]
+    #[cfg(feature = "server")]
     WsSend(String),
-    #[cfg(feature = "backend")]
+    #[cfg(feature = "server")]
     GetWebsocket(String),
 }
 
@@ -47,7 +46,7 @@ pub struct App {
     signal_value_raw: ModuleValue,//TODO:not a good implement
     verilog_source: Vec<(String,String)>,
     signal_add: (String,Rc<Signal>),
-    #[cfg(feature = "backend")]
+    #[cfg(feature = "server")]
     websocket: Option<WebSocket>,
 }
 
@@ -56,7 +55,7 @@ impl Component for App {
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
-        #[cfg(feature = "backend")]
+        #[cfg(feature = "server")]
         let websocket = create_websocket(ctx);
         Self {
             drawer_state: true,
@@ -66,7 +65,7 @@ impl Component for App {
             signal_value_raw: ModuleValue::new(),
             verilog_source: vec![],
             signal_add: ("".to_string(),Rc::new(Signal::new())),
-            #[cfg(feature = "backend")]
+            #[cfg(feature = "server")]
             websocket: Some(websocket),
         }
     }
@@ -94,12 +93,12 @@ impl Component for App {
                 true
             }
             Msg::SignalAdd(input) => {
-                #[cfg(feature = "backend")]
+                #[cfg(feature = "server")]
                 ctx.link().callback(Msg::WsSend).emit(format!("s:{}",input.1.value_key));
                 self.signal_add = (input.0,input.1);
                 true
             }
-            #[cfg(feature = "backend")]
+            #[cfg(feature = "server")]
             Msg::WsSend(e) => {
                 match &mut self.websocket {
                     Some(ws) => {
@@ -109,14 +108,14 @@ impl Component for App {
                 }
                 true
             }
-            #[cfg(feature = "backend")]
+            #[cfg(feature = "server")]
             Msg::GetWebsocket(m) => {
                 if let Some(module_string) = m.strip_prefix("module:") {
                     let module: Module = serde_json::from_str(module_string).unwrap();//TODO:do not unwrap
                     self.module = Rc::new(module);
                 }else if let Some(signal_string) = m.strip_prefix("sig:") {
                     if let Some((key, value)) = signal_string.split_once(29u8 as char) {
-                        let value_parse: (Vec<i32>, Vec<u8>) = serde_json::from_str(value).unwrap();//TODO:do not unwrap
+                        let value_parse: (Vec<i32>, Vec<(u8, u8)>) = serde_json::from_str(value).unwrap();//TODO:do not unwrap
                         self.signal_value_raw.value.insert(key.to_string(), value_parse);
                         self.signal_value = Rc::new(self.signal_value_raw.clone());
                         //TODO:value update here will cause an adition signal add on wave show
@@ -172,7 +171,13 @@ impl App {
             <FileLoad ongetfile={ctx.link().callback(|i:(FileType,String,String)| Msg::ParserFile(i.0,i.1,i.2))}/>
         }
     }
-    #[cfg(feature = "backend")]
+    #[cfg(feature = "tauri")]
+    fn file_button(&self, ctx: &Context<Self>) -> Html {
+        html!{
+            <FileLoad/>
+        }
+    }
+    #[cfg(feature = "server")]
     fn file_button(&self, ctx: &Context<Self>) -> Html {
         html!{
             <button onclick={ctx.link().callback(|_| Msg::WsSend("file".to_string()))}>{"ws"}</button>
@@ -181,7 +186,7 @@ impl App {
     
 }
 
-#[cfg(feature = "backend")]
+#[cfg(feature = "server")]
 fn create_websocket(ctx: &Context<App>) -> WebSocket {
     let callback: Callback<String> = ctx.link().callback(Msg::GetWebsocket);
 
