@@ -1,8 +1,10 @@
 use yew::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_wasm_bindgen::to_value;
+use serde_wasm_bindgen::{to_value, from_value};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
+
+//use web_sys::console;//TODO:for debug
 
 #[wasm_bindgen]
 extern "C" {
@@ -15,6 +17,8 @@ pub enum Msg {
     Back,
     Into(String),
     Choose(String),
+
+    SetList(Vec<String>),
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
@@ -30,7 +34,10 @@ impl Component for FileList {
     type Message = Msg;
     type Properties = FileListProps;
 
-    fn create(_ctx: &Context<Self>) -> Self {
+    fn create(ctx: &Context<Self>) -> Self {
+
+        ctx.link().callback(Msg::Into).emit("".to_string());
+
         Self {
             list: vec![],
         }
@@ -46,16 +53,29 @@ impl Component for FileList {
                 true
             }
             Msg::Into(s) => {
-                true
+                let args = to_value(&GetFileListArgs { name: &s }).unwrap();
+                let link = ctx.link().callback(Msg::SetList);
+                spawn_local(async move {
+                    let ret: Vec<String> = from_value(invoke("get_file_list", args).await).unwrap();
+                    //console::log_1(&format!("{:?}", ret).into());
+                    link.emit(ret);
+                });
+                false
             }
             Msg::Choose(s) => {
+                true
+            }
+            Msg::SetList(s) => {
+                //console::log_1(&format!("{:?}", s).into());
+                let mut list = vec!["..".to_string()];
+                list.extend(s);
+                self.list = list;
                 true
             }
         }
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         let link = ctx.link();
         let into = |l: String| link.callback(move |_| Msg::Into(l.clone()));
         html! {
@@ -78,4 +98,10 @@ impl Component for FileList {
             </div>
         }
     }
+}
+
+
+#[derive(Serialize, Deserialize)]
+struct GetFileListArgs<'a> {
+    name: &'a str,
 }

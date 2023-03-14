@@ -15,6 +15,8 @@ A web based wave viewer
 ### wasm version
 
 ```bash
+rustup target add wasm32-unknown-unknown
+cargo install trunk
 cd front-end
 trunk serve --release
 ```
@@ -28,6 +30,13 @@ coming soon
 ### server version
 
 coming soon
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install trunk
+cd front-end
+trunk build --no-default-features --release --features backend
+```
 
 ## Usage
 
