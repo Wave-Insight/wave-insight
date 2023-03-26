@@ -28,6 +28,7 @@ pub struct FileListProps {
 
 pub struct FileList {
     list: Vec<String>,
+    choose_list: Vec<String>,
 }
 
 impl Component for FileList {
@@ -40,6 +41,7 @@ impl Component for FileList {
 
         Self {
             list: vec![],
+            choose_list: vec![],
         }
     }
 
@@ -53,7 +55,8 @@ impl Component for FileList {
                 true
             }
             Msg::Into(s) => {
-                let args = to_value(&GetFileListArgs { name: &s }).unwrap();
+                self.choose_list.push(s);
+                let args = to_value(&GetFileListArgs { name: self.choose_list.clone() }).unwrap();
                 let link = ctx.link().callback(Msg::SetList);
                 spawn_local(async move {
                     let ret: Vec<String> = from_value(invoke("get_file_list", args).await).unwrap();
@@ -102,6 +105,6 @@ impl Component for FileList {
 
 
 #[derive(Serialize, Deserialize)]
-struct GetFileListArgs<'a> {
-    name: &'a str,
+struct GetFileListArgs {
+    name: Vec<String>,
 }
