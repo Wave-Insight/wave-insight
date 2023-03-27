@@ -1,11 +1,16 @@
+use wave_insight_lib::{data_struct::{Module, ModuleValue}, parser::{verilog_parser::verilog_parser, vcd_parser::vcd_parser}};
 use yew::prelude::*;
 use web_sys::{Event, HtmlInputElement};
 use gloo_file::File;
 
+#[cfg(feature = "backend")]
 use crate::file_load::FileList;
 
 use gloo_file::callbacks::FileReader;
 use web_sys::console;//TODO:for debug
+
+#[cfg(feature = "wasm")]
+use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
 
@@ -32,9 +37,13 @@ pub enum Msg {
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
-#[cfg(feature = "wasm")]
 pub struct FileLoadProps {
-    pub ongetfile: Callback<(FileType,String,String)>,
+    #[cfg(feature = "wasm")]
+    pub module: Rc<Module>,
+    pub ongetmodule: Callback<Module>,
+    #[cfg(feature = "wasm")]
+    pub ongetvalue: Callback<ModuleValue>,
+    pub ongetverilog: Callback<(String, String)>,
 }
 
 pub struct FileLoad {
@@ -46,10 +55,7 @@ pub struct FileLoad {
 
 impl Component for FileLoad {
     type Message = Msg;
-    #[cfg(feature = "wasm")]
     type Properties = FileLoadProps;
-    #[cfg(feature = "backend")]
-    type Properties = ();
 
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
@@ -65,8 +71,20 @@ impl Component for FileLoad {
             #[cfg(feature = "wasm")]
             Msg::Loaded(file_type, file_name, text) => {
                 console::log_1(&format!("parsering {}",(match file_type {FileType::IsVcd=>{"vcd"},FileType::IsVerilog=>{"verilog"},})).into());
-                let ongetfile = ctx.props().ongetfile.clone();
-                ongetfile.emit((file_type,file_name,text));
+
+                match file_type {
+                    FileType::IsVcd => {
+                        let (module, value) = vcd_parser(text,&mut Module::new());
+                        ctx.props().ongetmodule.emit(module);
+                        ctx.props().ongetvalue.emit(value);
+                    },//TODO:module::new()
+                    FileType::IsVerilog => {
+                        ctx.props().ongetmodule.emit(verilog_parser(&text,Rc::clone(&ctx.props().module)));
+                        ctx.props().ongetverilog.emit((file_name,text));
+                    },
+                }
+                console::log_1(&format!("finish parser {}",(match file_type {FileType::IsVcd=>{"vcd"},FileType::IsVerilog=>{"verilog"},})).into());
+
                 true
             }
             #[cfg(feature = "wasm")]
@@ -139,7 +157,10 @@ impl Component for FileLoad {
         html! {
             <div>
                 if self.filelist_show {
-                    <FileList onexit={link.callback(|_| Msg::ExitList)}/>
+                    <FileList
+                        onexit={link.callback(|_| Msg::ExitList)}
+                        ongetmodule={ctx.props().ongetmodule.clone()}
+                    />
                 }
                 <div style="height:5%">
                     <button type="button" style={button_style} onclick={link.callback(|_| Msg::Get)}>{"File"}</button>

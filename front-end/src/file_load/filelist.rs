@@ -1,3 +1,4 @@
+use wave_insight_lib::data_struct::Module;
 use yew::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::{to_value, from_value};
@@ -16,7 +17,7 @@ pub enum Msg {
     Exit(MouseEvent),
     Back,
     Into(String),
-    Choose(String),
+    GetModule(Module),
 
     SetList(Vec<String>),
 }
@@ -24,6 +25,7 @@ pub enum Msg {
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct FileListProps {
     pub onexit: Callback<()>,
+    pub ongetmodule: Callback<Module>,
 }
 
 pub struct FileList {
@@ -55,17 +57,29 @@ impl Component for FileList {
                 true
             }
             Msg::Into(s) => {
-                self.choose_list.push(s);
-                let args = to_value(&GetFileListArgs { name: self.choose_list.clone() }).unwrap();
-                let link = ctx.link().callback(Msg::SetList);
-                spawn_local(async move {
-                    let ret: Vec<String> = from_value(invoke("get_file_list", args).await).unwrap();
-                    //console::log_1(&format!("{:?}", ret).into());
-                    link.emit(ret);
-                });
+                if s.strip_suffix(".vcd").is_some() {
+                    let mut choose = self.choose_list.clone();
+                    choose.push(s);
+                    let args = to_value(&GetFileListArgs { name: choose }).unwrap();
+                    let link = ctx.props().ongetmodule.clone();//ctx.link().callback(Msg::GetModule);
+                    spawn_local(async move {
+                        let ret: Module = from_value(invoke("choose_vcd", args).await).unwrap();
+                        //console::log_1(&format!("{:?}", ret).into());
+                        link.emit(ret);
+                    });
+                }else {
+                    self.choose_list.push(s);
+                    let args = to_value(&GetFileListArgs { name: self.choose_list.clone() }).unwrap();
+                    let link = ctx.link().callback(Msg::SetList);
+                    spawn_local(async move {
+                        let ret: Vec<String> = from_value(invoke("get_file_list", args).await).unwrap();
+                        //console::log_1(&format!("{:?}", ret).into());
+                        link.emit(ret);
+                    });
+                }
                 false
             }
-            Msg::Choose(s) => {
+            Msg::GetModule(s) => {
                 true
             }
             Msg::SetList(s) => {

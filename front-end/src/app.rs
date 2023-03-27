@@ -32,6 +32,10 @@ pub enum Msg {
     #[cfg(feature = "wasm")]
     ParserFile(FileType,String,String),
     SignalAdd((String,Rc<Signal>)),
+    GetModule(Module),
+    #[cfg(feature = "wasm")]
+    GetValue(ModuleValue),
+    GetVerilog((String, String)),
     #[cfg(feature = "server")]
     WsSend(String),
     #[cfg(feature = "server")]
@@ -96,6 +100,19 @@ impl Component for App {
                 #[cfg(feature = "server")]
                 ctx.link().callback(Msg::WsSend).emit(format!("s:{}",input.1.value_key));
                 self.signal_add = (input.0,input.1);
+                true
+            }
+            Msg::GetModule(m) => {
+                self.module = Rc::new(m);
+                true
+            }
+            #[cfg(feature = "wasm")]
+            Msg::GetValue(v) => {
+                self.signal_value = Rc::new(v);
+                true
+            }
+            Msg::GetVerilog(v) => {
+                self.verilog_source.push(v);
                 true
             }
             #[cfg(feature = "server")]
@@ -168,13 +185,19 @@ impl App {
     #[cfg(feature = "wasm")]
     fn file_button(&self, ctx: &Context<Self>) -> Html {
         html!{
-            <FileLoad ongetfile={ctx.link().callback(|i:(FileType,String,String)| Msg::ParserFile(i.0,i.1,i.2))}/>
+            <FileLoad
+                module={Rc::clone(&self.module)}
+                ongetmodule={ctx.link().callback(Msg::GetModule)}
+                ongetvalue={ctx.link().callback(Msg::GetValue)}
+                ongetverilog={ctx.link().callback(Msg::GetVerilog)} />
         }
     }
     #[cfg(feature = "tauri")]
     fn file_button(&self, ctx: &Context<Self>) -> Html {
         html!{
-            <FileLoad/>
+            <FileLoad
+                ongetmodule={ctx.link().callback(Msg::GetModule)}
+                ongetverilog={ctx.link().callback(Msg::GetVerilog)} />
         }
     }
     #[cfg(feature = "server")]
