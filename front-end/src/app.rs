@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::cell::RefCell;
 
 use wave_insight_lib::data_struct::{
     Module,
@@ -27,15 +28,28 @@ use crate::file_load::FileLoad;
 #[cfg(feature = "wasm")]
 use crate::file_load::FileType;
 
+#[cfg(feature = "tauri")]
+use serde::{Deserialize, Serialize};
+#[cfg(feature = "tauri")]
+use serde_wasm_bindgen::{to_value, from_value};
+#[cfg(feature = "tauri")]
+use wasm_bindgen::prelude::*;
+#[cfg(feature = "tauri")]
+use wasm_bindgen_futures::spawn_local;
+#[cfg(feature = "tauri")]
+use crate::file_load::invoke;
+
 pub enum Msg {
     NavIconClick,
-    #[cfg(feature = "wasm")]
-    ParserFile(FileType,String,String),
     SignalAdd((String,Rc<Signal>)),
     GetModule(Module),
     #[cfg(feature = "wasm")]
     GetValue(ModuleValue),
     GetVerilog((String, String)),
+    #[cfg(feature = "tauri")]
+    GetValueFromTauri(String),
+    #[cfg(feature = "tauri")]
+    AddValueFromTauri(Option<(String, (Vec<i32>, Vec<(u8, u8)>))>),
     #[cfg(feature = "server")]
     WsSend(String),
     #[cfg(feature = "server")]
@@ -45,7 +59,7 @@ pub enum Msg {
 pub struct App {
     drawer_state: bool,
     module: Rc<Module>,
-    signal_value: Rc<ModuleValue>,
+    signal_value: Rc<RefCell<ModuleValue>>,//do not re-render when change, so RefCell is ok
     #[cfg(feature = "backend")]
     signal_value_raw: ModuleValue,//TODO:not a good implement
     verilog_source: Vec<(String,String)>,
@@ -64,7 +78,7 @@ impl Component for App {
         Self {
             drawer_state: true,
             module: Rc::new(Module::new()),
-            signal_value: Rc::new(ModuleValue::new()),
+            signal_value: Rc::new(RefCell::new(ModuleValue::new())),
             #[cfg(feature = "backend")]
             signal_value_raw: ModuleValue::new(),
             verilog_source: vec![],
@@ -80,26 +94,12 @@ impl Component for App {
                 self.drawer_state = !self.drawer_state;
                 true
             }
-            #[cfg(feature = "wasm")]
-            Msg::ParserFile(file_type,file_name,text) => {
-                match file_type {
-                    FileType::IsVcd => {
-                        let (module, value) = vcd_parser(text,&mut Module::new());
-                        self.module = Rc::new(module);
-                        self.signal_value = Rc::new(value);
-                    },//TODO:module::new()
-                    FileType::IsVerilog => {
-                        self.module = Rc::new(verilog_parser(&text,Rc::clone(&self.module)));
-                        self.verilog_source.push((file_name,text));
-                    },
-                }
-                console::log_1(&format!("finish parser {}",(match file_type {FileType::IsVcd=>{"vcd"},FileType::IsVerilog=>{"verilog"},})).into());
-                true
-            }
             Msg::SignalAdd(input) => {
                 #[cfg(feature = "server")]
                 ctx.link().callback(Msg::WsSend).emit(format!("s:{}",input.1.value_key));
-                self.signal_add = (input.0,input.1);
+                #[cfg(feature = "tauri")]
+                ctx.link().callback(Msg::GetValueFromTauri).emit(input.1.value_key.clone());
+                self.signal_add = (input.0, input.1);
                 true
             }
             Msg::GetModule(m) => {
@@ -108,12 +108,33 @@ impl Component for App {
             }
             #[cfg(feature = "wasm")]
             Msg::GetValue(v) => {
-                self.signal_value = Rc::new(v);
+                self.signal_value = v.into();
                 true
             }
             Msg::GetVerilog(v) => {
                 self.verilog_source.push(v);
                 true
+            }
+            #[cfg(feature = "tauri")]
+            Msg::GetValueFromTauri(key) => {
+                let args = to_value(&TauriArgs { key }).unwrap();
+                let link = ctx.link().callback(Msg::AddValueFromTauri);
+                spawn_local(async move {
+                    let ret = from_value(invoke("get_value", args).await).unwrap();
+                    //console::log_1(&format!("{:?}", ret).into());
+                    link.emit(ret);
+                });
+                false
+            }
+            #[cfg(feature = "tauri")]
+            Msg::AddValueFromTauri(x) => {
+                match x {
+                    Some((key, value)) => {
+                        self.signal_value.borrow_mut().value.insert(key, value);
+                    },
+                    None => {},
+                };
+                false
             }
             #[cfg(feature = "server")]
             Msg::WsSend(e) => {
@@ -229,4 +250,10 @@ fn create_websocket(ctx: &Context<App>) -> WebSocket {
     ws.set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
     onmessage_callback.forget();
     ws
+}
+
+#[cfg(feature = "tauri")]
+#[derive(Serialize, Deserialize)]
+struct TauriArgs {
+    key: String,
 }

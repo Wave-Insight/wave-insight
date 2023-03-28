@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::cell::RefCell;
 
 use wave_insight_lib::data_struct::{Signal, ModuleValue, ShowType, BitsData, BoolData};
 use yew::prelude::*;
@@ -16,7 +17,7 @@ pub struct SignalValue {
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalValueProps {
-    pub signal_value: Rc<ModuleValue>,
+    pub signal_value: Rc<RefCell<ModuleValue>>,
     pub signal: Rc<Signal>,
     pub bool_signal: bool,
     pub x_axis: f64,
@@ -137,7 +138,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
         let mut last: u32 = zero_position;
         let mut head: u32 = 0;
         let mut head_used = false;
-        for d in props.signal_value.get_bool(&props.signal.value_key) {
+        for d in props.signal_value.borrow().get_bool(&props.signal.value_key) {
             let x = ((d.0 as f64) - x_axis)*size;
             if (0.0..width).contains(&x) {
                 if !head_used {
@@ -187,7 +188,7 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
         let mut head = BitsData::new(vec![(0,0)]);
         let mut head_used = true;
         let mut last_x = 0.0;
-        let mut all_signal_value = props.signal_value.get_bits(&props.signal.value_key);
+        let mut all_signal_value = props.signal_value.borrow().get_bits(&props.signal.value_key);
         all_signal_value.push((1<<30, BitsData::new(vec![(0, 0)])));//TODO:end clk
         for (d, d_next) in all_signal_value.iter().zip(all_signal_value.iter().skip(1)) {
             let x = ((d.0 as f64) - x_axis)*size;

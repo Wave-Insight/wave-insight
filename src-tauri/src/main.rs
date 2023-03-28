@@ -56,6 +56,14 @@ fn choose_vcd(state: tauri::State<State>, name: Vec<String>) -> Module {
     module_raw
 }
 
+#[tauri::command]
+fn get_value(state: tauri::State<State>, key: String) -> Option<(String, (Vec<i32>, Vec<(u8, u8)>))> {
+    println!("signal add: {key}");
+    state.module_value.lock().unwrap()
+        .value.get(&key)
+        .map(|x| (key, x.clone()))
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(State {
@@ -63,7 +71,7 @@ fn main() {
             module: Module::new().into(),
             module_value: ModuleValue::new().into(),
         })
-        .invoke_handler(tauri::generate_handler![get_file_list, choose_vcd])
+        .invoke_handler(tauri::generate_handler![get_file_list, choose_vcd, get_value])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

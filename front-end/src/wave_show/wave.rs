@@ -21,7 +21,7 @@ use super::util::signal_things::SignalThings;
 pub struct WaveShowProps {
     pub signaladd: (String,Rc<Signal>),
     pub module: Rc<Module>,
-    pub signal_value: Rc<ModuleValue>,
+    pub signal_value: Rc<RefCell<ModuleValue>>,
     pub end_clock: i32,
 }
 

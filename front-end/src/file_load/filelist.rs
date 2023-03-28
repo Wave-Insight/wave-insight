@@ -10,7 +10,7 @@ use wasm_bindgen_futures::spawn_local;
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "tauri"])]
-    async fn invoke(cmd: &str, args: JsValue) -> JsValue;
+    pub async fn invoke(cmd: &str, args: JsValue) -> JsValue;
 }
 
 pub enum Msg {
