@@ -26,6 +26,7 @@ pub enum Msg {
 pub struct FileListProps {
     pub onexit: Callback<()>,
     pub ongetmodule: Callback<Module>,
+    pub ongetverilog: Callback<(String, String)>,
 }
 
 pub struct FileList {
@@ -66,6 +67,18 @@ impl Component for FileList {
                         let ret: Module = from_value(invoke("choose_vcd", args).await).unwrap();
                         //console::log_1(&format!("{:?}", ret).into());
                         link.emit(ret);
+                    });
+                }else if s.strip_suffix(".v").is_some() {
+                    let mut choose = self.choose_list.clone();
+                    choose.push(s.clone());
+                    let args = to_value(&GetFileListArgs { name: choose }).unwrap();
+                    let link = ctx.props().ongetmodule.clone();
+                    let link_verilog = ctx.props().ongetverilog.clone();
+                    spawn_local(async move {
+                        let ret: (String, Module) = from_value(invoke("choose_verilog", args).await).unwrap();
+                        //console::log_1(&format!("{:?}", ret).into());
+                        link.emit(ret.1);
+                        link_verilog.emit((s, ret.0));
                     });
                 }else {
                     self.choose_list.push(s);

@@ -7,9 +7,10 @@ use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::rc::Rc;
 use wave_insight_lib::{
     parser::vcd_parser::vcd_parser,
-    //parser::verilog_parser::verilog_parser,
+    parser::verilog_parser::verilog_parser,
     data_struct::Module,
     data_struct::ModuleValue};
 
@@ -57,6 +58,20 @@ fn choose_vcd(state: tauri::State<State>, name: Vec<String>) -> Module {
 }
 
 #[tauri::command]
+fn choose_verilog(state: tauri::State<State>, name: Vec<String>) -> (String, Module) {
+    println!("verilog");
+    let mut dest_path = state.path.clone();
+    name.into_iter().for_each(|x| dest_path.push(&x));
+    let mut file = std::fs::File::open(dest_path).unwrap();
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    let now_module = state.module.lock().unwrap().clone();
+    let module_raw = verilog_parser(&contents, Rc::new(now_module));
+    *state.module.lock().unwrap() = module_raw.clone();
+    (contents, module_raw)
+}
+
+#[tauri::command]
 fn get_value(state: tauri::State<State>, key: String) -> Option<(String, (Vec<i32>, Vec<(u8, u8)>))> {
     println!("signal add: {key}");
     state.module_value.lock().unwrap()
@@ -71,7 +86,7 @@ fn main() {
             module: Module::new().into(),
             module_value: ModuleValue::new().into(),
         })
-        .invoke_handler(tauri::generate_handler![get_file_list, choose_vcd, get_value])
+        .invoke_handler(tauri::generate_handler![get_file_list, choose_vcd, choose_verilog, get_value])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

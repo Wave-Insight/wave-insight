@@ -160,6 +160,7 @@ impl Component for FileLoad {
                     <FileList
                         onexit={link.callback(|_| Msg::ExitList)}
                         ongetmodule={ctx.props().ongetmodule.clone()}
+                        ongetverilog={ctx.props().ongetverilog.clone()}
                     />
                 }
                 <div style="height:5%">
