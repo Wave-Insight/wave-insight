@@ -59,7 +59,8 @@
         "height": 600,
         "resizable": true,
         "title": "Wave Insight Tauri",
-        "width": 800
+        "width": 800,
+        "maximized": true
       }
     ]
   }

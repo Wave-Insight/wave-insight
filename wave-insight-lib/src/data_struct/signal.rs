@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::CodeLocation;
 
 //no need of name because name is key
-#[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Signal {
     pub size: usize,
     pub value_key: String,
@@ -31,5 +31,11 @@ impl Signal {
 impl Default for Signal {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl PartialEq for Signal {
+    fn eq(&self, other: &Self) -> bool {
+        self.value_key == other.value_key
     }
 }

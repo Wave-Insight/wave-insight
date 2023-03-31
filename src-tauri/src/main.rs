@@ -27,7 +27,7 @@ fn get_file_list(state: tauri::State<State>, name: Vec<String>) -> Vec<String> {
     name.into_iter().for_each(|x| dest_path.push(&x));
     let paths = fs::read_dir(&dest_path).unwrap();
 
-    paths.filter_map(|entry| {
+    let mut ret = paths.filter_map(|entry| {
         entry.ok().and_then(|e|
         e.path().file_name()
         .and_then(|n| n.to_str())
@@ -40,7 +40,9 @@ fn get_file_list(state: tauri::State<State>, name: Vec<String>) -> Vec<String> {
             }
         })
     )
-    }).collect::<Vec<String>>()
+    }).collect::<Vec<String>>();
+    ret.sort();
+    ret
 }
 
 #[tauri::command]
