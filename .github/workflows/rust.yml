@@ -31,7 +31,7 @@ jobs:
     - name: Build
       run: |
           cd front-end
-          trunk build --release --public-url wave-insight
+          trunk build --no-default-features --features wasm --release --public-url wave-insight
           
     - name: Deploy
       uses: peaceiris/actions-gh-pages@v3

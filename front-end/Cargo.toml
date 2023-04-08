@@ -38,7 +38,7 @@ features = ["yew-components"]
 git = "https://github.com/siku2/rust-monaco"
 
 [features]
-default = ["tauri"]
+default = ["wasm"]
 wasm = []
 backend = []
 server = ["backend"]

@@ -188,7 +188,7 @@ impl Component for App {
             }
             #[cfg(feature = "wasm")]
             Msg::GetValue(v) => {
-                self.signal_value = v.into();
+                self.signal_value = Rc::new(v.into());
                 true
             }
             Msg::GetVerilog(v) => {
