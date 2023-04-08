@@ -11,6 +11,8 @@ use wasm_bindgen_futures::spawn_local;
 extern "C" {
     #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "tauri"])]
     pub async fn invoke(cmd: &str, args: JsValue) -> JsValue;
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"])]
+    pub async fn listen(event: &str, handler: &Closure<dyn FnMut(JsValue)>);
 }
 
 pub enum Msg {

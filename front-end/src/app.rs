@@ -37,9 +37,16 @@ use wasm_bindgen::prelude::*;
 #[cfg(feature = "tauri")]
 use wasm_bindgen_futures::spawn_local;
 #[cfg(feature = "tauri")]
-use crate::file_load::invoke;
+use crate::file_load::{invoke, listen};
 
 pub enum Msg {
+    #[cfg(feature = "wasm")]
+    FileDrop(DragEvent),
+    #[cfg(feature = "tauri")]
+    FileDrop(Vec<String>),
+    #[cfg(feature = "wasm")]
+    DragOver(DragEvent),
+
     NavIconClick,
     SignalAdd((String,Rc<Signal>)),
     GetModule(Module),
@@ -73,6 +80,28 @@ impl Component for App {
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
+
+        #[cfg(feature = "tauri")]
+        let file_drop_callback = ctx.link().callback(Msg::FileDrop);
+
+        #[cfg(feature = "tauri")]
+        spawn_local(async move {
+            #[derive(Debug, Serialize, Deserialize)]
+            struct TauriEvent {
+                event: String,
+                windowLabel: String,
+                payload: Vec<String>,
+                id: f64,
+            }
+            let closure = Closure::<dyn FnMut(JsValue)>::new(move |x: JsValue| {
+                let tauri_event: TauriEvent = serde_wasm_bindgen::from_value(x).unwrap();//TODO:do not unwrap
+                //console::log_1(&format!("callback: {:?}", tauri_event).into());
+                file_drop_callback.emit(tauri_event.payload);
+            });
+            let ret = listen("tauri://file-drop", &closure).await;
+            closure.forget();
+        });
+
         #[cfg(feature = "server")]
         let websocket = create_websocket(ctx);
         Self {
@@ -90,6 +119,57 @@ impl Component for App {
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
+            #[cfg(feature = "wasm")]
+            Msg::FileDrop(e) => {
+                e.prevent_default();
+                console::log_1(&"file droped".into());
+                console::log_1(&format!("{:?}", e).into());
+                e.data_transfer()
+                    .and_then(|x| x.files())
+                    .and_then(|x| x.get(0))
+                    .map(|x| {
+                        console::log_1(&format!("{:?}", x.name()).into());
+                        console::log_1(&format!("{:?}", x.text()).into());
+                    });
+                true
+            }
+            #[cfg(feature = "wasm")]
+            Msg::DragOver(e) => {
+                e.prevent_default();
+                console::log_1(&format!("{:?}", e).into());
+                true
+            }
+
+            #[cfg(feature = "tauri")]
+            Msg::FileDrop(path) => {
+                #[derive(Serialize, Deserialize)]
+                struct GetFileListArgs {
+                    path: String,
+                }
+                path.into_iter().for_each(|p| {
+                    if p.strip_suffix(".vcd").is_some() {
+                        let args = to_value(&GetFileListArgs { path: p }).unwrap();
+                        let link = ctx.link().callback(Msg::GetModule);
+                        spawn_local(async move {
+                            let ret: Module = from_value(invoke("choose_vcd_absolute", args).await).unwrap();
+                            //console::log_1(&format!("{:?}", ret).into());
+                            link.emit(ret);
+                        });
+                    }else if p.strip_suffix(".v").is_some() {
+                        let args = to_value(&GetFileListArgs { path: p.clone() }).unwrap();
+                        let link = ctx.link().callback(Msg::GetModule);
+                        let link_verilog = ctx.link().callback(Msg::GetVerilog);
+                        spawn_local(async move {
+                            let ret: (String, Module) = from_value(invoke("choose_verilog_absolute", args).await).unwrap();
+                            //console::log_1(&format!("{:?}", ret).into());
+                            link.emit(ret.1);
+                            link_verilog.emit((p.clone(), ret.0));
+                        });
+                    };
+                });
+                true
+            }
+
             Msg::NavIconClick => {
                 self.drawer_state = !self.drawer_state;
                 true
@@ -173,6 +253,9 @@ impl Component for App {
 
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
+            //<div style={"height:".to_owned()+&win_height.to_string()+"px"}
+            //    ondrop={link.callback(Msg::FileDrop)}
+            //    ondragover={link.callback(Msg::DragOver)}>//TODO:for wasm version
             <div style={"height:".to_owned()+&win_height.to_string()+"px"}>
                 <TopBar onnavigationiconclick={link.callback(|_| Msg::NavIconClick)}/>
                 {if self.drawer_state {
@@ -181,6 +264,7 @@ impl Component for App {
                         {self.file_button(ctx)}
                         <ModuleStruct module={Rc::clone(&self.module)} signaladd={link.callback(Msg::SignalAdd)}/>
                     </div>
+                    //TODO:add <div draggable="true"/>
                     }
                 }else {
                     html!{}

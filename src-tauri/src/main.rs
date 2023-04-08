@@ -3,7 +3,7 @@
     windows_subsystem = "windows"
 )]
 
-use std::fs;
+use std::{fs, str::FromStr};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -60,10 +60,36 @@ fn choose_vcd(state: tauri::State<State>, name: Vec<String>) -> Module {
 }
 
 #[tauri::command]
+fn choose_vcd_absolute(state: tauri::State<State>, path: String) -> Module {
+    println!("vcd drop");
+    let dest_path = PathBuf::from_str(&path).unwrap();//TODO:do not unwrap
+    let mut file = std::fs::File::open(dest_path).unwrap();
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    let (module_raw, signal_value_raw) = vcd_parser(contents, &mut Module::new());
+    *state.module.lock().unwrap() = module_raw.clone();
+    *state.module_value.lock().unwrap() = signal_value_raw;
+    module_raw
+}
+
+#[tauri::command]
 fn choose_verilog(state: tauri::State<State>, name: Vec<String>) -> (String, Module) {
     println!("verilog");
     let mut dest_path = state.path.clone();
     name.into_iter().for_each(|x| dest_path.push(&x));
+    let mut file = std::fs::File::open(dest_path).unwrap();
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    let now_module = state.module.lock().unwrap().clone();
+    let module_raw = verilog_parser(&contents, Rc::new(now_module));
+    *state.module.lock().unwrap() = module_raw.clone();
+    (contents, module_raw)
+}
+
+#[tauri::command]
+fn choose_verilog_absolute(state: tauri::State<State>, path: String) -> (String, Module) {
+    println!("verilog drop");
+    let dest_path = PathBuf::from_str(&path).unwrap();//TODO:do not unwrap
     let mut file = std::fs::File::open(dest_path).unwrap();
     let mut contents = String::new();
     file.read_to_string(&mut contents).unwrap();
@@ -88,7 +114,12 @@ fn main() {
             module: Module::new().into(),
             module_value: ModuleValue::new().into(),
         })
-        .invoke_handler(tauri::generate_handler![get_file_list, choose_vcd, choose_verilog, get_value])
+        .invoke_handler(tauri::generate_handler![get_file_list,
+                choose_vcd,
+                choose_vcd_absolute,
+                choose_verilog,
+                choose_verilog_absolute,
+                get_value])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

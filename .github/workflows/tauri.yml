@@ -3,7 +3,7 @@ name: Tauri
 on:
   push:
     tags:
-      - 'pre-v*'
+      - 'v*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -45,10 +45,10 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tagName: ${{ github.ref_name }} # This only works if your workflow triggers on new tags.
-        releaseName: 'App Name v__VERSION__' # tauri-action replaces \_\_VERSION\_\_ with the app version.
+        releaseName: 'v__VERSION__' # tauri-action replaces \_\_VERSION\_\_ with the app version.
         releaseBody: 'See the assets to download and install this version.'
-        releaseDraft: true
-        prerelease: true
+        releaseDraft: false
+        prerelease: false
 
     - name: Upload exe file
       uses: actions/upload-artifact@v3
