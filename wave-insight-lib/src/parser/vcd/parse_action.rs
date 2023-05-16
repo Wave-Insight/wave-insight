@@ -6,5 +6,6 @@ pub enum ParseAction {
     EndModule,
     Signal(String,Signal),
     Value(String,Vec<(u8,u8)>),
+    ValueSingle(String,(u8,u8)),
     Clk(i32),
 }

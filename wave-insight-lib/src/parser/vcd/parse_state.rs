@@ -39,6 +39,9 @@ impl ParseState {
                 ParseAction::Value(key, value) => {
                     self.value.insert(key,value);
                 },
+                ParseAction::ValueSingle(key, value) => {
+                    self.value.insert_single(key,value);
+                },
             }
         }
     }

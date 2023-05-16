@@ -42,6 +42,11 @@ impl ModuleValue {
         temp.0.push(self.clk);
         temp.1.extend(data);
     }
+    pub fn insert_single(&mut self, key: String, data: (u8,u8)) {
+        let temp = self.value.entry(key).or_insert_with(|| (Vec::new(), Vec::new()));
+        temp.0.push(self.clk);
+        temp.1.push(data);
+    }
 }
 
 impl Default for ModuleValue {

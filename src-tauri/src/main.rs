@@ -8,8 +8,8 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::rc::Rc;
+use wave_insight_lib::parser::vcd_parser::vcd_parser_path;
 use wave_insight_lib::{
-    parser::vcd_parser::vcd_parser,
     parser::verilog_parser::verilog_parser,
     data_struct::Module,
     data_struct::ModuleValue};
@@ -50,10 +50,7 @@ fn choose_vcd(state: tauri::State<State>, name: Vec<String>) -> Module {
     println!("vcd!");
     let mut dest_path = state.path.clone();
     name.into_iter().for_each(|x| dest_path.push(&x));
-    let mut file = std::fs::File::open(dest_path).unwrap();
-    let mut contents = String::new();
-    file.read_to_string(&mut contents).unwrap();
-    let (module_raw, signal_value_raw) = vcd_parser(contents, &mut Module::new());
+    let (module_raw, signal_value_raw) = vcd_parser_path(dest_path, &mut Module::new());
     *state.module.lock().unwrap() = module_raw.clone();
     *state.module_value.lock().unwrap() = signal_value_raw;
     module_raw
@@ -63,10 +60,7 @@ fn choose_vcd(state: tauri::State<State>, name: Vec<String>) -> Module {
 fn choose_vcd_absolute(state: tauri::State<State>, path: String) -> Module {
     println!("vcd drop");
     let dest_path = PathBuf::from_str(&path).unwrap();//TODO:do not unwrap
-    let mut file = std::fs::File::open(dest_path).unwrap();
-    let mut contents = String::new();
-    file.read_to_string(&mut contents).unwrap();
-    let (module_raw, signal_value_raw) = vcd_parser(contents, &mut Module::new());
+    let (module_raw, signal_value_raw) = vcd_parser_path(dest_path, &mut Module::new());
     *state.module.lock().unwrap() = module_raw.clone();
     *state.module_value.lock().unwrap() = signal_value_raw;
     module_raw
