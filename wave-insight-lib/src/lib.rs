@@ -1,5 +1,3 @@
-#![feature(test)]
-#![feature(buf_read_has_data_left)]
 
 pub mod data_struct;
 pub mod parser;

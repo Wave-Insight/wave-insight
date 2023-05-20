@@ -25,15 +25,14 @@ pub fn vcd_parser_path(path: std::path::PathBuf, raw_module: &mut Module) -> (Mo
     let mut read_line = std::io::BufReader::new(file);
     let mut buf = String::new();
     let mut state = ParseState{clk: 0, module: raw_module.clone(), value: ModuleValue::new(), stack: vec![]};
-    while read_line.has_data_left().unwrap() {
-        read_line.read_line(&mut buf).unwrap();
+    while read_line.read_line(&mut buf).unwrap() > 0 {
         parsing_line(&mut state, &buf);
         buf.clear();
     }
     state.module.end_clock = state.clk;
     (state.module, state.value)
 }
-
+/*
 extern crate test;
 
 #[cfg(test)]
@@ -71,4 +70,4 @@ mod bench {
             vcd_parser_path(dest_path, &mut Module::new())
         })
     }
-}
+}*/
