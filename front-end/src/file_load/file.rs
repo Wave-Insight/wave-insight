@@ -1,16 +1,16 @@
-use wave_insight_lib::{data_struct::{Module, ModuleValue}, parser::{verilog_parser::verilog_parser, vcd_parser::vcd_parser}};
+use wave_insight_lib::data_struct::Module;
+use wave_insight_lib::waveform::Waveform;
 use yew::prelude::*;
-use web_sys::{Event, HtmlInputElement};
+use web_sys::{DragEvent, Event, HtmlInputElement};
 use gloo_file::File;
 
 #[cfg(feature = "backend")]
 use crate::file_load::FileList;
+#[cfg(feature = "wasm")]
+use crate::nav::SharedWaveform;
 
 use gloo_file::callbacks::FileReader;
-use web_sys::console;//TODO:for debug
-
-#[cfg(feature = "wasm")]
-use std::rc::Rc;
+use web_sys::console;
 
 use wasm_bindgen::prelude::*;
 
@@ -30,6 +30,12 @@ pub enum Msg {
     Loaded(FileType,String,String),
     #[cfg(feature = "wasm")]
     Files(Vec<File>),
+    #[cfg(feature = "wasm")]
+    DragOver(DragEvent),
+    /// Files were dropped on the drop zone; the browser has no file handle for
+    /// a drop event, so they go through the same reader as the picker.
+    #[cfg(feature = "wasm")]
+    FileDrop(DragEvent),
     #[cfg(feature = "backend")]
     Get,
     #[cfg(feature = "backend")]
@@ -38,12 +44,19 @@ pub enum Msg {
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct FileLoadProps {
-    #[cfg(feature = "wasm")]
-    pub module: Rc<Module>,
+    /// The file picker of the tauri/server transports; the browser reads the
+    /// dropped files itself.
+    #[cfg(feature = "backend")]
     pub ongetmodule: Callback<Module>,
+    /// A dump was opened: its hierarchy (legacy module tree) and the handle the
+    /// wave view decodes values from.
     #[cfg(feature = "wasm")]
-    pub ongetvalue: Callback<ModuleValue>,
+    pub ongetwaveform: Callback<(Module, SharedWaveform)>,
+    /// A source file was read; it goes to the design database, not to a parser.
     pub ongetverilog: Callback<(String, String)>,
+    /// A file could not be used; the app shows it in the top bar.
+    #[cfg(feature = "wasm")]
+    pub onerror: Callback<String>,
 }
 
 pub struct FileLoad {
@@ -70,21 +83,16 @@ impl Component for FileLoad {
         match msg {
             #[cfg(feature = "wasm")]
             Msg::Loaded(file_type, file_name, text) => {
-                console::log_1(&format!("parsering {}",(match file_type {FileType::IsVcd=>{"vcd"},FileType::IsVerilog=>{"verilog"},})).into());
-
                 match file_type {
                     FileType::IsVcd => {
-                        let (module, value) = vcd_parser(text,&mut Module::new());
-                        ctx.props().ongetmodule.emit(module);
-                        ctx.props().ongetvalue.emit(value);
-                    },//TODO:module::new()
+                        console::log_1(&format!("opening waveform {file_name}").into());
+                        self.open_waveform(ctx, file_name, text);
+                    },
                     FileType::IsVerilog => {
-                        ctx.props().ongetmodule.emit(verilog_parser(&text,Rc::clone(&ctx.props().module)));
-                        ctx.props().ongetverilog.emit((file_name,text));
+                        // the design database parses it; no separate scan here
+                        ctx.props().ongetverilog.emit((file_name, text));
                     },
                 }
-                console::log_1(&format!("finish parser {}",(match file_type {FileType::IsVcd=>{"vcd"},FileType::IsVerilog=>{"verilog"},})).into());
-
                 true
             }
             #[cfg(feature = "wasm")]
@@ -99,12 +107,29 @@ impl Component for FileLoad {
                     let task = gloo_file::callbacks::read_as_text(&file, move |res| {
                         link.send_message(Msg::Loaded(
                             file_type,
-                            file_name,
+                            file_name.clone(),
                             res.unwrap_or_else(|e| e.to_string()),
                         ))
                     });
                     self.task.push(task);
                 }
+                true
+            }
+            #[cfg(feature = "wasm")]
+            Msg::DragOver(e) => {
+                // without this the browser refuses the drop
+                e.prevent_default();
+                true
+            }
+            #[cfg(feature = "wasm")]
+            Msg::FileDrop(e) => {
+                e.prevent_default();
+                let files = e
+                    .data_transfer()
+                    .and_then(|data| data.files())
+                    .map(files_from)
+                    .unwrap_or_default();
+                ctx.link().send_message(Msg::Files(files));
                 true
             }
             #[cfg(feature = "backend")]
@@ -125,26 +150,18 @@ impl Component for FileLoad {
         let link = ctx.link();
         #[cfg(feature = "wasm")]
         let onchangefunc = link.callback(move |e: Event| {
-                        let mut result = Vec::new();
                         let input: HtmlInputElement = e.target_unchecked_into();
-
-                        if let Some(files) = input.files() {
-                            let files = js_sys::try_iter(&files)
-                                .unwrap()
-                                .unwrap()
-                                .map(|v| web_sys::File::from(v.unwrap()))
-                                .map(File::from);
-                            result.extend(files);
-                        }
-                        Msg::Files(result)
+                        Msg::Files(input.files().map(files_from).unwrap_or_default())
                     });
         #[cfg(feature = "wasm")]
         html! {
             <div class="file-strip">
-                <label class="file-drop">
+                <label class="file-drop"
+                    ondragover={link.callback(Msg::DragOver)}
+                    ondrop={link.callback(Msg::FileDrop)}>
                     <input class="file-native" type="file" multiple=true onchange={onchangefunc}/>
                     <span class="file-drop-icon">{"＋"}</span>
-                    <span class="file-drop-text">{"Load .vcd / .v files"}</span>
+                    <span class="file-drop-text">{"Load or drop .vcd / .v files"}</span>
                 </label>
             </div>
         }
@@ -163,5 +180,42 @@ impl Component for FileLoad {
                 </div>
             </div>
         }
+    }
+}
+
+#[cfg(feature = "wasm")]
+impl FileLoad {
+    /// Open a dump: the header is parsed here, the values are decoded lazily per
+    /// signal by the wave view.
+    fn open_waveform(&mut self, ctx: &Context<Self>, file_name: String, text: String) {
+        let error = match Waveform::open_bytes(text.into_bytes()) {
+            Ok(waveform) => match waveform.legacy_module() {
+                Ok(module) => {
+                    // `end_clock` lives on the root of the legay tree; the wave
+                    // view scales its time axis with it
+                    ctx.props()
+                        .ongetwaveform
+                        .emit((module, SharedWaveform::new(waveform)));
+                    return;
+                }
+                Err(error) => error.message(),
+            },
+            Err(error) => error.message(),
+        };
+        console::log_1(&format!("{file_name}: {error}").into());
+        ctx.props().onerror.emit(format!("{file_name}: {error}"));
+    }
+}
+
+/// Turn a browser [`FileList`] into the files `gloo_file` can read.
+#[cfg(feature = "wasm")]
+fn files_from(list: web_sys::FileList) -> Vec<File> {
+    match js_sys::try_iter(&list) {
+        Ok(Some(files)) => files
+            .filter_map(|file| file.ok())
+            .map(web_sys::File::from)
+            .map(File::from)
+            .collect(),
+        _ => Vec::new(),
     }
 }

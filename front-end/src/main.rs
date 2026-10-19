@@ -6,6 +6,7 @@ mod file_load;
 mod code_reader;
 mod module_struct;
 mod wave_show;
+mod nav;
 
 fn main() {
     yew::start_app::<App>();

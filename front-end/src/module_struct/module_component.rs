@@ -18,8 +18,10 @@ pub enum Msg {
 }
 
 pub struct ModuleComponent {
-    space: String,
-    name: String,
+    /// What this row was expanded from; a new tree (another dump, another
+    /// elaboration) reuses the component position, so the expansion state has to
+    /// be dropped with it.
+    module: Rc<Module>,
     show_submodule: bool,
 }
 
@@ -28,12 +30,18 @@ impl Component for ModuleComponent {
     type Properties = ModuleComponentProps;
 
     fn create(ctx: &Context<Self>) -> Self {
-        let props = ctx.props();
         Self {
-            space: props.space.clone(),
-            name: props.name.clone(),
+            module: Rc::clone(&ctx.props().module),
             show_submodule: false,
         }
+    }
+
+    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+        if !Rc::ptr_eq(&self.module, &ctx.props().module) {
+            self.module = Rc::clone(&ctx.props().module);
+            self.show_submodule = false;
+        }
+        true
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
@@ -51,7 +59,11 @@ impl Component for ModuleComponent {
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let caret = if ctx.props().module.sub_module.is_empty() {
+        // read the props, not a copy taken in `create`: the row is reused when
+        // the app hands over another tree
+        let props = ctx.props();
+        let empty = props.module.sub_module.is_empty();
+        let caret = if empty {
             ""
         }else if self.show_submodule {
             "▾"
@@ -62,11 +74,11 @@ impl Component for ModuleComponent {
             <div>
                 <div class="tree-row" onclick={ctx.link().callback(|_| Msg::ClickThis)}>
                     <span class={if self.show_submodule {"tree-caret open"} else {"tree-caret"}}>{caret}</span>
-                    <span class="tree-name">{self.space.clone()+&self.name}</span>
+                    <span class="tree-name">{props.space.clone()+&props.name}</span>
                 </div>
                 {if self.show_submodule {html!{
-                    for (ctx.props().module.sub_module).iter().map(|x| {
-                        let space = self.space.clone() + "  ";
+                    for (props.module.sub_module).iter().map(|x| {
+                        let space = props.space.clone() + "  ";
                         html! {
                             <div>
                                 <ModuleComponent

@@ -12,6 +12,9 @@ pub struct SignalNameProps {
     pub menu: Callback<()>,
     #[prop_or_default]
     pub onclick: Callback<()>,
+    /// Open the declaration of this signal in the source pane.
+    #[prop_or_default]
+    pub onjump: Callback<()>,
 }
 
 pub struct SignalName {
@@ -47,6 +50,8 @@ impl Component for SignalName {
                     onclick={ctx.props().onclick.reform(|_: MouseEvent| ())}>
                     {&ctx.props().name}
                 </p>
+                <span class="wave-more" title="Go to declaration"
+                    onclick={ctx.props().onjump.reform(|_: MouseEvent| ())}>{"↗"}</span>
                 <span class="wave-more" title="Signal settings"
                     onclick={ctx.props().menu.reform(|_: MouseEvent| ())}>{"⋯"}</span>
             </div>

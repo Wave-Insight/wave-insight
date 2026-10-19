@@ -2,20 +2,23 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
-use wave_insight_lib::data_struct::Module;
+use wave_insight_lib::data_struct::BoolData;
 use wave_insight_lib::data_struct::ModuleValue;
+use wave_insight_lib::waveform::WaveValue;
 //use web_sys::console;
 use yew::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use wave_insight_lib::data_struct::Signal;
 
+use crate::nav::SharedWaveform;
+
 use super::time::{build_axis, Time};
 use super::ctrl::Ctrl;
 use super::settings::Settings;
 use super::signal::SignalName;
 use super::signal::SignalValue;
-use super::util::signal_things::SignalThings;
+use super::util::signal_things::{SignalItem, SignalThings};
 
 ///one signal row is `ROW_HEIGHT` pixels high, keep in sync with `.wave-row`
 ///and `.wave-name-cell` in styles.css
@@ -24,9 +27,20 @@ const ROW_HEIGHT: f64 = 30.0;
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct WaveShowProps {
     pub signaladd: (String,Rc<Signal>),
-    pub module: Rc<Module>,
-    pub signal_value: Rc<RefCell<ModuleValue>>,
+    /// The opened dump; values are decoded from it per row.
+    #[prop_or_default]
+    pub waveform: Option<SharedWaveform>,
+    /// Pre-expanded values for the transports that still send them (tauri /
+    /// server); unused in the browser.
+    #[prop_or_default]
+    pub signal_value: Option<Rc<RefCell<ModuleValue>>>,
     pub end_clock: i32,
+    /// The selected signal, for the driver/load panel.
+    #[prop_or_default]
+    pub onselect: Callback<Option<String>>,
+    /// Open the declaration of one signal in the source pane.
+    #[prop_or_default]
+    pub onjump: Callback<String>,
 }
 
 pub enum Msg {
@@ -41,6 +55,8 @@ pub enum Msg {
     NameMouseDown(MouseEvent),
     NameMouseUp(MouseEvent),
     NameClick(usize),
+    ///the little arrow on a name cell: open its declaration
+    Jump(usize),
     ///the layout moved, everything has to be measured again
     Resize,
 }
@@ -59,6 +75,8 @@ struct Metrics {
 
 pub struct WaveShow {
     signal_things: SignalThings,
+    /// The dump the rows were decoded from.
+    waveform: Option<SharedWaveform>,
     x_axis: f64,
     size: f64,
     min_size: RefCell<f64>,
@@ -96,6 +114,7 @@ impl Component for WaveShow {
     fn create(ctx: &Context<Self>) -> Self {
         let mut this = Self {
             signal_things: SignalThings::new(),
+            waveform: ctx.props().waveform.clone(),
             x_axis: 0f64,
             size: 1f64,
             min_size: RefCell::new(0f64),
@@ -126,7 +145,7 @@ impl Component for WaveShow {
         this
     }
 
-    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Msg::Wheel(e) => {
                 e.prevent_default();
@@ -168,6 +187,7 @@ impl Component for WaveShow {
             Msg::DeleteSig => {
                 self.menu_show = false;
                 self.signal_things.remove(&self.on_setting_idx);
+                ctx.props().onselect.emit(None);
                 true
             }
             Msg::KeyEvent(idx) => {
@@ -260,7 +280,26 @@ impl Component for WaveShow {
             //TODO:drag to the button not work
             //TODO:drag out of the area may cause bug
             Msg::NameClick(idx) => {
-                self.signal_things.onchoose(idx, self.key(17), self.key(16));
+                let ctrl = self.key(17);
+                let shift = self.key(16);
+                self.signal_things.onchoose(idx, ctrl, shift);
+                if let Some(item) = self.signal_things.iter().nth(idx) {
+                    let path = item.signal.value_key.clone();
+                    // the inspector follows the last clicked row
+                    ctx.props().onselect.emit(Some(path.clone()));
+                    if !ctrl && !shift {
+                        // plain click = "show me where this is declared"
+                        ctx.props().onjump.emit(path);
+                    }
+                }
+                true
+            }
+            Msg::Jump(idx) => {
+                if let Some(item) = self.signal_things.iter().nth(idx) {
+                    let path = item.signal.value_key.clone();
+                    ctx.props().onselect.emit(Some(path.clone()));
+                    ctx.props().onjump.emit(path);
+                }
                 true
             }
             Msg::Resize => true,
@@ -268,8 +307,18 @@ impl Component for WaveShow {
     }
 
     fn changed(&mut self, ctx: &Context<Self>) -> bool {
+        // a new dump means every row has to be decoded again
+        if self.waveform != ctx.props().waveform {
+            self.waveform = ctx.props().waveform.clone();
+            self.signal_things
+                .refresh(self.waveform.as_ref().map(|waveform| waveform.as_waveform()));
+        }
         let (signal_name,signal) = &ctx.props().signaladd;
-        self.signal_things.push(signal_name, signal);
+        self.signal_things.push(
+            signal_name,
+            signal,
+            self.waveform.as_ref().map(|waveform| waveform.as_waveform()),
+        );
         true
     }
 
@@ -350,6 +399,7 @@ impl Component for WaveShow {
                                     name={s.name.clone()}
                                     choose={s.choose}
                                     menu={link.callback(move |()| Msg::ShowMenu(idx))}
+                                    onjump={link.callback(move |()| Msg::Jump(idx))}
                                     onclick={link.callback(move |()| Msg::NameClick(idx))}/>}
                             })
                         }
@@ -370,20 +420,22 @@ impl Component for WaveShow {
                         {
                             for self.signal_things.iter().enumerate().map(|(idx,s)| {
                                 html!{<SignalValue
-                                    signal_value={Rc::clone(&ctx.props().signal_value)}
+                                    series={s.series.clone()}
+                                    legacy={ctx.props().signal_value.clone()}
                                     signal={Rc::clone(&s.signal)} bool_signal={s.is_bool}
                                     x_axis={self.x_axis} size={self.size}
                                     width = {wave_show_width}
                                     setting={self.signal_things[idx].setting.clone()}
                                     cursor1={self.cursor1}
-                                    cursor2={self.cursor2} />}
+                                    cursor2={self.cursor2}
+                                    cursor_value={self.cursor_value(s)} />}
                             })
                         }
                         {if has_signal {html!{}} else {html!{
                             <div class="empty-hint">
                                 <div>{"No signals yet"}</div>
                                 <div>{"Pick one from the signal list, drag a range to zoom,"}<br/>
-                                    {"right click a name for its settings."}</div>
+                                    {"click a name in the source to add it here."}</div>
                             </div>
                         }}}
                     </div>
@@ -396,6 +448,18 @@ impl Component for WaveShow {
 impl WaveShow {
     fn key(&self, code: usize) -> bool {
         self.key_press.borrow().get(code).copied().unwrap_or(false)
+    }
+
+    /// The value of one row at the first cursor, for the readout next to it.
+    fn cursor_value(&self, item: &SignalItem) -> Option<String> {
+        let cursor = self.cursor1?;
+        if cursor < 0 {
+            return None;
+        }
+        let waveform = self.waveform.as_ref()?.as_waveform();
+        let info = waveform.signal_by_path(&item.signal.value_key)?;
+        let value = waveform.value_at(info.index(), cursor as u64).ok().flatten()?;
+        format_value(&value, &item.setting, item.signal.size)
     }
 
     fn attach_listeners(&mut self, ctx: &Context<Self>) {
@@ -435,6 +499,24 @@ impl WaveShow {
         self.keyup = Some(keyup);
         self.onresize = Some(onresize);
     }
+}
+
+/// Format one value with the row's `ShowType`, reusing the legacy formatters.
+fn format_value(value: &WaveValue, setting: &Settings, size: usize) -> Option<String> {
+    if let Some(value) = value.to_bool_data() {
+        return Some(
+            match value {
+                BoolData::Zero => "0",
+                BoolData::One => "1",
+                BoolData::X => "x",
+                BoolData::Z => "z",
+            }
+            .to_string(),
+        );
+    }
+    value
+        .to_bits_data()
+        .map(|bits| bits.to_string(size.max(1), &setting.show_type))
 }
 
 ///read the geometry back from the dom

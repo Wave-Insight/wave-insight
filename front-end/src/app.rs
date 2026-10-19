@@ -1,15 +1,28 @@
 use std::rc::Rc;
+
+#[cfg(feature = "backend")]
 use std::cell::RefCell;
 
 use wave_insight_lib::data_struct::{
     Module,
-    Signal,
-    ModuleValue};
+    Signal};
+
+#[cfg(feature = "backend")]
+use wave_insight_lib::data_struct::ModuleValue;
 
 use yew::prelude::*;
+#[cfg(feature = "server")]
 use web_sys::console;//TODO:for debug
 
 use crate::code_reader::CodeReader;
+use crate::nav::{
+    DesignState,
+    Goto,
+    PathPicker,
+    SharedDesign,
+    SharedWaveform,
+    SignalInspector,
+    SourceClick};
 use crate::wave_show::WaveShow;
 use crate::module_struct::ModuleStruct;
 
@@ -34,19 +47,34 @@ use wasm_bindgen_futures::spawn_local;
 use crate::file_load::{invoke, listen};
 
 pub enum Msg {
-    #[cfg(feature = "wasm")]
-    FileDrop(DragEvent),
     #[cfg(feature = "tauri")]
     FileDrop(Vec<String>),
-    #[cfg(feature = "wasm")]
-    DragOver(DragEvent),
 
     NavIconClick,
+    /// A signal was picked in the sidebar; the wave view adds it.
     SignalAdd((String,Rc<Signal>)),
-    GetModule(Module),
+    /// A dump was opened: its hierarchy and the handle values are read from.
     #[cfg(feature = "wasm")]
-    GetValue(ModuleValue),
+    GetWaveform((Module, SharedWaveform)),
+    /// The tauri/server transports hand over a module tree instead.
+    #[cfg(feature = "backend")]
+    GetModule(Module),
+    /// One source file was read; it goes to the design database.
     GetVerilog((String, String)),
+    /// A file could not be opened, or the design could not be parsed.
+    #[cfg(feature = "wasm")]
+    Error(String),
+    /// A plain click on an identifier in the source editor.
+    SourceClick(SourceClick),
+    /// The wave view selected (or cleared) a signal.
+    WaveSelect(Option<String>),
+    /// The wave view asked where a signal is declared.
+    WaveJump(String),
+    /// Bring one source position into view.
+    Goto((String, u32, u32)),
+    /// Several signals cover the clicked position; the user chose one.
+    PickPath(usize),
+    CancelPick,
     #[cfg(feature = "tauri")]
     GetValueFromTauri(String),
     #[cfg(feature = "tauri")]
@@ -76,14 +104,38 @@ fn sidebar_clamp(width: f64) -> f64 {
     width.max(SIDEBAR_MIN).min(max)
 }
 
+/// Candidates waiting for the user to pick one.
+struct Picker {
+    title: String,
+    paths: Vec<String>,
+}
+
 pub struct App {
     drawer_state: bool,
+    /// The sidebar tree: the dump hierarchy once a waveform is open, the
+    /// elaborated design otherwise.
     module: Rc<Module>,
+    waveform_module: Option<Rc<Module>>,
+    design_module: Option<Rc<Module>>,
+    /// The opened dump.
+    waveform: Option<SharedWaveform>,
+    end_clock: i32,
+    /// Parsed sources plus the elaborated design.
+    design: SharedDesign,
+    verilog_source: Vec<(String,String)>,
+    signal_add: (String,Rc<Signal>),
+    /// Hierarchical path of the signal selected in the wave view.
+    selected: Option<String>,
+    picker: Option<Picker>,
+    /// Last jump request handed to the source pane.
+    goto: Option<Goto>,
+    goto_token: u32,
+    /// One line of feedback for the top bar.
+    status: Option<String>,
+    #[cfg(feature = "backend")]
     signal_value: Rc<RefCell<ModuleValue>>,//do not re-render when change, so RefCell is ok
     #[cfg(feature = "backend")]
     signal_value_raw: ModuleValue,//TODO:not a good implement
-    verilog_source: Vec<(String,String)>,
-    signal_add: (String,Rc<Signal>),
     #[cfg(feature = "server")]
     websocket: Option<WebSocket>,
     sidebar_width: f64,
@@ -95,6 +147,7 @@ impl Component for App {
     type Message = Msg;
     type Properties = ();
 
+    #[allow(unused_variables)] // `ctx` is only used by the tauri/server transports
     fn create(ctx: &Context<Self>) -> Self {
 
         #[cfg(feature = "tauri")]
@@ -123,11 +176,22 @@ impl Component for App {
         Self {
             drawer_state: true,
             module: Rc::new(Module::new()),
+            waveform_module: None,
+            design_module: None,
+            waveform: None,
+            end_clock: 0,
+            design: SharedDesign::new(DesignState::new()),
+            verilog_source: vec![],
+            signal_add: ("".to_string(),Rc::new(Signal::new())),
+            selected: None,
+            picker: None,
+            goto: None,
+            goto_token: 0,
+            status: None,
+            #[cfg(feature = "backend")]
             signal_value: Rc::new(RefCell::new(ModuleValue::new())),
             #[cfg(feature = "backend")]
             signal_value_raw: ModuleValue::new(),
-            verilog_source: vec![],
-            signal_add: ("".to_string(),Rc::new(Signal::new())),
             #[cfg(feature = "server")]
             websocket: Some(websocket),
             sidebar_width: SIDEBAR_DEFAULT,
@@ -135,29 +199,9 @@ impl Component for App {
         }
     }
 
+    #[allow(unused_variables)] // `ctx` is only used by the tauri/server transports
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            #[cfg(feature = "wasm")]
-            Msg::FileDrop(e) => {
-                e.prevent_default();
-                console::log_1(&"file droped".into());
-                console::log_1(&format!("{:?}", e).into());
-                e.data_transfer()
-                    .and_then(|x| x.files())
-                    .and_then(|x| x.get(0))
-                    .map(|x| {
-                        console::log_1(&format!("{:?}", x.name()).into());
-                        console::log_1(&format!("{:?}", x.text()).into());
-                    });
-                true
-            }
-            #[cfg(feature = "wasm")]
-            Msg::DragOver(e) => {
-                e.prevent_default();
-                console::log_1(&format!("{:?}", e).into());
-                true
-            }
-
             #[cfg(feature = "tauri")]
             Msg::FileDrop(path) => {
                 #[derive(Serialize, Deserialize)]
@@ -213,25 +257,115 @@ impl Component for App {
                 self.splitter_start = None;
                 true
             }
-            Msg::SignalAdd(input) => {
+            Msg::SignalAdd((name, signal)) => {
                 #[cfg(feature = "server")]
-                ctx.link().callback(Msg::WsSend).emit(format!("s:{}",input.1.value_key));
+                ctx.link().callback(Msg::WsSend).emit(format!("s:{}",signal.value_key));
                 #[cfg(feature = "tauri")]
-                ctx.link().callback(Msg::GetValueFromTauri).emit(input.1.value_key.clone());
-                self.signal_add = (input.0, input.1);
+                ctx.link().callback(Msg::GetValueFromTauri).emit(signal.value_key.clone());
+                let display = if signal.value_key.contains('.') {
+                    signal.value_key.clone()
+                }else {
+                    name
+                };
+                // a row from the design tree knows where it is declared
+                let declare = self.declare_target(&signal.value_key);
+                self.signal_add = (display, signal);
+                self.selected = Some(self.signal_add.1.value_key.clone());
+                if let Some((file, line, col)) = declare {
+                    self.goto_to(file, line, col);
+                }
                 true
             }
+            #[cfg(feature = "wasm")]
+            Msg::GetWaveform((module, waveform)) => {
+                // the dump knows which module it was made from; that is the best
+                // guess for the design top
+                let top_hint = waveform
+                    .as_waveform()
+                    .hierarchy()
+                    .root()
+                    .children()
+                    .first()
+                    .map(|scope| scope.name().to_string());
+                self.design.borrow_mut().set_top_hint(top_hint);
+                self.end_clock = module.end_clock;
+                self.waveform_module = Some(Rc::new(module));
+                self.waveform = Some(waveform);
+                self.refresh_module();
+                self.status = Some("waveform loaded".to_string());
+                true
+            }
+            #[cfg(feature = "backend")]
             Msg::GetModule(m) => {
                 self.module = Rc::new(m);
                 true
             }
-            #[cfg(feature = "wasm")]
-            Msg::GetValue(v) => {
-                self.signal_value = Rc::new(v.into());
+            Msg::GetVerilog((file, text)) => {
+                self.design.borrow_mut().add_source(&file, &text);
+                match self.verilog_source.iter_mut().find(|(name,_)| name == &file) {
+                    Some(entry) => entry.1 = text,
+                    None => self.verilog_source.push((file.clone(), text)),
+                }
+                self.refresh_module();
+                self.status = Some(format!("parsed {file}"));
                 true
             }
-            Msg::GetVerilog(v) => {
-                self.verilog_source.push(v);
+            #[cfg(feature = "wasm")]
+            Msg::Error(message) => {
+                self.status = Some(message);
+                true
+            }
+            Msg::SourceClick(click) => {
+                let candidates = self.candidates_at(&click);
+                match candidates.len() {
+                    0 => {
+                        self.status = Some(format!(
+                            "`{}` is not a signal of the elaborated design", click.word));
+                    }
+                    1 => {
+                        self.add_path(&candidates[0]);
+                    }
+                    _ => {
+                        self.status = Some(format!(
+                            "{} signals match `{}`", candidates.len(), click.word));
+                        self.picker = Some(Picker {
+                            title: format!("{} signals match `{}`", candidates.len(), click.word),
+                            paths: candidates,
+                        });
+                    }
+                }
+                true
+            }
+            Msg::WaveSelect(path) => {
+                self.selected = path;
+                true
+            }
+            Msg::WaveJump(path) => {
+                match self.declare_target(&path) {
+                    Some((file, line, col)) => {
+                        self.goto_to(file, line, col);
+                    }
+                    None => {
+                        self.status = Some(format!(
+                            "no declaration for {path} — load the .v/.sv sources it came from"));
+                    }
+                }
+                true
+            }
+            Msg::Goto((file, line, col)) => {
+                self.goto_to(file, line, col);
+                true
+            }
+            Msg::PickPath(index) => {
+                if let Some(picker) = self.picker.take() {
+                    if let Some(path) = picker.paths.get(index).cloned() {
+                        self.add_path(&path);
+                    }
+                }
+                true
+            }
+            Msg::CancelPick => {
+                self.picker = None;
                 true
             }
             #[cfg(feature = "tauri")]
@@ -285,10 +419,24 @@ impl Component for App {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
+        let design_version = self.design.borrow().version();
+
+        // the tauri/server transports still feed a pre-expanded value tree
+        let legacy_values = {
+            #[cfg(feature = "backend")]
+            {
+                Some(Rc::clone(&self.signal_value))
+            }
+            #[cfg(not(feature = "backend"))]
+            {
+                None
+            }
+        };
 
         html! {
             <div class="app" style={format!("--sidebar-w:{:.0}px", self.sidebar_width)}>
-                <TopBar onnavigationiconclick={link.callback(|_| Msg::NavIconClick)}/>
+                <TopBar onnavigationiconclick={link.callback(|_| Msg::NavIconClick)}
+                    status={self.status.clone()} />
                 <div class="app-body">
                     {if self.drawer_state {
                         html!{
@@ -310,16 +458,36 @@ impl Component for App {
                         html!{}
                     }}
                     <main class="main-pane">
-                        <CodeReader
-                            file={self.verilog_source.clone()}
-                            line={self.signal_add.1.location_define.line} />
+                        <div class="code-pane">
+                            <CodeReader
+                                file={self.verilog_source.clone()}
+                                goto={self.goto.clone()}
+                                onwordclick={link.callback(Msg::SourceClick)} />
+                            <SignalInspector
+                                design={self.design.clone()}
+                                version={design_version}
+                                path={self.selected.clone()}
+                                ongoto={link.callback(Msg::Goto)} />
+                        </div>
                         <WaveShow
                             signaladd={(self.signal_add.0.clone(),Rc::clone(&self.signal_add.1))}
-                            module={Rc::clone(&self.module)}
-                            signal_value={Rc::clone(&self.signal_value)}
-                            end_clock={self.module.end_clock} />
+                            waveform={self.waveform.clone()}
+                            signal_value={legacy_values}
+                            end_clock={self.end_clock}
+                            onselect={link.callback(Msg::WaveSelect)}
+                            onjump={link.callback(Msg::WaveJump)} />
                     </main>
                 </div>
+                {if let Some(picker) = &self.picker {
+                    html!{
+                        <PathPicker title={picker.title.clone()}
+                            paths={picker.paths.clone()}
+                            onchoose={link.callback(Msg::PickPath)}
+                            oncancel={link.callback(|_| Msg::CancelPick)} />
+                    }
+                }else {
+                    html!{}
+                }}
                 {if self.splitter_start.is_some() {
                     html!{
                         <div class="splitter-shield"
@@ -337,14 +505,107 @@ impl Component for App {
 }
 
 impl App {
+    /// Rebuild the sidebar tree: the dump hierarchy wins, the design is the
+    /// fallback so the module list is usable before a VCD is loaded.
+    fn refresh_module(&mut self) {
+        self.design_module = self.design.borrow().module_tree().map(Rc::new);
+        self.module = match (&self.waveform_module, &self.design_module) {
+            (Some(waveform), _) => Rc::clone(waveform),
+            (None, Some(design)) => Rc::clone(design),
+            (None, None) => Rc::new(Module::new()),
+        };
+    }
+
+    /// Where `path` is declared, when the design knows it.
+    fn declare_target(&self, path: &str) -> Option<(String, u32, u32)> {
+        self.design
+            .borrow()
+            .declaration(path)
+            .map(|span| (span.file.display().to_string(), span.start_line, span.start_col))
+    }
+
+    /// Ask the source pane to show one position.
+    fn goto_to(&mut self, file: String, line: u32, col: u32) {
+        if line == 0 {
+            return;
+        }
+        if !self.verilog_source.iter().any(|(name, _)| name == &file) {
+            self.status = Some(format!("{file} is not open in the source pane"));
+            return;
+        }
+        self.goto_token = self.goto_token.wrapping_add(1);
+        self.status = Some(format!("{file}:{line}:{col}"));
+        self.goto = Some(Goto { file, line, col, token: self.goto_token });
+    }
+
+    /// Build the legacy signal row for a hierarchical path.
+    fn signal_for_path(&self, path: &str) -> Signal {
+        let mut signal = Signal::new();
+        signal.value_key = path.to_string();
+        signal.size = 1;
+        if let Some(flat) = self.design.borrow().flat_signal(path) {
+            signal.size = flat.width.unwrap_or(1).max(1) as usize;
+            signal.location_define = wave_insight_lib::data_struct::CodeLocation {
+                file_name: flat.declaration.file.display().to_string(),
+                line: flat.declaration.start_line,
+            };
+            signal.drive = flat.drivers.iter().map(|driver| driver.span.to_string()).collect();
+            signal.load = flat.loads.iter().map(|load| load.span.to_string()).collect();
+        }else if let Some(info) = self
+            .waveform
+            .as_ref()
+            .and_then(|waveform| waveform.signal_by_path(path))
+        {
+            signal.size = info.width().max(1) as usize;
+        }
+        signal
+    }
+
+    /// Add one hierarchical path to the wave view.
+    fn add_path(&mut self, path: &str) {
+        let signal = self.signal_for_path(path);
+        self.signal_add = (path.to_string(), Rc::new(signal));
+        self.selected = Some(path.to_string());
+        self.status = Some(format!("added {path} to the waveform"));
+    }
+
+    /// Every signal path a click at `click` may refer to.
+    ///
+    /// The design database answers exactly (a position can belong to one
+    /// module body instantiated several times, so the answer can be a list).
+    /// Without a matching design, the dump hierarchy is searched by local name,
+    /// which keeps navigation useful when only the VCD is loaded.
+    fn candidates_at(&self, click: &SourceClick) -> Vec<String> {
+        let mut found = {
+            let design = self.design.borrow();
+            let exact = design.signals_at(&click.file, click.line, click.col);
+            if exact.is_empty() {
+                design.signals_matching(&click.word)
+            }else {
+                exact
+            }
+        };
+        if found.is_empty() {
+            if let Some(waveform) = &self.waveform {
+                found = waveform
+                    .as_waveform()
+                    .signals()
+                    .iter()
+                    .filter(|info| info.name() == click.word)
+                    .map(|info| info.path().to_string())
+                    .collect();
+            }
+        }
+        found
+    }
+
     #[cfg(feature = "wasm")]
     fn file_button(&self, ctx: &Context<Self>) -> Html {
         html!{
             <FileLoad
-                module={Rc::clone(&self.module)}
-                ongetmodule={ctx.link().callback(Msg::GetModule)}
-                ongetvalue={ctx.link().callback(Msg::GetValue)}
-                ongetverilog={ctx.link().callback(Msg::GetVerilog)} />
+                ongetwaveform={ctx.link().callback(Msg::GetWaveform)}
+                ongetverilog={ctx.link().callback(Msg::GetVerilog)}
+                onerror={ctx.link().callback(Msg::Error)} />
         }
     }
     #[cfg(feature = "tauri")]

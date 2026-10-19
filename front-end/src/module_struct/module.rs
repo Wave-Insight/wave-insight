@@ -19,6 +19,10 @@ pub struct ModuleStructProps {
 
 pub struct ModuleStruct {
     show_module: Rc<Module>,
+    /// The tree the sidebar was opened with; when the app hands over a new root
+    /// (a dump was opened, or the design was re-elaborated) the selection is
+    /// reset instead of pointing into the old tree.
+    root: Rc<Module>,
 }
 
 impl Component for ModuleStruct {
@@ -27,8 +31,17 @@ impl Component for ModuleStruct {
 
     fn create(ctx: &Context<Self>) -> Self {
         Self {
-            show_module: ctx.props().module.clone(),
+            show_module: initial_module(&ctx.props().module),
+            root: ctx.props().module.clone(),
         }
+    }
+
+    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+        if !Rc::ptr_eq(&self.root, &ctx.props().module) {
+            self.root = Rc::clone(&ctx.props().module);
+            self.show_module = initial_module(&ctx.props().module);
+        }
+        true
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
@@ -85,4 +98,22 @@ impl Component for ModuleStruct {
             </div>
         }
     }
+}
+
+/// The scope the signal list starts on.
+///
+/// The root of a dump is a virtual scope without signals, so descend through
+/// single child scopes until something with signals (or a real fork) is found.
+fn initial_module(root: &Rc<Module>) -> Rc<Module> {
+    let mut current = Rc::clone(root);
+    for _ in 0..8 {
+        if !current.signal.is_empty() || current.sub_module.len() != 1 {
+            break;
+        }
+        match current.sub_module.iter().next() {
+            Some((_name, child)) => current = Rc::new(child.clone()),
+            None => break,
+        }
+    }
+    current
 }

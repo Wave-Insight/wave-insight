@@ -129,25 +129,53 @@ struct EditorSlot {
     handle: Option<JsValue>,
     /// Current buffer contents, replayed when the editor is created late.
     value: String,
-    /// Line to reveal once the editor exists.
-    reveal: Option<u32>,
+    /// `(line, column)` to reveal once the editor exists.
+    reveal: Option<(u32, u32)>,
     /// Set by [`MonacoEditor::dispose`]; a pending creation must then bail out.
     disposed: bool,
+    /// Keeps the `onMouseDown` callback alive for as long as the editor.
+    listener: Option<Closure<dyn FnMut(JsValue)>>,
 }
 
 impl MonacoEditor {
     /// Create an editor inside `host` with the default options.
+    #[allow(dead_code)] // kept for callers that need no click handling
     pub fn create(host: &HtmlElement, initial_text: &str, language: &str, theme: &str) -> Self {
-        Self::create_with_options(host, EditorOptions::new(initial_text, language, theme))
+        Self::build(host, EditorOptions::new(initial_text, language, theme), None)
     }
 
     /// Create an editor inside `host`, overriding any [`EditorOptions`] field.
+    #[allow(dead_code)] // kept for callers that need no click handling
     pub fn create_with_options(host: &HtmlElement, options: EditorOptions) -> Self {
+        Self::build(host, options, None)
+    }
+
+    /// Create an editor that reports clicks on identifiers.
+    ///
+    /// `on_click(line, column, word)` is called for a plain left click on an
+    /// identifier; clicks with a modifier held and non text targets are ignored,
+    /// so text selection, multi cursor and drag and drop keep working. `column`
+    /// is the first column of the identifier, i.e. what a "what is here" query
+    /// wants.
+    pub fn create_interactive(
+        host: &HtmlElement,
+        options: EditorOptions,
+        on_click: Box<dyn Fn(u32, u32, String) + 'static>,
+    ) -> Self {
+        Self::build(host, options, Some(on_click))
+    }
+
+    fn build(
+        host: &HtmlElement,
+        options: EditorOptions,
+        on_click: Option<Box<dyn Fn(u32, u32, String) + 'static>>,
+    ) -> Self {
         let slot = Rc::new(RefCell::new(EditorSlot {
             handle: None,
             value: options.value.clone(),
             reveal: None,
             disposed: false,
+            listener: None,
         }));
 
         // The AMD callback is `'static`, keep an owned view of the mount point.
@@ -176,8 +204,12 @@ impl MonacoEditor {
                     slot.handle = Some(handle.clone());
                     drop(slot);
 
-                    if let Some(line) = reveal {
-                        reveal_line_in_center_js(&handle, line);
+                    if let Some(on_click) = on_click {
+                        let listener = install_click_listener(&handle, on_click);
+                        creator_slot.borrow_mut().listener = Some(listener);
+                    }
+                    if let Some((line, column)) = reveal {
+                        reveal_position_js(&handle, line, column);
                     }
                 }
                 Err(err) => console_error(&format!(
@@ -210,28 +242,39 @@ impl MonacoEditor {
     }
 
     /// Scroll the cursor line to the middle of the viewport.
+    #[allow(dead_code)] // the column aware variant below is what the UI uses
     pub fn reveal_line_in_center(&self, line: u32) {
+        self.reveal_position_in_center(line, 0);
+    }
+
+    /// Move the cursor to `line:col` and scroll that position into the middle.
+    ///
+    /// `col == 0` means "no column": the line is revealed and the cursor is put
+    /// at its first column.
+    pub fn reveal_position_in_center(&self, line: u32, col: u32) {
         let handle = {
             let mut slot = self.slot.borrow_mut();
-            slot.reveal = Some(line);
+            slot.reveal = Some((line, col));
             slot.handle.clone()
         };
         if let Some(handle) = handle {
-            reveal_line_in_center_js(&handle, line);
+            reveal_position_js(&handle, line, col);
         }
     }
 
     /// Tear the editor down. Safe to call repeatedly and before the loader is
     /// done (the pending creation is then abandoned).
     pub fn dispose(&self) {
-        let handle = {
+        let (handle, listener) = {
             let mut slot = self.slot.borrow_mut();
             slot.disposed = true;
-            slot.handle.take()
+            (slot.handle.take(), slot.listener.take())
         };
         if let Some(handle) = handle {
             dispose_handle(&handle);
         }
+        // the JS editor no longer exists, so the callback can go too
+        drop(listener);
     }
 }
 
@@ -460,9 +503,124 @@ fn set_value_js(editor: &JsValue, text: &str) {
     }
 }
 
-fn reveal_line_in_center_js(editor: &JsValue, line: u32) {
-    if let Some(reveal) = js_function(editor, "revealLineInCenter") {
-        let _ = reveal.call1(editor, &JsValue::from_f64(f64::from(line.max(1))));
+/// `editor.onMouseDown(...)`, filtered down to "plain click on an identifier".
+///
+/// The returned closure must be kept alive; it is stored next to the editor
+/// handle and dropped when the editor is disposed.
+fn install_click_listener(
+    editor: &JsValue,
+    on_click: Box<dyn Fn(u32, u32, String) + 'static>,
+) -> Closure<dyn FnMut(JsValue)> {
+    let editor_for_click = editor.clone();
+    let listener = Closure::wrap(Box::new(move |event: JsValue| {
+        let Some((line, column)) = click_position(&event) else {
+            return;
+        };
+        // the identifier may start before the clicked column, and a "what is
+        // here" query wants the start
+        let Some((start, word)) = word_at(&editor_for_click, line, column) else {
+            return;
+        };
+        on_click(line, start, word);
+    }) as Box<dyn FnMut(JsValue)>);
+
+    if let Some(on_mouse_down) = js_function(editor, "onMouseDown") {
+        let _ = on_mouse_down.call1(editor, listener.as_ref().unchecked_ref());
+    }
+    listener
+}
+
+/// Line and column of an `IEditorMouseEvent`, `None` for anything that is not a
+/// plain left click on text.
+fn click_position(event: &JsValue) -> Option<(u32, u32)> {
+    let browser = Reflect::get(event, &JsValue::from_str("event")).ok()?;
+    if browser.is_object() {
+        let number = |key: &str| {
+            Reflect::get(&browser, &JsValue::from_str(key))
+                .ok()
+                .and_then(|value| value.as_f64())
+        };
+        if number("button").unwrap_or(0.0) != 0.0 {
+            // right/middle click: not an "open this name" gesture
+            return None;
+        }
+        for modifier in ["ctrlKey", "altKey", "metaKey", "shiftKey"] {
+            let held = Reflect::get(&browser, &JsValue::from_str(modifier))
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if held {
+                // keep multi cursor, column selection and drag and drop usable
+                return None;
+            }
+        }
+    }
+
+    let target = Reflect::get(event, &JsValue::from_str("target")).ok()?;
+    let position = Reflect::get(&target, &JsValue::from_str("position")).ok()?;
+    let field = |key: &str| {
+        Reflect::get(&position, &JsValue::from_str(key))
+            .ok()
+            .and_then(|value| value.as_f64())
+    };
+    let line = field("lineNumber")? as u32;
+    let column = field("column")? as u32;
+    Some((line.max(1), column.max(1)))
+}
+
+/// `(start column, word)` of the identifier at `line:column`.
+fn word_at(editor: &JsValue, line: u32, column: u32) -> Option<(u32, String)> {
+    let model = js_function(editor, "getModel")?.call0(editor).ok()?;
+    if !model.is_object() {
+        return None;
+    }
+    let get_word = js_function(&model, "getWordAtPosition")?;
+    let position = Object::new();
+    set(&position, "lineNumber", JsValue::from_f64(f64::from(line)));
+    set(&position, "column", JsValue::from_f64(f64::from(column)));
+
+    let word = get_word.call1(&model, &position).ok()?;
+    if !word.is_object() {
+        return None;
+    }
+    let text = Reflect::get(&word, &JsValue::from_str("word"))
+        .ok()?
+        .as_string()?;
+    let start = Reflect::get(&word, &JsValue::from_str("startColumn"))
+        .ok()
+        .and_then(|value| value.as_f64())
+        .map(|value| value as u32)
+        .filter(|value| *value > 0)
+        .unwrap_or(column);
+    Some((start, text))
+}
+
+/// Move the cursor to `line:col` and scroll there.
+fn reveal_position_js(editor: &JsValue, line: u32, column: u32) {
+    let line = line.max(1);
+    let position = Object::new();
+    set(&position, "lineNumber", JsValue::from_f64(f64::from(line)));
+    set(
+        &position,
+        "column",
+        JsValue::from_f64(f64::from(column.max(1))),
+    );
+
+    if let Some(set_position) = js_function(editor, "setPosition") {
+        let _ = set_position.call1(editor, &position);
+    }
+    // a plain line request keeps the horizontal scroll where the user left it
+    let reveal = if column > 1 {
+        js_function(editor, "revealPositionInCenter")
+    } else {
+        js_function(editor, "revealLineInCenter")
+    };
+    if let Some(reveal) = reveal {
+        if column > 1 {
+            let _ = reveal.call1(editor, &position);
+        } else {
+            let _ = reveal.call1(editor, &JsValue::from_f64(f64::from(line)));
+        }
     }
 }
 

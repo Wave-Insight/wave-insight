@@ -1,6 +1,81 @@
 use std::{rc::Rc, slice::{SliceIndex, Iter}, ops::{Index, IndexMut}};
-use wave_insight_lib::data_struct::Signal;
+
+use wave_insight_lib::data_struct::{BitsData, BoolData, Signal};
+use wave_insight_lib::waveform::Waveform;
+
 use crate::wave_show::Settings;
+
+/// Decoded values of one row, in the shape the renderer already understands.
+///
+/// The rows are decoded one signal at a time, when the user adds them, instead
+/// of expanding the whole dump: opening a file only parses its header, so a
+/// large VCD costs nothing until a signal is on screen. `Waveform::all_changes`
+/// decodes exactly one variable (the time table is shared and cached).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Series {
+    /// Values of a one bit signal.
+    pub bools: Option<Rc<Vec<(i32, BoolData)>>>,
+    /// Values of a bit vector.
+    pub bits: Option<Rc<Vec<(i32, BitsData)>>>,
+}
+
+impl Series {
+    /// Decode the whole history of `path`; `None` when the dump has no such
+    /// signal (e.g. sources from another testbench were loaded).
+    pub fn load(waveform: &Waveform, path: &str) -> Option<Self> {
+        let info = waveform.signal_by_path(path)?;
+        let changes = waveform.all_changes(info.index()).ok()?;
+
+        let mut bools = Vec::new();
+        let mut bits = Vec::new();
+        for (time, value) in changes {
+            // the renderer works in `i32` time steps, like the old model
+            let time = (time as i64).min(i32::MAX as i64) as i32;
+            if let Some(value) = value.to_bool_data() {
+                bools.push((time, value));
+            } else if let Some(value) = value.to_bits_data() {
+                bits.push((time, value));
+            }
+        }
+
+        let mut series = Series::default();
+        if !bools.is_empty() {
+            series.bools = Some(Rc::new(bools));
+        }
+        if !bits.is_empty() {
+            series.bits = Some(Rc::new(bits));
+        }
+        Some(series)
+    }
+}
+
+/// Handle on a [`Series`] that compares by identity.
+///
+/// The rows hold up to one entry per value change; comparing them by content on
+/// every render (Yew compares props) would be a full scan of the trace, so the
+/// props only ever compare the pointer.
+#[derive(Clone, Debug, Default)]
+pub struct SeriesRef(pub Rc<Series>);
+
+impl SeriesRef {
+    pub fn new(series: Series) -> Self {
+        Self(Rc::new(series))
+    }
+}
+
+impl std::ops::Deref for SeriesRef {
+    type Target = Series;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq for SeriesRef {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
 
 pub struct SignalItem {
     pub name: String,
@@ -10,6 +85,8 @@ pub struct SignalItem {
     pub load: Vec<String>,
     pub driver: Vec<String>,
     pub choose: bool,
+    /// Values of this row, empty while no dump is loaded.
+    pub series: SeriesRef,
 }
 
 pub struct SignalThings {
@@ -20,30 +97,61 @@ impl SignalThings {
     pub fn new() -> Self {
         Self { item: Vec::new() }
     }
-    pub fn push(&mut self, name: &str, signal: &Rc<Signal>) {
-        if !name.is_empty() {//TODO:!self.signal.contains(signal)
-            let bool_signal = signal.size==1;
-            let name_size = 
-                if bool_signal {name.to_owned()}
-                else {name.to_owned()+"["+&(signal.size-1).to_string()+":0]"};
-            let insert_idx = self.item.iter()
-                .enumerate()
-                .filter(|(_,i)| i.choose)
-                .map(|(idx,_)| idx)
-                .last()
-                .map(|x| x+1)
-                .unwrap_or(self.item.len());
-            self.item.insert(insert_idx, SignalItem {
-                name: name_size,
-                signal: Rc::clone(signal),
-                is_bool: bool_signal,
-                setting: Settings::new(),
-                load: signal.load.clone(),
-                driver: signal.drive.clone(),
-                choose: false,
-            })
+
+    /// Append (or keep) one row.
+    ///
+    /// The same signal can be added from the sidebar, from the source editor
+    /// and from a driver list, so duplicates are dropped by hierarchical path.
+    pub fn push(&mut self, name: &str, signal: &Rc<Signal>, waveform: Option<&Waveform>) {
+        if name.is_empty() || signal.value_key.is_empty() {//TODO:!self.signal.contains(signal)
+            return;
+        }
+        if self
+            .item
+            .iter()
+            .any(|item| item.signal.value_key == signal.value_key)
+        {
+            return;
+        }
+
+        let size = signal.size.max(1);
+        let bool_signal = size == 1;
+        let name_size = 
+            if bool_signal {name.to_owned()}
+            else {name.to_owned()+"["+&(size-1).to_string()+":0]"};
+        let insert_idx = self.item.iter()
+            .enumerate()
+            .filter(|(_,i)| i.choose)
+            .map(|(idx,_)| idx)
+            .last()
+            .map(|x| x+1)
+            .unwrap_or(self.item.len());
+        let series = waveform
+            .and_then(|waveform| Series::load(waveform, &signal.value_key))
+            .map(SeriesRef::new)
+            .unwrap_or_default();
+        self.item.insert(insert_idx, SignalItem {
+            name: name_size,
+            signal: Rc::clone(signal),
+            is_bool: bool_signal,
+            setting: Settings::new(),
+            load: signal.load.clone(),
+            driver: signal.drive.clone(),
+            choose: false,
+            series,
+        })
+    }
+
+    /// Decode every row again, e.g. after another dump was opened.
+    pub fn refresh(&mut self, waveform: Option<&Waveform>) {
+        for item in &mut self.item {
+            item.series = waveform
+                .and_then(|waveform| Series::load(waveform, &item.signal.value_key))
+                .map(SeriesRef::new)
+                .unwrap_or_default();
         }
     }
+
     pub fn remove(&mut self, idx: &[usize]) {
         idx.iter().enumerate().for_each(|(r,&x)| {
             self.item.remove(x-r);
@@ -53,7 +161,7 @@ impl SignalThings {
         let item = self.item.remove(from);
         self.item.insert(to, item);
     }
-    pub fn iter(&self) -> Iter<SignalItem> {
+    pub fn iter(&self) -> Iter<'_, SignalItem> {
         self.item.iter()
     }
     pub fn len(&self) -> usize {

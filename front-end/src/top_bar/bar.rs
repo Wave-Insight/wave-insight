@@ -4,6 +4,9 @@ use yew::prelude::*;
 pub struct TopBarProps {
     #[prop_or_default]
     pub onnavigationiconclick: Callback<()>,
+    /// One line of feedback: the last navigation target or an error.
+    #[prop_or_default]
+    pub status: Option<String>,
 }
 
 pub struct TopBar {
@@ -44,7 +47,16 @@ impl Component for TopBar {
                     <span class="brand-tag">{"VCD / VERILOG"}</span>
                 </div>
                 <div class="topbar-hint">
+                    {
+                        props.status.as_ref().map(|status| {
+                            html!{<span class="brand-tag"
+                                style="color:var(--accent);border-color:var(--accent-line);margin-right:10px">
+                                {status.clone()}</span>}
+                        }).unwrap_or_default()
+                    }
                     <kbd>{"ctrl"}</kbd>{" + wheel to zoom · "}
+                    <kbd>{"click a name"}</kbd>{" adds it · "}
+                    <kbd>{"↗"}</kbd>{" opens its declaration · "}
                     <kbd>{"z"}</kbd>{" "}<kbd>{"f"}</kbd>{" · left / right click sets a cursor"}
                 </div>
             </header>

@@ -1,12 +1,24 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use web_sys::HtmlElement;
 use yew::prelude::*;
 
-use crate::code_reader::monaco_glue::MonacoEditor;
+use crate::code_reader::monaco_glue::{EditorOptions, MonacoEditor};
+use crate::nav::{Goto, SourceClick};
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct CodeBlockProps {
+    /// Name of the file `text` belongs to; it is reported with every click so
+    /// the design database can resolve the position.
+    pub file: String,
     pub text: String,
-    pub line: u32,
+    /// Where to put the cursor; `None` until the user asked for a position.
+    #[prop_or_default]
+    pub goto: Option<Goto>,
+    /// A plain left click on an identifier.
+    #[prop_or_default]
+    pub onwordclick: Callback<SourceClick>,
 }
 
 pub struct CodeBlock {
@@ -16,24 +28,35 @@ pub struct CodeBlock {
     editor: Option<MonacoEditor>,
     /// What the editor currently shows, so prop changes can be diffed.
     shown_text: Option<String>,
-    shown_line: Option<u32>,
+    /// Token of the jump request that was already applied.
+    shown_token: Option<u32>,
+    /// File name and click callback as the JS listener must see them *now*:
+    /// the same editor is reused when another tab is activated.
+    file: Rc<RefCell<String>>,
+    click: Rc<RefCell<Callback<SourceClick>>>,
 }
 
 impl Component for CodeBlock {
     type Message = ();
     type Properties = CodeBlockProps;
 
-    fn create(_ctx: &Context<Self>) -> Self {
+    fn create(ctx: &Context<Self>) -> Self {
         Self {
             host: NodeRef::default(),
             editor: None,
             shown_text: None,
-            shown_line: None,
+            shown_token: None,
+            file: Rc::new(RefCell::new(ctx.props().file.clone())),
+            click: Rc::new(RefCell::new(ctx.props().onwordclick.clone())),
         }
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
         let props = ctx.props();
+
+        // keep the values the JS callback reads in sync with the active tab
+        *self.file.borrow_mut() = props.file.clone();
+        *self.click.borrow_mut() = props.onwordclick.clone();
 
         // The editor can only be mounted once the host div exists.
         if self.editor.is_none() {
@@ -41,20 +64,27 @@ impl Component for CodeBlock {
             return;
         }
 
+        let Some(editor) = &self.editor else {
+            return;
+        };
+
         if self.shown_text.as_deref() != Some(props.text.as_str()) {
             // Another file tab was activated.
-            if let Some(editor) = &self.editor {
-                editor.set_value(&props.text);
-                editor.reveal_line_in_center(props.line);
-            }
+            editor.set_value(&props.text);
             self.shown_text = Some(props.text.clone());
-            self.shown_line = Some(props.line);
-        } else if self.shown_line != Some(props.line) {
-            // The user clicked another signal: jump to its definition.
-            if let Some(editor) = &self.editor {
-                editor.reveal_line_in_center(props.line);
+            match &props.goto {
+                Some(goto) => {
+                    editor.reveal_position_in_center(goto.line, goto.col);
+                    self.shown_token = Some(goto.token);
+                }
+                None => self.shown_token = None,
             }
-            self.shown_line = Some(props.line);
+        } else if let Some(goto) = &props.goto {
+            if self.shown_token != Some(goto.token) {
+                // The user clicked another declaration or driver/load.
+                editor.reveal_position_in_center(goto.line, goto.col);
+                self.shown_token = Some(goto.token);
+            }
         }
     }
 
@@ -79,14 +109,34 @@ impl CodeBlock {
             return;
         };
 
+        // the listener outlives this call, so it must not borrow from `self`
+        let file = Rc::clone(&self.file);
+        let click = Rc::clone(&self.click);
+        let on_click = Box::new(move |line: u32, col: u32, word: String| {
+            let callback = click.borrow().clone();
+            let file = file.borrow().clone();
+            if file.is_empty() || word.is_empty() {
+                return;
+            }
+            callback.emit(SourceClick {
+                file,
+                line,
+                col,
+                word,
+            });
+        });
+
         // `monaco` has no plain `verilog` language; its SystemVerilog grammar
         // covers Verilog as well and is what gives the pane its colouring.
-        let editor = MonacoEditor::create(&host, &props.text, "systemverilog", "vs-dark");
-        // The handle remembers the line until monaco finished downloading.
-        editor.reveal_line_in_center(props.line);
+        let options = EditorOptions::new(props.text.clone(), "systemverilog", "vs-dark");
+        let editor = MonacoEditor::create_interactive(&host, options, on_click);
+        // The handle remembers the position until monaco finished downloading.
+        if let Some(goto) = &props.goto {
+            editor.reveal_position_in_center(goto.line, goto.col);
+            self.shown_token = Some(goto.token);
+        }
 
         self.shown_text = Some(props.text.clone());
-        self.shown_line = Some(props.line);
         self.editor = Some(editor);
     }
 }
