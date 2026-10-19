@@ -6,6 +6,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  #the wasm bundle carries the SystemVerilog parser and the waveform backend,
+  #optimise the release build for size (28 MB -> 9 MB)
+  CARGO_PROFILE_RELEASE_OPT_LEVEL: s
 
 jobs:
   build:

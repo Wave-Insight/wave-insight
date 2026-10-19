@@ -14,3 +14,7 @@ resolver = "2"
 #is silently ignored by cargo
 [profile.release]
 lto = true
+codegen-units = 1
+#the wasm bundle is the main distribution channel, dropping the landing pads
+#and the unwinder removes a large chunk of it
+panic = "abort"

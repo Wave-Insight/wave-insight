@@ -36,11 +36,15 @@ They read `test.vcd` from the repository root, which is git ignored, so drop one
 
 ### wasm version
 
+The bundle carries the SystemVerilog parser and the waveform backend, so it is
+large. Build it with size optimisation, which takes the release chunk from
+about 28 MB down to 9 MB (1.9 MB over the wire once the server g-zips it):
+
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install trunk
 cd front-end
-trunk serve --release
+CARGO_PROFILE_RELEASE_OPT_LEVEL=s trunk serve --release
 ```
 
 then you can open your browser and go to `localhost:8080`
