@@ -32,15 +32,18 @@ features = [
     "DomRect",
     "KeyboardEvent",
     #mouseEvent.detail() for the double click on the splitter
-    "UiEvent",]
-
-[dependencies.monaco]
-version = "0.3.0"
-default-features = false
-features = ["yew-components"]
-git = "https://github.com/siku2/rust-monaco"
-#pin the revision, otherwise a push to that repo silently breaks the build
-rev = "4ada87b559672efd0670e36ffb899249b8589cd2"
+    "UiEvent",
+    #app.rs backend: the websocket message handler (feature = "backend"/"tauri")
+    "MessageEvent",
+    #code_reader/monaco_glue: inject the AMD loader and mount the editor div
+    "Window",
+    "Node",
+    "EventTarget",
+    "HtmlElement",
+    "HtmlHeadElement",
+    "HtmlScriptElement",
+    #console error reporting when the monaco CDN cannot be reached
+    "console",]
 
 [features]
 default = ["wasm"]

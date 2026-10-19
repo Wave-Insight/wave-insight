@@ -41,7 +41,7 @@ impl Component for CodeReader {
 
         let text = &props.file.get(self.activate_index)
             .map(|(_s,o)| o.clone())
-            .unwrap_or_else(|| ("".to_string()));
+            .unwrap_or_else(|| "".to_string());
 
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {

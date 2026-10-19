@@ -1,12 +1,14 @@
-#The versions pinned in Cargo.lock are from early 2023. Newer compilers do not
-#accept some of them anymore, e.g. `proc-macro2 1.0.56` fails with
-#`error[E0635]: unknown feature proc_macro_span_shrink` on rustc >= 1.68.
+#The old lockfile (early 2023) does not build with a current compiler, so the
+#project is pinned instead of drifting with `stable`.
 #
-#Pin the toolchain so a fresh clone keeps building, instead of silently rotting.
+#Moving to 1.98.1 is part of the Verdi push: sv-parser and wellen need a modern
+#compiler, and the front end's git dependencies are gone (see the commit that
+#replaced the monaco binding), so the whole workspace can share one toolchain.
+#
 #To move to a newer rust: run `cargo update` first, fix what breaks, then bump
-#the channel below.
+#the channel below and the three workflows in .github/workflows.
 #
 #The wasm build additionally needs:
 #  rustup target add wasm32-unknown-unknown
 [toolchain]
-channel = "1.67.1"
+channel = "1.98.1"

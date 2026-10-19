@@ -1,9 +1,10 @@
-// this code is learn from https://github.com/siku2/rust-monaco/blob/master/src/yew/mod.rs:
-
-/*
-MIT License
+The Yew wrapper this module replaces (front-end/src/code_reader/mymonaco.rs) and the
+lifecycle design copied from it in monaco_glue.rs come from rust-monaco:
+https://github.com/siku2/rust-monaco
 
 Copyright (c) 2020 Simon Berger
+
+MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -225,117 +226,3 @@ SOFTWARE.
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
-*/
-
-use monaco::{
-    api::{CodeEditor as CodeEditorModel, TextModel},
-    sys::editor::IStandaloneEditorConstructionOptions,
-};
-use std::mem;
-use web_sys::HtmlElement;
-use yew::{html, Component, Context, Html, NodeRef, Properties};
-
-#[derive(Clone, Debug, PartialEq, Properties)]
-pub struct CodeEditorProps<OPT: std::cmp::PartialEq + Clone + Into<IStandaloneEditorConstructionOptions> = IStandaloneEditorConstructionOptions> {
-    /// Changing the options will cause the editor to be re-created.
-    #[prop_or_default]
-    pub options: Option<OPT>,
-    #[prop_or_default]
-    pub model: Option<TextModel>,
-    pub line: u32,
-}
-
-/// CodeEditor component.
-///
-/// Use the `link` prop to pass down a [`CodeEditorLink`] which can be used to
-/// access the [`CodeEditor`](CodeEditorModel).
-#[derive(Debug)]
-pub struct CodeEditor {
-    props: CodeEditorProps,
-    node_ref: NodeRef,
-    editor: Option<CodeEditorModel>,
-}
-impl Component for CodeEditor {
-    type Message = ();
-    type Properties = CodeEditorProps;
-
-    fn create(ctx: &Context<Self>) -> Self {
-
-        Self {
-            props: ctx.props().clone(),
-            node_ref: NodeRef::default(),
-            editor: None,
-        }
-    }
-
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
-        let old_props = mem::replace(&mut self.props, ctx.props().clone());
-        // these are the new values
-        let CodeEditorProps {
-            options,
-            model,
-            line: _line,
-        } = &ctx.props();
-
-        let mut should_render = false;
-        // changing options requires re-create
-        if options != &old_props.options {
-            should_render = true;
-        }
-        // change the attached model
-        if model != &old_props.model {
-            if let Some(editor) = &self.editor {
-                match model {
-                    Some(model) => editor.set_model(model),
-                    None => {
-                        editor.detach_model();
-                    }
-                }
-            }
-        }
-
-        if should_render {
-            // if we're gonna re-create the editor we need to clean up the old one first so
-            // as not to cause issues
-            self.editor = None;
-        }
-
-        should_render
-    }
-
-    fn view(&self, _ctx: &Context<Self>) -> Html {
-        let Self {
-            node_ref, editor, ..
-        } = self;
-
-        debug_assert!(
-            editor.is_none(),
-            "previous editor must be disposed before re-creating"
-        );
-
-        html! {
-            <div ref={node_ref.clone()} style="width: 100%; height: 100%;" />
-        }
-    }
-
-    fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
-        let el = self
-            .node_ref
-            .cast::<HtmlElement>()
-            .expect("failed to resolve editor element");
-
-        let props = ctx.props();
-        let editor = CodeEditorModel::create(&el, props.options.clone());
-
-        if let Some(model) = &props.model {
-            // initially we only update the model if it was actually given as a prop.
-            // this way a value or model can be given in the options and it won't be
-            // detached immediately
-            editor.set_model(model)
-        }
-        
-        editor.as_ref().reveal_line_in_center((ctx.props().line+1) as f64, None);
-
-        self.editor = Some(editor);
-    }
-}
