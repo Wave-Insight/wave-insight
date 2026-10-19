@@ -7,9 +7,10 @@ use super::parse_action::ParseAction;
 pub fn insert_signal(mut line_item: SplitWhitespace<'_>) -> Option<ParseAction> {
     //  $var wire  1 1 clk $end
     line_item.next();//throw "wire"
-    let size = line_item.next().unwrap().parse::<usize>().unwrap();
-    let identify = line_item.next().unwrap();
-    let name = line_item.next().unwrap().to_string();
+    //a truncated or malformed `$var` line used to panic here, drop it instead
+    let size = line_item.next()?.parse::<usize>().ok()?;
+    let identify = line_item.next()?;
+    let name = line_item.next()?.to_string();
 
     let signal = Signal{
         size,
@@ -26,7 +27,7 @@ pub fn insert_signal(mut line_item: SplitWhitespace<'_>) -> Option<ParseAction> 
 pub fn insert_module(mut line_item: SplitWhitespace<'_>) -> Option<ParseAction> {
     // $scope module TOP $end
     line_item.next();//throw "module"
-    let name = line_item.next().unwrap();
+    let name = line_item.next()?;
     Some(ParseAction::Module(name.to_string(), Module::new()))
 }
 

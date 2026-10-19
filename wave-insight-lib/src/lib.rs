@@ -1,3 +1,6 @@
+//the benchmarks need the unstable `test` crate, so keep the default build on
+//stable and only enable it with `cargo +nightly bench --features nightly-bench`
+#![cfg_attr(feature = "nightly-bench", feature(test))]
 
 pub mod data_struct;
 pub mod parser;

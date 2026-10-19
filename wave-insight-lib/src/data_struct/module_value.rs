@@ -29,6 +29,10 @@ impl ModuleValue {
             Vec::new()
         }else {
             let chunk_size = data.1.len()/data.0.len();
+            if chunk_size == 0 {
+                //every timestamp was stored with an empty value, nothing to show
+                return Vec::new();
+            }
             let sig = data.1.chunks(chunk_size)
                 .map(|x| BitsData::new(x.to_vec()));
             data.0.into_iter().zip(sig).map(|(l,r)| (l,r)).collect()

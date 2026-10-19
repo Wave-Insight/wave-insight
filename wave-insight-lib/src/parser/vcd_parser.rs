@@ -32,10 +32,11 @@ pub fn vcd_parser_path(path: std::path::PathBuf, raw_module: &mut Module) -> (Mo
     state.module.end_clock = state.clk;
     (state.module, state.value)
 }
-/*
+
+#[cfg(all(test, feature = "nightly-bench"))]
 extern crate test;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "nightly-bench"))]
 mod bench {
     use std::{str::FromStr, io::{BufRead, Read}};
 
@@ -70,4 +71,4 @@ mod bench {
             vcd_parser_path(dest_path, &mut Module::new())
         })
     }
-}*/
+}

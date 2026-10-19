@@ -22,11 +22,13 @@ impl ParseState {
                     self.stack.push((name, module));
                 },
                 ParseAction::EndModule => {
-                    let stack_out = self.stack.pop().unwrap();
-                    if let Some(m) = self.stack.last_mut() {
-                        m.1.sub_module.entry(stack_out.0).or_insert(stack_out.1);
-                    }else {
-                        self.module.sub_module.entry(stack_out.0).or_insert(stack_out.1);//TODO:if already exist, new module will be throw!
+                    //a stray `$upscope` used to panic, ignore it
+                    if let Some(stack_out) = self.stack.pop() {
+                        if let Some(m) = self.stack.last_mut() {
+                            m.1.sub_module.entry(stack_out.0).or_insert(stack_out.1);
+                        }else {
+                            self.module.sub_module.entry(stack_out.0).or_insert(stack_out.1);//TODO:if already exist, new module will be throw!
+                        }
                     }
                 },
                 ParseAction::Signal(name, signal) => {
