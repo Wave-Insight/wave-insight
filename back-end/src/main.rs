@@ -1,6 +1,9 @@
-use std::{env, io::Error};
+mod args;
 
-use futures_util::{future, StreamExt, TryStreamExt, SinkExt};
+use std::io::{Error, Read};
+use std::process;
+
+use futures_util::{future, SinkExt, StreamExt, TryStreamExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use tungstenite::Message;
@@ -9,28 +12,37 @@ use wave_insight_lib::{
     //parser::verilog_parser::verilog_parser,
     data_struct::Module,
     data_struct::ModuleValue};
-use std::io::Read;
+
+use args::Args;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Error> {
 
     tokio::spawn(serve_html());
 
-    let mut file_args = std::env::args().nth(1);
-    let filename = file_args.get_or_insert("test.vcd".to_string());
-    let mut file = std::fs::File::open(filename).unwrap();
+    let args = Args::new();
+    let filename = args.vcd_path.unwrap_or_else(|| "test.vcd".to_string());
+    let mut file = std::fs::File::open(&filename)
+        .unwrap_or_else(|e| {
+            eprintln!("can not open vcd file `{filename}`: {e}");
+            process::exit(1)
+        });
     let mut contents = String::new();
-    file.read_to_string(&mut contents).unwrap();
+    file.read_to_string(&mut contents)
+        .unwrap_or_else(|e| {
+            eprintln!("can not read vcd file `{filename}`: {e}");
+            process::exit(1)
+        });
     let (module_raw, signal_value_raw) = vcd_parser(contents, &mut Module::new());
     let module = Box::new(module_raw);
     let signal_value = Box::new(signal_value_raw);
 
-    let addr = env::args().nth(2).unwrap_or_else(|| "0.0.0.0:2993".to_string());
+    let addr = args.addr.unwrap_or_else(|| "0.0.0.0:2993".to_string());
 
     // Create the event loop and TCP listener we'll accept connections on.
     let try_socket = TcpListener::bind(&addr).await;
     let listener = try_socket.expect("Failed to bind");
-    println!("Listening on: {}", addr);
+    println!("Listening on: {addr}");
 
     while let Ok((stream, _)) = listener.accept().await {
         tokio::spawn(accept_connection(stream, module.clone(), signal_value.clone()));
@@ -41,35 +53,66 @@ async fn main() -> std::result::Result<(), Error> {
 
 async fn accept_connection(stream: TcpStream, module: Box<Module>, signal_value: Box<ModuleValue>) {
     let addr = stream.peer_addr().expect("connected streams should have a peer address");
-    println!("Peer address: {}", addr);
+    println!("Peer address: {addr}");
 
     let ws_stream = tokio_tungstenite::accept_async(stream)
         .await
         .expect("Error during the websocket handshake occurred");
 
-    println!("New WebSocket connection: {}", addr);
+    println!("New WebSocket connection: {addr}");
 
     let (mut write, read) = ws_stream.split();
     // We should not forward messages other than text or binary.
-    
-    let instantiated = serde_json::to_string_pretty(&Box::leak(module));
-    write.send(Message::Text(format!("module:{}",instantiated.unwrap()))).await.expect("Failed to send module");//TODO:do not panic
-    
+
+    //`Box::leak` used to be called here, which leaked a whole module tree on every
+    //connection just to get a `'static` reference, borrowing the box is enough
+    let instantiated = match serde_json::to_string_pretty(&*module) {
+        Ok(instantiated) => instantiated,
+        Err(e) => {
+            eprintln!("can not serialize module for {addr}: {e}");
+            return;
+        },
+    };
+    if let Err(e) = write.send(Message::Text(format!("module:{instantiated}"))).await {
+        eprintln!("can not send module to {addr}: {e}");
+        return;
+    }
+
     read.try_filter(|msg| future::ready(msg.is_text() || msg.is_binary()))
-        .map(|msg| msg_to_str(msg, signal_value.clone()))
+        .map(|msg| msg_to_str(msg, &signal_value))
         .forward(write)
         .await
         .expect("Failed to forward messages")
-
-    
 }
 
-fn msg_to_str(msg: Result<Message, tungstenite::Error>, signal_value: Box<ModuleValue>) -> Result<Message, tungstenite::Error> {
-    let msg_text = msg.ok().and_then(|m| m.into_text().ok());
-    let key = msg_text.and_then(|t| t.strip_prefix("s:").map(|tt| tt.to_string()));
-    let value_to_send = key.clone().and_then(|k| signal_value.value.get(&k));
-    let sig = value_to_send.and_then(|v| serde_json::to_string_pretty(&v).ok()).unwrap();//TODO:do not unwrap
-    Ok(Message::Text(format!("sig:{}{}{}", key.unwrap(), 29u8 as char, sig)))//TODO:do not unwrap
+///Answer one request of the client.
+///
+///The protocol is just `s:<signal key>`, the answer is `sig:<signal key>\x1d<json>`.
+///Anything else used to panic and then to close the connection, now it is answered
+///with an `error:` message which the front end simply ignores.
+fn msg_to_str(msg: Result<Message, tungstenite::Error>, signal_value: &ModuleValue) -> Result<Message, tungstenite::Error> {
+    let text = msg?.into_text()?;
+    let key = match text.strip_prefix("s:") {
+        Some(key) => key,
+        None => {
+            eprintln!("unsupported request: {text}");
+            return Ok(Message::Text(format!("error:unsupported request `{text}`")));
+        },
+    };
+    match signal_value.value.get(key) {
+        Some(value) => {
+            let sig = serde_json::to_string_pretty(value)
+                .unwrap_or_else(|e| {
+                    eprintln!("can not serialize signal `{key}`: {e}");
+                    "null".to_string()
+                });
+            Ok(Message::Text(format!("sig:{}{}{}", key, 29u8 as char, sig)))
+        },
+        None => {
+            eprintln!("unknown signal: {key}");
+            Ok(Message::Text(format!("error:unknown signal `{key}`")))
+        },
+    }
 }
 
 async fn serve_html() {
