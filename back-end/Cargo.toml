@@ -9,7 +9,9 @@ edition = "2021"
 wave-insight-lib = { path = "../wave-insight-lib" }
 
 futures-channel = "0.3"
-tokio-tungstenite = "*"
+#keep in sync with the pinned `tungstenite` below, a `*` here would jump to a
+#release where `Message::Text` takes `Utf8Bytes` instead of `String`
+tokio-tungstenite = "0.17"
 tokio = { version = "1.0.0", features = ["full", "io-util"] }
 futures-util = { version = "0.3", features = ["sink", "std"] }
 

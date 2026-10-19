@@ -5,8 +5,10 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[profile.release]
-lto = true
+[features]
+#enables the `#[bench]` benchmarks, needs a nightly toolchain:
+#  cargo +nightly bench -p wave-insight-lib --features nightly-bench
+nightly-bench = []
 
 [dependencies]
 num="0.4.0"

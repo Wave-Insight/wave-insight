@@ -6,3 +6,11 @@ members = [
     "back-end",
     "src-tauri",
 ]
+
+#crates here are edition 2021, keep feature unification the way it is meant to be
+resolver = "2"
+
+#profiles are only read from the workspace root, per-crate `[profile.release]`
+#is silently ignored by cargo
+[profile.release]
+lto = true

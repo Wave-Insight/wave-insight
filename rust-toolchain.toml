@@ -1,0 +1,12 @@
+#The versions pinned in Cargo.lock are from early 2023. Newer compilers do not
+#accept some of them anymore, e.g. `proc-macro2 1.0.56` fails with
+#`error[E0635]: unknown feature proc_macro_span_shrink` on rustc >= 1.68.
+#
+#Pin the toolchain so a fresh clone keeps building, instead of silently rotting.
+#To move to a newer rust: run `cargo update` first, fix what breaks, then bump
+#the channel below.
+#
+#The wasm build additionally needs:
+#  rustup target add wasm32-unknown-unknown
+[toolchain]
+channel = "1.67.1"

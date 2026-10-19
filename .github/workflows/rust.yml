@@ -14,10 +14,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
-    - name: Install rust stable
+    - name: Install rust 1.67.1 (see rust-toolchain.toml)
       uses: actions-rs/toolchain@v1
       with:
-          toolchain: stable
+          toolchain: 1.67.1
           target: wasm32-unknown-unknown
           override: true
           
