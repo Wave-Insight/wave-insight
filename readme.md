@@ -12,6 +12,28 @@ A web based wave viewer
 
 ## Build
 
+### toolchain
+
+This project is pinned to `rust 1.67.1` by [`rust-toolchain.toml`](rust-toolchain.toml). Some
+versions in `Cargo.lock` are from early 2023 and do not build with rustc >= 1.68 anymore
+(for example `proc-macro2 1.0.56` fails with `E0635: unknown feature proc_macro_span_shrink`).
+To move to a newer rust, run `cargo update` first, fix whatever breaks, then bump the channel
+in that file.
+
+### test and bench
+
+```bash
+cargo test
+```
+
+The benchmarks use the unstable `test` crate, so they are behind a feature:
+
+```bash
+cargo +nightly bench -p wave-insight-lib --features nightly-bench
+```
+
+They read `test.vcd` from the repository root, which is git ignored, so drop one there first.
+
 ### wasm version
 
 ```bash
@@ -36,7 +58,8 @@ cargo tauri build
 
 ### server version
 
-coming soon
+still a minimal demo, it serves `front-end/dist` on `127.0.0.1:2992` and answers signal
+requests over a websocket on port `2993`
 
 ```bash
 rustup target add wasm32-unknown-unknown
@@ -45,8 +68,10 @@ cd front-end
 trunk build --no-default-features --release --features backend
 cd ..
 cd back-end
-cargo build --release
+cargo run --release -- <vcd file> <listen address>
 ```
+
+both arguments are optional and default to `test.vcd` and `0.0.0.0:2993`
 
 ## Usage
 
