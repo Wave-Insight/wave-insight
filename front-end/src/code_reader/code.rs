@@ -1,6 +1,7 @@
 use yew::prelude::*;
 
 use crate::code_reader::code_block::CodeBlock;
+use crate::lsp::LspBridge;
 use crate::nav::{Goto, SourceClick};
 
 #[derive(Debug, Properties, PartialEq, Clone)]
@@ -13,10 +14,16 @@ pub struct CodeReaderProps {
     /// A plain left click on an identifier inside the editor.
     #[prop_or_default]
     pub onwordclick: Callback<SourceClick>,
+    /// The page's language server client; the editor opens its documents here.
+    pub lsp: LspBridge,
+    /// A tab was closed; the app drops the source and the LSP gets `didClose`.
+    #[prop_or_default]
+    pub onclose: Callback<usize>,
 }
 
 pub enum Msg {
     SetActive(usize),
+    Close(usize),
 }
 
 pub struct CodeReader {
@@ -37,10 +44,19 @@ impl Component for CodeReader {
         }
     }
 
-    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Msg::SetActive(idx) => {
                 self.activate_index = idx;
+                true
+            }
+            Msg::Close(idx) => {
+                ctx.props().onclose.emit(idx);
+                // the parent re-renders with one tab less; keep the index sane
+                // even if it does not
+                if self.activate_index >= ctx.props().file.len().saturating_sub(1) {
+                    self.activate_index = self.activate_index.saturating_sub(1);
+                }
                 true
             }
         }
@@ -69,9 +85,11 @@ impl Component for CodeReader {
         let link = ctx.link();
         let props = ctx.props();
 
+        // the tab list can shrink under us when a tab is closed
+        let active = self.activate_index.min(props.file.len().saturating_sub(1));
         let (file_name, text) = props
             .file
-            .get(self.activate_index)
+            .get(active)
             .map(|(name, text)| (name.clone(), text.clone()))
             .unwrap_or_else(|| (String::new(), String::new()));
 
@@ -80,11 +98,18 @@ impl Component for CodeReader {
                 <nav class="tabs">
                 {
                     for props.file.iter().enumerate().map(|(idx,(name,_text))| {
-                        let class = if idx == self.activate_index {"tab active"} else {"tab"};
+                        let class = if idx == active {"tab active"} else {"tab"};
                         html! {
                             <button type="button" class={class}
                                 onclick={link.callback(move |_| Msg::SetActive(idx))}>
-                                {name.clone()}
+                                <span class="tab-name">{name.clone()}</span>
+                                <span class="tab-close" title="Close the tab"
+                                    style="margin-left:10px;opacity:.55;padding:0 2px;"
+                                    onclick={link.callback(move |event: MouseEvent| {
+                                        // closing must not also activate the tab
+                                        event.stop_propagation();
+                                        Msg::Close(idx)
+                                    })}>{"×"}</span>
                             </button>
                         }
                     })
@@ -93,7 +118,8 @@ impl Component for CodeReader {
                 <div class="code-host">
                     <CodeBlock file={file_name} text={text}
                         goto={props.goto.clone()}
-                        onwordclick={props.onwordclick.clone()} />
+                        onwordclick={props.onwordclick.clone()}
+                        lsp={props.lsp.clone()} />
                 </div>
             </>
         }

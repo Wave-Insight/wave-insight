@@ -120,21 +120,45 @@ impl EditorOptions {
 /// editor), so the methods below are safe to call right after
 /// [`MonacoEditor::create`]: changes made before the editor exists are applied
 /// when it is finally created. Dropping the value disposes the editor.
+///
+/// The editor itself is a *view*: every document the source pane shows lives in
+/// its own monaco text model, addressed by the URI the LSP client uses (see
+/// [`crate::lsp::document_uri`]). Switching tabs therefore re-attaches a model
+/// instead of overwriting one buffer, which is what lets monaco's own language
+/// features (go to definition, peek references) resolve a range in a file that
+/// is not on screen.
 pub struct MonacoEditor {
     slot: Rc<RefCell<EditorSlot>>,
+}
+
+/// A document queued until monaco is ready.
+struct PendingDocument {
+    uri: String,
+    language: String,
+    text: String,
 }
 
 struct EditorSlot {
     /// The JS `IStandaloneCodeEditor`, `None` until monaco is ready.
     handle: Option<JsValue>,
+    /// The `monaco` namespace, `None` until monaco is ready.
+    monaco: Option<JsValue>,
     /// Current buffer contents, replayed when the editor is created late.
     value: String,
     /// `(line, column)` to reveal once the editor exists.
     reveal: Option<(u32, u32)>,
+    /// The document that should be attached once the editor exists.
+    pending: Option<PendingDocument>,
     /// Set by [`MonacoEditor::dispose`]; a pending creation must then bail out.
     disposed: bool,
     /// Keeps the `onMouseDown` callback alive for as long as the editor.
     listener: Option<Closure<dyn FnMut(JsValue)>>,
+    /// Keeps the `onDidChangeModelContent` callback alive.
+    change_listener: Option<Closure<dyn FnMut(JsValue)>>,
+    /// Callbacks waiting for `(monaco namespace, editor handle)`.
+    pending_ready: Vec<Box<dyn Fn(&JsValue, &JsValue)>>,
+    /// The change callback, installed once the editor exists.
+    pending_change: Option<Box<dyn Fn(String, String)>>,
 }
 
 impl MonacoEditor {
@@ -172,10 +196,15 @@ impl MonacoEditor {
     ) -> Self {
         let slot = Rc::new(RefCell::new(EditorSlot {
             handle: None,
+            monaco: None,
             value: options.value.clone(),
             reveal: None,
+            pending: None,
             disposed: false,
             listener: None,
+            change_listener: None,
+            pending_ready: Vec::new(),
+            pending_change: None,
         }));
 
         // The AMD callback is `'static`, keep an owned view of the mount point.
@@ -194,23 +223,38 @@ impl MonacoEditor {
             let options = EditorOptions { value, ..options };
             match create_editor(monaco, &host, &options) {
                 Ok(handle) => {
-                    let mut slot = creator_slot.borrow_mut();
-                    if slot.disposed {
-                        // The component went away while monaco was still loading.
-                        drop(slot);
-                        dispose_handle(&handle);
-                        return;
-                    }
-                    slot.handle = Some(handle.clone());
-                    drop(slot);
+                    let (ready, change) = {
+                        let mut slot = creator_slot.borrow_mut();
+                        if slot.disposed {
+                            // The component went away while monaco was still loading.
+                            drop(slot);
+                            dispose_handle(&handle);
+                            return;
+                        }
+                        slot.handle = Some(handle.clone());
+                        slot.monaco = Some(monaco.clone());
+                        slot.reveal = reveal;
+                        (
+                            std::mem::take(&mut slot.pending_ready),
+                            slot.pending_change.take(),
+                        )
+                    };
 
                     if let Some(on_click) = on_click {
                         let listener = install_click_listener(&handle, on_click);
                         creator_slot.borrow_mut().listener = Some(listener);
                     }
-                    if let Some((line, column)) = reveal {
-                        reveal_position_js(&handle, line, column);
+                    if let Some(change) = change {
+                        // installed before the first document is attached, so
+                        // replacing a buffer is reported like any other edit
+                        let listener = install_change_listener(&handle, change);
+                        creator_slot.borrow_mut().change_listener = Some(listener);
                     }
+                    for callback in ready {
+                        callback(monaco, &handle);
+                    }
+                    // attach the queued document and reveal the queued position
+                    flush(&mut creator_slot.borrow_mut());
                 }
                 Err(err) => console_error(&format!(
                     "wave-insight: monaco could not create the editor: {}",
@@ -223,21 +267,71 @@ impl MonacoEditor {
     }
 
     /// The raw JS editor handle, for code that wants to talk to monaco directly
-    /// (language clients, decorations, ...). `None` until the loader is done.
-    #[allow(dead_code)] // reserved for the upcoming language-client integration
+    /// (decorations, commands, ...). `None` until the loader is done.
+    #[allow(dead_code)] // reserved for direct monaco calls outside the glue
     pub fn editor(&self) -> Option<JsValue> {
         self.slot.borrow().handle.clone()
     }
 
-    /// Replace the whole buffer, e.g. when another file tab is activated.
-    pub fn set_value(&self, text: &str) {
+    /// Run `callback` with the `monaco` namespace and the live editor once both
+    /// exist. This is how the language providers are registered without
+    /// assuming the CDN finished loading.
+    pub fn on_ready(&self, callback: Box<dyn Fn(&JsValue, &JsValue)>) {
+        let mut callback = Some(callback);
+        let ready = {
+            let mut slot = self.slot.borrow_mut();
+            match (slot.monaco.clone(), slot.handle.clone()) {
+                (Some(monaco), Some(handle)) => Some((monaco, handle)),
+                _ => {
+                    if let Some(callback) = callback.take() {
+                        slot.pending_ready.push(callback);
+                    }
+                    None
+                }
+            }
+        };
+        if let (Some((monaco, handle)), Some(callback)) = (ready, callback) {
+            callback(&monaco, &handle);
+        }
+    }
+
+    /// Show the model for `uri`, creating it from `text` the first time.
+    ///
+    /// Calling this again with a different `text` (the app reloaded the file,
+    /// or another tab was activated) replaces the buffer contents; the queued
+    /// request is replayed when monaco is still loading.
+    pub fn show_document(&self, uri: &str, language: &str, text: &str) {
+        let mut slot = self.slot.borrow_mut();
+        slot.pending = Some(PendingDocument {
+            uri: uri.to_owned(),
+            language: language.to_owned(),
+            text: text.to_owned(),
+        });
+        flush(&mut slot);
+    }
+
+    /// `editor.onDidChangeModelContent`: `callback(model uri, buffer text)`.
+    ///
+    /// Replacing the whole buffer (a tab switch, a re-read of the file) fires
+    /// the same event, so the language server sees every change the user or the
+    /// app makes.
+    pub fn on_content_change(&self, callback: Box<dyn Fn(String, String)>) {
+        let mut callback = Some(callback);
         let handle = {
             let mut slot = self.slot.borrow_mut();
-            slot.value = text.to_owned();
-            slot.handle.clone()
+            match slot.handle.clone() {
+                Some(handle) => Some(handle),
+                None => {
+                    if let Some(callback) = callback.take() {
+                        slot.pending_change = Some(callback);
+                    }
+                    None
+                }
+            }
         };
-        if let Some(handle) = handle {
-            set_value_js(&handle, text);
+        if let (Some(handle), Some(callback)) = (handle, callback) {
+            let listener = install_change_listener(&handle, callback);
+            self.slot.borrow_mut().change_listener = Some(listener);
         }
     }
 
@@ -252,29 +346,29 @@ impl MonacoEditor {
     /// `col == 0` means "no column": the line is revealed and the cursor is put
     /// at its first column.
     pub fn reveal_position_in_center(&self, line: u32, col: u32) {
-        let handle = {
-            let mut slot = self.slot.borrow_mut();
-            slot.reveal = Some((line, col));
-            slot.handle.clone()
-        };
-        if let Some(handle) = handle {
-            reveal_position_js(&handle, line, col);
-        }
+        let mut slot = self.slot.borrow_mut();
+        slot.reveal = Some((line, col));
+        flush(&mut slot);
     }
 
     /// Tear the editor down. Safe to call repeatedly and before the loader is
     /// done (the pending creation is then abandoned).
     pub fn dispose(&self) {
-        let (handle, listener) = {
+        let (handle, listener, change_listener) = {
             let mut slot = self.slot.borrow_mut();
             slot.disposed = true;
-            (slot.handle.take(), slot.listener.take())
+            (
+                slot.handle.take(),
+                slot.listener.take(),
+                slot.change_listener.take(),
+            )
         };
         if let Some(handle) = handle {
             dispose_handle(&handle);
         }
-        // the JS editor no longer exists, so the callback can go too
+        // the JS editor no longer exists, so the callbacks can go too
         drop(listener);
+        drop(change_listener);
     }
 }
 
@@ -497,9 +591,102 @@ fn create_editor(monaco: &JsValue, host: &JsValue, options: &EditorOptions) -> R
     create.call2(&namespace, host, &options.to_js_value())
 }
 
-fn set_value_js(editor: &JsValue, text: &str) {
-    if let Some(set_value) = js_function(editor, "setValue") {
-        let _ = set_value.call1(editor, &JsValue::from_str(text));
+/// The `monaco.Uri` for an LSP document URI.
+pub fn parse_uri(monaco: &JsValue, uri: &str) -> Option<JsValue> {
+    let namespace = Reflect::get(monaco, &JsValue::from_str("Uri")).ok()?;
+    let parse = js_function(&namespace, "parse")?;
+    parse
+        .call1(&namespace, &JsValue::from_str(uri))
+        .ok()
+        .filter(JsValue::is_object)
+}
+
+/// The text model for `uri`, created from `text` when it does not exist yet.
+///
+/// This is what gives every design source its own monaco buffer, so a language
+/// provider can point monaco at a range in a file that is not on screen.
+pub fn ensure_model(monaco: &JsValue, uri: &str, language: &str, text: &str) -> Option<JsValue> {
+    let uri_value = parse_uri(monaco, uri)?;
+    let editor = Reflect::get(monaco, &JsValue::from_str("editor")).ok()?;
+    let get_model = js_function(&editor, "getModel")?;
+    if let Ok(existing) = get_model.call1(&editor, &uri_value) {
+        if existing.is_object() {
+            return Some(existing);
+        }
+    }
+    let create_model = js_function(&editor, "createModel")?;
+    match create_model.call3(
+        &editor,
+        &JsValue::from_str(text),
+        &JsValue::from_str(language),
+        &uri_value,
+    ) {
+        Ok(model) if model.is_object() => Some(model),
+        // another caller created the same URI first
+        _ => get_model
+            .call1(&editor, &uri_value)
+            .ok()
+            .filter(JsValue::is_object),
+    }
+}
+
+/// `model.uri.toString()`, i.e. the LSP document URI.
+pub fn model_uri(model: &JsValue) -> Option<String> {
+    let uri = Reflect::get(model, &JsValue::from_str("uri")).ok()?;
+    let to_string = js_function(&uri, "toString")?;
+    to_string.call0(&uri).ok()?.as_string()
+}
+
+/// `model.getValue()`.
+pub fn model_text(model: &JsValue) -> Option<String> {
+    let get_value = js_function(model, "getValue")?;
+    get_value.call0(model).ok()?.as_string()
+}
+
+fn set_model_value(model: &JsValue, text: &str) {
+    if let Some(set_value) = js_function(model, "setValue") {
+        let _ = set_value.call1(model, &JsValue::from_str(text));
+    }
+}
+
+fn editor_model_uri(editor: &JsValue) -> Option<String> {
+    let get_model = js_function(editor, "getModel")?;
+    let model = get_model.call0(editor).ok()?;
+    if !model.is_object() {
+        return None;
+    }
+    model_uri(&model)
+}
+
+fn set_editor_model(editor: &JsValue, model: &JsValue) {
+    if let Some(set_model) = js_function(editor, "setModel") {
+        let _ = set_model.call1(editor, model);
+    }
+}
+
+/// Attach the queued document and reveal the queued position.
+///
+/// Does nothing while monaco is still loading: [`EditorSlot::pending`] and
+/// [`EditorSlot::reveal`] are replayed by the creation callback.
+fn flush(slot: &mut EditorSlot) {
+    let (Some(handle), Some(monaco)) = (slot.handle.clone(), slot.monaco.clone()) else {
+        return;
+    };
+    if let Some(document) = slot.pending.take() {
+        if let Some(model) = ensure_model(&monaco, &document.uri, &document.language, &document.text)
+        {
+            // A model that outlived its tab (or a re-read of the same file)
+            // is brought up to date before it is shown.
+            if model_text(&model).as_deref() != Some(document.text.as_str()) {
+                set_model_value(&model, &document.text);
+            }
+            if editor_model_uri(&handle).as_deref() != Some(document.uri.as_str()) {
+                set_editor_model(&handle, &model);
+            }
+        }
+    }
+    if let Some((line, column)) = slot.reveal.take() {
+        reveal_position_js(&handle, line, column);
     }
 }
 
@@ -530,26 +717,57 @@ fn install_click_listener(
     listener
 }
 
+/// `editor.onDidChangeModelContent(...)`, reported as `(model URI, text)`.
+///
+/// The returned closure must be kept alive; it is stored next to the editor
+/// handle and dropped when the editor is disposed.
+fn install_change_listener(
+    editor: &JsValue,
+    callback: Box<dyn Fn(String, String)>,
+) -> Closure<dyn FnMut(JsValue)> {
+    let editor_for_change = editor.clone();
+    let listener = Closure::wrap(Box::new(move |_event: JsValue| {
+        let Some(get_model) = js_function(&editor_for_change, "getModel") else {
+            return;
+        };
+        let Ok(model) = get_model.call0(&editor_for_change) else {
+            return;
+        };
+        if !model.is_object() {
+            return;
+        }
+        if let (Some(uri), Some(text)) = (model_uri(&model), model_text(&model)) {
+            callback(uri, text);
+        }
+    }) as Box<dyn FnMut(JsValue)>);
+
+    if let Some(on_change) = js_function(editor, "onDidChangeModelContent") {
+        let _ = on_change.call1(editor, listener.as_ref().unchecked_ref());
+    }
+    listener
+}
+
 /// Line and column of an `IEditorMouseEvent`, `None` for anything that is not a
 /// plain left click on text.
 fn click_position(event: &JsValue) -> Option<(u32, u32)> {
-    let browser = Reflect::get(event, &JsValue::from_str("event")).ok()?;
-    if browser.is_object() {
-        let number = |key: &str| {
-            Reflect::get(&browser, &JsValue::from_str(key))
+    let mouse = Reflect::get(event, &JsValue::from_str("event")).ok()?;
+    if mouse.is_object() {
+        // monaco's `IMouseEvent` reports the buttons as booleans
+        // (`leftButton`/`rightButton`/`middleButton`) and carries the modifier
+        // state itself; the DOM `button` number is not part of it. Requiring
+        // `leftButton` is what keeps a right click (which opens monaco's
+        // context menu) from also being taken for an "open this name" gesture.
+        let flag = |key: &str| {
+            Reflect::get(&mouse, &JsValue::from_str(key))
                 .ok()
-                .and_then(|value| value.as_f64())
+                .and_then(|value| value.as_bool())
         };
-        if number("button").unwrap_or(0.0) != 0.0 {
-            // right/middle click: not an "open this name" gesture
+        let right_or_middle = flag("rightButton") == Some(true) || flag("middleButton") == Some(true);
+        if right_or_middle || flag("leftButton") == Some(false) {
             return None;
         }
         for modifier in ["ctrlKey", "altKey", "metaKey", "shiftKey"] {
-            let held = Reflect::get(&browser, &JsValue::from_str(modifier))
-                .ok()
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
-            if held {
+            if flag(modifier) == Some(true) {
                 // keep multi cursor, column selection and drag and drop usable
                 return None;
             }

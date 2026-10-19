@@ -15,6 +15,7 @@ use yew::prelude::*;
 use web_sys::console;//TODO:for debug
 
 use crate::code_reader::CodeReader;
+use crate::lsp::LspBridge;
 use crate::nav::{
     DesignState,
     Goto,
@@ -61,6 +62,8 @@ pub enum Msg {
     GetModule(Module),
     /// One source file was read; it goes to the design database.
     GetVerilog((String, String)),
+    /// A source tab was closed; the file leaves the source pane.
+    CloseSource(usize),
     /// A file could not be opened, or the design could not be parsed.
     #[cfg(feature = "wasm")]
     Error(String),
@@ -122,6 +125,8 @@ pub struct App {
     end_clock: i32,
     /// Parsed sources plus the elaborated design.
     design: SharedDesign,
+    /// The language server client the source editor talks to.
+    lsp: LspBridge,
     verilog_source: Vec<(String,String)>,
     signal_add: (String,Rc<Signal>),
     /// Hierarchical path of the signal selected in the wave view.
@@ -173,6 +178,15 @@ impl Component for App {
 
         #[cfg(feature = "server")]
         let websocket = create_websocket(ctx);
+        // The language server client runs the same code the desktop transport
+        // pumps, but against its own parse of the same sources; navigation
+        // falls back to `design` whenever it cannot answer.
+        let design = SharedDesign::new(DesignState::new());
+        let lsp = LspBridge::new(
+            design.clone(),
+            ctx.link()
+                .callback(|goto: Goto| Msg::Goto((goto.file, goto.line, goto.col))),
+        );
         Self {
             drawer_state: true,
             module: Rc::new(Module::new()),
@@ -180,7 +194,8 @@ impl Component for App {
             design_module: None,
             waveform: None,
             end_clock: 0,
-            design: SharedDesign::new(DesignState::new()),
+            design,
+            lsp,
             verilog_source: vec![],
             signal_add: ("".to_string(),Rc::new(Signal::new())),
             selected: None,
@@ -292,6 +307,7 @@ impl Component for App {
                 self.waveform_module = Some(Rc::new(module));
                 self.waveform = Some(waveform);
                 self.refresh_module();
+                self.sync_lsp_top();
                 self.status = Some("waveform loaded".to_string());
                 true
             }
@@ -303,11 +319,30 @@ impl Component for App {
             Msg::GetVerilog((file, text)) => {
                 self.design.borrow_mut().add_source(&file, &text);
                 match self.verilog_source.iter_mut().find(|(name,_)| name == &file) {
-                    Some(entry) => entry.1 = text,
-                    None => self.verilog_source.push((file.clone(), text)),
+                    Some(entry) => entry.1 = text.clone(),
+                    None => self.verilog_source.push((file.clone(), text.clone())),
                 }
+                // every loaded source is an open LSP document, not only the
+                // visible tab, so a definition can point into any of them
+                self.lsp.open(&file, &text);
                 self.refresh_module();
+                self.sync_lsp_top();
                 self.status = Some(format!("parsed {file}"));
+                true
+            }
+            Msg::CloseSource(index) => {
+                if let Some((file, _text)) = self
+                    .verilog_source
+                    .get(index)
+                    .map(|(file, text)| (file.clone(), text.clone()))
+                {
+                    self.verilog_source.remove(index);
+                    // the buffer goes away; the source stays in the design and
+                    // in the language server's database, so declaration targets
+                    // in the closed file keep resolving
+                    self.lsp.close(&file);
+                    self.status = Some(format!("closed {file}"));
+                }
                 true
             }
             #[cfg(feature = "wasm")]
@@ -462,6 +497,8 @@ impl Component for App {
                             <CodeReader
                                 file={self.verilog_source.clone()}
                                 goto={self.goto.clone()}
+                                lsp={self.lsp.clone()}
+                                onclose={link.callback(Msg::CloseSource)}
                                 onwordclick={link.callback(Msg::SourceClick)} />
                             <SignalInspector
                                 design={self.design.clone()}
@@ -514,6 +551,17 @@ impl App {
             (None, Some(design)) => Rc::clone(design),
             (None, None) => Rc::new(Module::new()),
         };
+    }
+
+    /// Tell the language server which module to elaborate, so its hover,
+    /// definition and outline answers describe the same hierarchy the sidebar
+    /// and the inspector show.
+    fn sync_lsp_top(&self) {
+        let top = {
+            let state = self.design.borrow();
+            state.top().map(str::to_owned)
+        };
+        self.lsp.set_top(top.as_deref());
     }
 
     /// Where `path` is declared, when the design knows it.

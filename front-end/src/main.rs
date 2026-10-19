@@ -7,6 +7,7 @@ mod code_reader;
 mod module_struct;
 mod wave_show;
 mod nav;
+mod lsp;
 
 fn main() {
     yew::start_app::<App>();
