@@ -3,7 +3,9 @@
 #![cfg_attr(feature = "nightly-bench", feature(test))]
 
 pub mod data_struct;
+pub mod design;
 pub mod parser;
+pub mod waveform;
 
 #[cfg(test)]
 mod tests {

@@ -5,6 +5,9 @@ use crate::data_struct::{Module, ModuleValue};
 use super::vcd::parse_state::ParseState;
 use super::vcd::parsing_line::parsing_line;
 
+// LEGACY: superseded by crate::waveform (wellen based, VCD/FST/GHW, lazy value
+// queries). Kept until the front end is migrated; do not add features to it.
+
 pub fn vcd_parser(input: String, raw_module: &mut Module) -> (Module, ModuleValue) {
     let lines = input.lines();
     let mut state = ParseState{clk: 0, module: raw_module.clone(), value: ModuleValue::new(), stack: vec![]};
