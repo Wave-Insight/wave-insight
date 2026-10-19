@@ -4504,6 +4504,7 @@ dependencies = [
  "linked-hash-map",
  "num",
  "serde",
+ "serde_json",
  "sv-parser",
  "wellen",
 ]

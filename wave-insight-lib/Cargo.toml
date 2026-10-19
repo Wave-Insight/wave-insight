@@ -20,3 +20,7 @@ wellen = "0.25"
 
 #systemverilog front end (preprocessor + parser + syntax tree with spans)
 sv-parser = "0.13"
+
+[dev-dependencies]
+#round trip tests for the types that cross the wasm boundary
+serde_json = "1"

@@ -26,7 +26,14 @@
 //!   extraction, and port connections as driver/load references;
 //! * source spans for every declaration, instance and driver/load reference;
 //! * queries: module by name, signal by hierarchical path, declaration of a
-//!   signal, drivers/loads of a signal, and "what is at this source position".
+//!   signal, drivers/loads of a signal, "what is at this source position",
+//!   [`DesignDb::signals_at`] for every instance covering a position, and
+//!   [`DesignDb::item_at_in_instance`] for instance-scoped hover;
+//! * incremental editing: [`DesignDb::update_source`] reparses one file's
+//!   buffer without dropping the rest of the design;
+//! * the whole public model is `serde`-serializable, so it can cross the
+//!   wasm boundary to the Yew UI (lookup indexes are rebuilt lazily and are
+//!   not part of the payload).
 //!
 //! # What degrades to diagnostics
 //!
@@ -88,14 +95,22 @@ use frontend::ParsedFile;
 ///
 /// A `DesignDb` never panics on malformed input.  Check
 /// [`DesignDb::diagnostics`] to find out what was skipped or repaired.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct DesignDb {
     files: Vec<PathBuf>,
     modules: Vec<ModuleDef>,
     /// Everything that was skipped, repaired or could not be resolved.
     pub diagnostics: Vec<Diagnostic>,
+    /// Lookup acceleration.  Not transported; [`DesignDb::module`] falls back
+    /// to a scan when a deserialized database has no index, and the mutating
+    /// entry points rebuild it before use.
+    #[serde(skip)]
     module_index: HashMap<String, usize>,
     include_paths: Vec<PathBuf>,
+    /// Module names contributed by each parsed file, used by
+    /// [`DesignDb::update_source`] to replace one file's results.
+    #[serde(skip)]
+    file_modules: HashMap<PathBuf, Vec<String>>,
 }
 
 impl DesignDb {
@@ -148,24 +163,71 @@ impl DesignDb {
         if self.files.iter().any(|known| known == &path) {
             return false;
         }
+        self.ensure_indexes();
         self.files.push(path.clone());
         let parsed = frontend::parse_file(&path, None, &self.include_paths);
-        self.integrate(parsed)
+        self.integrate(&path, parsed)
     }
 
     /// Parse in-memory source as if it lived at `path`.
     ///
     /// This is what an editor buffer uses; it is also convenient in tests.
+    /// Re-using a path that is already loaded replaces its previous modules.
     pub fn add_source(&mut self, path: impl AsRef<Path>, source: &str) -> bool {
         let path = path.as_ref().to_path_buf();
+        self.ensure_indexes();
         if !self.files.iter().any(|known| known == &path) {
             self.files.push(path.clone());
         }
         let parsed = frontend::parse_file(&path, Some(source), &self.include_paths);
-        self.integrate(parsed)
+        self.integrate(&path, parsed)
     }
 
-    fn integrate(&mut self, parsed: ParsedFile) -> bool {
+    /// Replace one file's parse results from an in-memory buffer, keeping all
+    /// other files intact.
+    ///
+    /// This is the editor "save / did change" entry point: modules previously
+    /// contributed by `path` are removed, its stale diagnostics are cleared,
+    /// and the new source is parsed into the same database.  An unknown path is
+    /// added like [`DesignDb::add_source`].
+    ///
+    /// Returns `true` when the new source parsed (individual constructs may
+    /// still have produced non-fatal diagnostics).
+    ///
+    /// Duplicate module names across files keep first-wins semantics: if the
+    /// updated file owned a name, that name is released, but a module that was
+    /// skipped as a duplicate is only picked up when its own file is updated
+    /// again.
+    pub fn update_source(&mut self, path: impl AsRef<Path>, source: &str) -> bool {
+        self.add_source(path, source)
+    }
+
+    /// Rebuild the lookup maps after deserialization (they are not part of the
+    /// transported payload).
+    fn ensure_indexes(&mut self) {
+        if self.module_index.len() != self.modules.len() {
+            self.module_index = self
+                .modules
+                .iter()
+                .enumerate()
+                .map(|(index, module)| (module.name.clone(), index))
+                .collect();
+        }
+        if self.file_modules.is_empty() && !self.modules.is_empty() {
+            for module in &self.modules {
+                self.file_modules
+                    .entry(module.span.file.clone())
+                    .or_default()
+                    .push(module.name.clone());
+            }
+        }
+    }
+
+    fn integrate(&mut self, path: &Path, parsed: ParsedFile) -> bool {
+        // Drop the previous generation of this file first so an update cannot
+        // leave duplicated or renamed modules behind.
+        self.remove_file(path);
+
         let parsed_ok = !parsed.diagnostics.iter().any(|diagnostic| {
             matches!(
                 diagnostic.kind,
@@ -176,6 +238,7 @@ impl DesignDb {
             )
         });
         self.diagnostics.extend(parsed.diagnostics);
+        let mut names = Vec::new();
         for module in parsed.modules {
             if let Some(&index) = self.module_index.get(&module.name) {
                 let previous = &self.modules[index];
@@ -191,9 +254,33 @@ impl DesignDb {
             }
             self.module_index
                 .insert(module.name.clone(), self.modules.len());
+            names.push(module.name.clone());
             self.modules.push(module);
         }
+        self.file_modules.insert(path.to_path_buf(), names);
         parsed_ok
+    }
+
+    /// Remove modules and diagnostics previously produced by `path`.
+    fn remove_file(&mut self, path: &Path) {
+        if let Some(names) = self.file_modules.remove(path) {
+            let names: std::collections::HashSet<String> = names.into_iter().collect();
+            self.modules
+                .retain(|module| !names.contains(module.name.as_str()));
+            self.module_index = self
+                .modules
+                .iter()
+                .enumerate()
+                .map(|(index, module)| (module.name.clone(), index))
+                .collect();
+        }
+        self.diagnostics.retain(|diagnostic| {
+            diagnostic
+                .span
+                .as_ref()
+                .map(|span| span.file.as_path() != path)
+                .unwrap_or(true)
+        });
     }
 
     /// The files added so far, in insertion order.
@@ -208,9 +295,11 @@ impl DesignDb {
 
     /// Find a module definition by name.
     pub fn module(&self, name: &str) -> Option<&ModuleDef> {
-        self.module_index
-            .get(name)
-            .map(|index| &self.modules[*index])
+        if let Some(index) = self.module_index.get(name) {
+            return self.modules.get(*index);
+        }
+        // Deserialized databases have no index; fall back to a scan.
+        self.modules.iter().find(|module| module.name == name)
     }
 
     /// Everything that was skipped, repaired or could not be resolved.
@@ -252,7 +341,70 @@ impl DesignDb {
         line: u32,
         col: u32,
     ) -> Option<SourceItem> {
+        self.find_item_at(design, file.as_ref(), line, col, None)
+    }
+
+    /// Like [`DesignDb::item_at`], but anchored to one elaborated instance.
+    ///
+    /// When a module body is instantiated several times, every instance shares
+    /// the same source text.  This query restricts the answer to the module
+    /// body (and child instantiations) of `instance_path`, so hover/definition
+    /// inside `top.u_cpu` does not accidentally report `top.u_cpu16`.
+    ///
+    /// Returns `None` when `instance_path` is not present in `design`.
+    pub fn item_at_in_instance(
+        &self,
+        design: &ElaboratedDesign,
+        instance_path: &str,
+        file: impl AsRef<Path>,
+        line: u32,
+        col: u32,
+    ) -> Option<SourceItem> {
+        let index = design
+            .instances()
+            .iter()
+            .position(|instance| instance.path == instance_path)?;
+        self.find_item_at(design, file.as_ref(), line, col, Some(index))
+    }
+
+    /// Every hierarchical signal path whose declaration or driver/load
+    /// reference covers `file:line:col`, across all elaborated instances.
+    ///
+    /// This is the "click a line, add the right signal" query: a position in a
+    /// module body that is instantiated twice yields both hierarchical paths,
+    /// and a port connection yields the parent signal and the child port it
+    /// drives or reads.
+    pub fn signals_at(
+        &self,
+        design: &ElaboratedDesign,
+        file: impl AsRef<Path>,
+        line: u32,
+        col: u32,
+    ) -> Vec<String> {
         let file = file.as_ref();
+        let mut paths = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for signal in design.signals() {
+            let covers = |span: &Span| span.file.as_path() == file && span.contains(line, col);
+            let hit = covers(&signal.declaration)
+                || signal.drivers.iter().any(|driver| covers(&driver.span))
+                || signal.loads.iter().any(|load| covers(&load.span));
+            if hit && seen.insert(signal.path.clone()) {
+                paths.push(signal.path.clone());
+            }
+        }
+        paths
+    }
+
+    fn find_item_at(
+        &self,
+        design: &ElaboratedDesign,
+        file: &Path,
+        line: u32,
+        col: u32,
+        scope: Option<usize>,
+    ) -> Option<SourceItem> {
+        let scope_instance = scope.map(|index| &design.instances()[index]);
         let mut best: Option<(u64, SourceItem)> = None;
         let mut consider = |span: &Span, item: SourceItem| {
             if span.file.as_path() != file || !span.contains(line, col) {
@@ -272,6 +424,11 @@ impl DesignDb {
         // part of the elaborated hierarchy).  On equal-sized spans this makes
         // a port declaration answer `Port` instead of `Signal`.
         for module in &self.modules {
+            if let Some(scope) = scope_instance {
+                if module.name != scope.module {
+                    continue;
+                }
+            }
             consider(
                 &module.span,
                 SourceItem::Module {
@@ -312,8 +469,17 @@ impl DesignDb {
         }
 
         // Elaborated instances and signal references: they are the most
-        // specific answers for expression positions.
-        for instance in design.instances() {
+        // specific answers for expression positions.  With a scope, only the
+        // scoped instance itself and its direct children are considered, so
+        // source inside a child instance is not attributed to siblings.
+        for (index, instance) in design.instances().iter().enumerate() {
+            if let Some(scope_index) = scope {
+                let is_self = index == scope_index;
+                let is_child = instance.parent == Some(scope_index);
+                if !is_self && !is_child {
+                    continue;
+                }
+            }
             consider(
                 &instance.module_span,
                 SourceItem::Module {
@@ -331,6 +497,11 @@ impl DesignDb {
             );
         }
         for signal in design.signals() {
+            if let Some(scope) = scope_instance {
+                if signal.instance != scope.path {
+                    continue;
+                }
+            }
             let name = signal.local_name.clone();
             let module = signal.module.clone();
             consider(
