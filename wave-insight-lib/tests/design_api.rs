@@ -41,11 +41,8 @@ fn hierarchy_db() -> DesignDb {
     DesignDb::load_files([fixture("top.sv"), fixture("cpu.sv")])
 }
 
-// serde_json is only a transitive entry in Cargo.lock and is not a declared
-// dev-dependency of this crate, and task constraints forbid touching
-// Cargo.toml.  These bounds prove every public model type is `Serialize` and
-// `DeserializeOwned`; the JSON round trip is ready to be added once
-// `serde_json` is a dev-dependency.
+// Bounds are checked for every public model type; the JSON round trip below
+// then exercises the derives on real fixture data.
 fn assert_serde<T: serde::Serialize + serde::de::DeserializeOwned>() {}
 
 #[test]
@@ -77,6 +74,80 @@ fn public_model_types_implement_serde() {
     assert_serde::<DiagnosticKind>();
     assert_serde::<Diagnostic>();
     assert_serde::<DesignDb>();
+}
+
+#[test]
+fn design_db_json_round_trip() {
+    let db = hierarchy_db();
+    let db_json = serde_json::to_string(&db).expect("serialize DesignDb");
+    assert!(
+        !db_json.contains("module_index") && !db_json.contains("file_modules"),
+        "private lookup caches must not be transported"
+    );
+    let restored: DesignDb = serde_json::from_str(&db_json).expect("deserialize DesignDb");
+    assert_eq!(db, restored);
+    // `module_index` was skipped: `module()` must still resolve by scanning.
+    assert!(restored.module("cpu").is_some());
+    assert_eq!(restored.module("cpu").expect("cpu").ports.len(), 5);
+    assert_eq!(restored.module("top").expect("top").instances.len(), 2);
+    assert!(restored.module("missing").is_none());
+
+    let design = db.elaborate("top");
+    let design_json = serde_json::to_string(&design).expect("serialize ElaboratedDesign");
+    assert!(
+        !design_json.contains("signal_index"),
+        "the signal lookup cache must not be transported"
+    );
+    let restored_design: ElaboratedDesign =
+        serde_json::from_str(&design_json).expect("deserialize ElaboratedDesign");
+    assert_eq!(design, restored_design);
+
+    // `signal_index` was skipped: path lookups fall back to the flat table.
+    let pc = restored_design
+        .signal("top.u_cpu.pc")
+        .expect("signal resolves after round trip");
+    assert_eq!(pc.width, Some(8));
+    assert_eq!(restored_design.signals().len(), design.signals().len());
+    let declaration = restored_design
+        .declaration("top.u_cpu.pc_reg")
+        .expect("declaration resolves after round trip");
+    assert_eq!(
+        declaration.start_line,
+        design
+            .declaration("top.u_cpu.pc_reg")
+            .expect("declaration in original")
+            .start_line
+    );
+}
+
+#[test]
+fn deserialized_db_update_source_still_detects_duplicate_modules() {
+    let mut db = DesignDb::new();
+    assert!(db.add_source("first.sv", "module shared; endmodule"));
+    let json = serde_json::to_string(&db).expect("serialize DesignDb");
+    let mut restored: DesignDb = serde_json::from_str(&json).expect("deserialize DesignDb");
+    assert_eq!(restored.modules().len(), 1);
+
+    // Both lookup maps were skipped.  The first mutation rebuilds them from the
+    // serialized modules' spans, so a duplicate pushed in from another file is
+    // still diagnosed instead of silently shadowing the first definition.
+    assert!(restored.update_source("second.sv", "module shared; endmodule"));
+    assert!(
+        restored
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind == DiagnosticKind::DuplicateDeclaration),
+        "expected a duplicate module diagnostic, got {:?}",
+        restored.diagnostics()
+    );
+    assert_eq!(restored.modules().len(), 1);
+    assert_eq!(restored.module("shared").expect("shared").span.file, PathBuf::from("first.sv"));
+
+    // The rebuilt per-file ownership still releases a name when its file is
+    // renamed.
+    assert!(restored.update_source("first.sv", "module renamed; endmodule"));
+    assert!(restored.module("shared").is_none());
+    assert!(restored.module("renamed").is_some());
 }
 
 #[test]

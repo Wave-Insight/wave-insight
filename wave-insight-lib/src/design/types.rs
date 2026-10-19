@@ -422,7 +422,7 @@ pub struct FlatSignal {
 }
 
 /// Result of elaborating one top module.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ElaboratedDesign {
     pub(crate) top: String,
     pub(crate) root: usize,
@@ -434,6 +434,18 @@ pub struct ElaboratedDesign {
     /// falls back to a scan when it is empty.
     #[serde(skip)]
     pub(crate) signal_index: std::collections::HashMap<String, usize>,
+}
+
+/// Two elaborated designs are equal when their transported data is equal; the
+/// derived lookup cache is deliberately ignored (it is rebuilt lazily).
+impl PartialEq for ElaboratedDesign {
+    fn eq(&self, other: &Self) -> bool {
+        self.top == other.top
+            && self.root == other.root
+            && self.instances == other.instances
+            && self.signals == other.signals
+            && self.diagnostics == other.diagnostics
+    }
 }
 
 impl ElaboratedDesign {

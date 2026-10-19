@@ -113,6 +113,17 @@ pub struct DesignDb {
     file_modules: HashMap<PathBuf, Vec<String>>,
 }
 
+/// Two databases are equal when their transported data is equal; the derived
+/// lookup caches are deliberately ignored (they are rebuilt on demand).
+impl PartialEq for DesignDb {
+    fn eq(&self, other: &Self) -> bool {
+        self.files == other.files
+            && self.modules == other.modules
+            && self.diagnostics == other.diagnostics
+            && self.include_paths == other.include_paths
+    }
+}
+
 impl DesignDb {
     /// An empty database.
     pub fn new() -> Self {
@@ -334,6 +345,10 @@ impl DesignDb {
     /// A module that is instantiated several times shares one source range;
     /// positions inside it resolve to the first elaborated instance.  Use
     /// [`ElaboratedDesign::signals`] for per-instance data.
+    ///
+    /// `file` is matched exactly as stored: pass the same path spelling that
+    /// was given to [`DesignDb::add_file`]/[`DesignDb::add_source`] (the LSP
+    /// layer normalises to absolute paths before calling).
     pub fn item_at(
         &self,
         design: &ElaboratedDesign,
@@ -352,6 +367,8 @@ impl DesignDb {
     /// inside `top.u_cpu` does not accidentally report `top.u_cpu16`.
     ///
     /// Returns `None` when `instance_path` is not present in `design`.
+    ///
+    /// `file` is matched exactly as stored (see [`DesignDb::item_at`]).
     pub fn item_at_in_instance(
         &self,
         design: &ElaboratedDesign,
@@ -374,6 +391,9 @@ impl DesignDb {
     /// module body that is instantiated twice yields both hierarchical paths,
     /// and a port connection yields the parent signal and the child port it
     /// drives or reads.
+    ///
+    /// `file` is matched exactly as stored (same spelling as
+    /// [`DesignDb::add_file`]/[`DesignDb::add_source`]).
     pub fn signals_at(
         &self,
         design: &ElaboratedDesign,
