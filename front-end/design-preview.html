@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Wave Insight — design preview</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+  /* only used by this static preview, the app renders real monaco */
+  .fake-code {
+    margin: 0;
+    padding: 12px 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 20px;
+    color: var(--text-1);
+    overflow: hidden;
+    height: 100%;
+  }
+  .fake-code .ln { display: inline-block; width: 48px; text-align: right; padding-right: 14px; color: var(--text-2); }
+  .fake-code .kw { color: #c792ea; }
+  .fake-code .ty { color: #4cc2ff; }
+  .fake-code .num { color: #ffb25c; }
+  .fake-code .mark { background: rgba(76,194,255,0.12); display: block; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <button class="icon-btn" title="Show / hide the sidebar">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+        <path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+    </button>
+    <div class="brand">
+      <span class="brand-mark">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M2 15h4l2-8 4 13 3-9 2 4h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <span class="brand-name">Wave Insight</span>
+      <span class="brand-tag">VCD / VERILOG</span>
+    </div>
+    <div class="topbar-hint">
+      <kbd>ctrl</kbd> + wheel to zoom · <kbd>z</kbd> <kbd>f</kbd> · left / right click sets a cursor
+    </div>
+  </header>
+
+  <div class="app-body">
+    <aside class="sidebar">
+      <section class="panel">
+        <div class="panel-head">Source</div>
+        <div class="file-strip">
+          <label class="file-drop">
+            <span class="file-drop-icon">＋</span>
+            <span class="file-drop-text">Load .vcd / .v files</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">Modules</div>
+        <div class="panel-body">
+          <div class="tree-row"><span class="tree-caret open">▾</span><span class="tree-name">top</span></div>
+          <div class="tree-row"><span class="tree-caret open">▾</span><span class="tree-name">  u_cpu</span></div>
+          <div class="tree-row"><span class="tree-caret"></span><span class="tree-name">    alu</span></div>
+          <div class="tree-row"><span class="tree-caret open">▾</span><span class="tree-name">  u_ram</span></div>
+        </div>
+      </section>
+
+      <section class="panel panel-grow">
+        <div class="panel-head">Signals <span class="count">8</span></div>
+        <div class="sig-panel">
+          <div class="sig-scroll">
+            <div class="sig-row"><span class="sig-name">clk</span><span class="sig-size">1</span><span class="sig-add">+</span></div>
+            <div class="sig-row"><span class="sig-name">reset_n</span><span class="sig-size">1</span><span class="sig-add">+</span></div>
+            <div class="sig-row"><span class="sig-name">pc</span><span class="sig-size">32</span><span class="sig-add">+</span></div>
+            <div class="sig-row"><span class="sig-name">instr</span><span class="sig-size">32</span><span class="sig-add">+</span></div>
+            <div class="sig-row"><span class="sig-name">state</span><span class="sig-size">3</span><span class="sig-add">+</span></div>
+            <div class="sig-row"><span class="sig-name">mem_we</span><span class="sig-size">1</span><span class="sig-add">+</span></div>
+            <div class="sig-row"><span class="sig-name">mem_addr</span><span class="sig-size">16</span><span class="sig-add">+</span></div>
+            <div class="sig-row"><span class="sig-name">mem_wdata</span><span class="sig-size">32</span><span class="sig-add">+</span></div>
+          </div>
+          <div class="filter-wrap"><input type="text" placeholder="filter signals…" /></div>
+        </div>
+      </section>
+    </aside>
+
+    <div class="splitter"></div>
+
+    <main class="main-pane">
+      <div class="code-pane">
+        <nav class="tabs">
+          <button class="tab active">tb_top.v</button>
+          <button class="tab">cpu_core.v</button>
+          <button class="tab">alu.v</button>
+        </nav>
+        <div class="code-host">
+          <pre class="fake-code"><span class="ln">12</span><span class="kw">module</span> tb_top;
+<span class="ln">13</span>  <span class="ty">reg</span> clk;
+<span class="ln">14</span>  <span class="ty">reg</span> [31:0] pc;
+<span class="ln">15</span>  <span class="ty">wire</span> [31:0] instr;
+<span class="ln">16</span>  cpu_core u_cpu (.clk(clk), .pc(pc), .instr(instr));
+<span class="ln">17</span>  <span class="kw">initial</span> <span class="kw">begin</span>
+<span class="ln">18</span>    clk = <span class="num">0</span>;
+<span class="ln">19</span>    <span class="kw">forever</span> #<span class="num">5</span> clk = ~clk;
+<span class="ln">20</span>  <span class="kw">end</span>
+<span class="mark"><span class="ln">21</span>  <span class="ty">wire</span> [31:0] state = u_ram.state;</span>
+<span class="ln">22</span><span class="kw">endmodule</span></pre>
+        </div>
+      </div>
+
+      <div class="wave-pane">
+        <div class="timebar">
+          <div class="timebar-readout"><code>Δ 320</code></div>
+          <svg class="timebar-svg" id="axis"></svg>
+        </div>
+        <div class="wave-body">
+          <div class="wave-names" id="names"></div>
+          <div class="wave-canvas" id="canvas"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="modal-root" style="display:none">
+    <div class="overlay"></div>
+    <div class="modal">
+      <h4 class="modal-title">pc[31:0]</h4>
+      <div class="modal-section">
+        <p class="modal-label">Format</p>
+        <div class="modal-row">
+          <button class="btn active">Hex</button>
+          <button class="btn">Dec</button>
+          <button class="btn">Signed</button>
+          <button class="btn">Oct</button>
+          <button class="btn">Bin</button>
+          <button class="btn">ASCII</button>
+        </div>
+      </div>
+      <div class="modal-section">
+        <p class="modal-label">Fixed point</p>
+        <div class="modal-row">
+          <button class="btn">active</button>
+          <input class="modal-input" type="number" value="0" />
+        </div>
+      </div>
+      <div class="modal-section">
+        <p class="modal-label">Analog</p>
+        <div class="modal-row">
+          <button class="btn">active</button>
+          <input class="modal-input" type="number" value="1" />
+        </div>
+      </div>
+      <div class="modal-section">
+        <p class="modal-label">Load / drive</p>
+        <div class="modal-row">
+          <button class="btn">load</button>
+          <button class="btn">drive</button>
+        </div>
+      </div>
+      <div class="modal-section">
+        <p class="modal-label">Colour</p>
+        <div class="modal-row">
+          <button class="swatch" style="--swatch:#ff6b8a"></button>
+          <button class="swatch" style="--swatch:#ffb25c"></button>
+          <button class="swatch" style="--swatch:#ffe066"></button>
+          <button class="swatch" style="--swatch:#5ee6a8"></button>
+          <button class="swatch active" style="--swatch:#4cc2ff"></button>
+          <button class="swatch" style="--swatch:#9d8cff"></button>
+          <button class="swatch" style="--swatch:#ff8ad1"></button>
+        </div>
+      </div>
+      <div class="modal-section">
+        <div class="modal-row">
+          <button class="btn danger">Remove signal</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+const ROW = 30, TOP = 6, BOT = 24, MID = 15;
+const canvas = document.getElementById("canvas");
+const W = Math.max(600, canvas.clientWidth);
+
+const signals = ["clk", "reset_n", "pc", "instr", "state", "mem_we"];
+const namesHost = document.getElementById("names");
+signals.forEach((n, i) => {
+  const d = document.createElement("div");
+  d.className = "wave-name-cell" + (i === 2 ? " chosen" : "");
+  d.innerHTML = '<p class="wave-name-text">' + n + '</p><span class="wave-more">⋯</span>';
+  namesHost.appendChild(d);
+});
+
+function row() {
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("class", "wave-row");
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", ROW);
+  svg.setAttribute("viewBox", "0 0 " + W + " " + ROW);
+  canvas.appendChild(svg);
+  return svg;
+}
+function line(svg, points, color) {
+  const p = document.createElementNS(NS, "polyline");
+  p.setAttribute("class", "wave-line");
+  p.setAttribute("points", points);
+  p.setAttribute("stroke", color);
+  svg.appendChild(p);
+}
+function text(svg, x, s) {
+  const t = document.createElementNS(NS, "text");
+  t.setAttribute("class", "wave-value");
+  t.setAttribute("x", x);
+  t.setAttribute("y", 20);
+  t.textContent = s;
+  svg.appendChild(t);
+}
+function cursors(svg) {
+  [[W * 0.44, "cursor-a"], [W * 0.78, "cursor-b"]].forEach(function (c) {
+    const l = document.createElementNS(NS, "line");
+    l.setAttribute("class", "cursor " + c[1]);
+    l.setAttribute("x1", c[0]); l.setAttribute("x2", c[0]);
+    l.setAttribute("y1", 0); l.setAttribute("y2", ROW);
+    svg.appendChild(l);
+  });
+}
+
+(function () {
+  const s = row();
+  let pts = "";
+  for (let x = 0, high = false; x <= W; x += 40, high = !high) {
+    const y = high ? TOP : BOT;
+    pts += x + "," + y + " ";
+    if (x + 40 <= W) pts += (x + 40) + "," + y + " ";
+  }
+  line(s, pts, "#4cc2ff");
+  cursors(s);
+})();
+
+(function () {
+  const s = row();
+  line(s, "0," + BOT + " 10," + BOT + " 10," + TOP + " " + W + "," + TOP, "#ffe066");
+  cursors(s);
+})();
+
+function bus(svg, segments, color) {
+  let x = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const len = segments[i][0], value = segments[i][1];
+    const x2 = x + len;
+    line(svg, x + "," + BOT + " " + (x + 5) + "," + MID + " " + (x2 - 5) + "," + MID + " " + x2 + "," + BOT, color);
+    if (len > 44) text(svg, x + 10, value);
+    x = x2;
+  }
+}
+(function () { const s = row(); bus(s, [[130,"0000_0000"],[180,"0000_0044"],[220,"0000_0048"],[250,"0000_004c"],[200,"0000_0050"]], "#5ee6a8"); cursors(s); })();
+(function () { const s = row(); bus(s, [[160,"0x13"],[200,"0x0f"],[260,"0x00"],[170,"0x9c"],[190,"0x1b"]], "#9d8cff"); cursors(s); })();
+(function () { const s = row(); bus(s, [[150,"0"],[140,"1"],[170,"2"],[230,"x"],[290,"3"]], "#ffb25c"); cursors(s); })();
+
+(function () {
+  const s = row();
+  let pts = "0," + BOT;
+  let level = BOT;
+  const edges = [[0.18, 1], [0.30, 0], [0.46, 1], [0.58, 0], [0.78, 1], [0.88, 0]];
+  for (let i = 0; i < edges.length; i++) {
+    const x = Math.round(W * edges[i][0]);
+    const next = edges[i][1] === 1 ? MID : BOT;
+    pts += " " + x + "," + level + " " + x + "," + next;
+    level = next;
+  }
+  pts += " " + W + "," + level;
+  line(s, pts, "#ff8ad1");
+  cursors(s);
+})();
+
+(function () {
+  const axis = document.getElementById("axis");
+  axis.setAttribute("width", W);
+  axis.setAttribute("height", 30);
+  axis.setAttribute("viewBox", "0 0 " + W + " 30");
+  const step = 80;
+  let pts = "";
+  let i = 0;
+  for (let x = 4; x < W; x += step, i++) {
+    pts += x + ",30 " + x + ",22 " + x + ",30 ";
+    const t = document.createElementNS(NS, "text");
+    t.setAttribute("class", "axis-text");
+    t.setAttribute("x", x + 3);
+    t.setAttribute("y", 14);
+    t.textContent = i * 40;
+    axis.appendChild(t);
+  }
+  const comb = document.createElementNS(NS, "polyline");
+  comb.setAttribute("class", "axis-line");
+  comb.setAttribute("points", pts);
+  axis.appendChild(comb);
+  [[W * 0.44, "320", "cursor-a"], [W * 0.78, "640", "cursor-b"]].forEach(function (c) {
+    const t = document.createElementNS(NS, "text");
+    t.setAttribute("class", "axis-text " + c[2]);
+    t.setAttribute("x", Math.round(c[0]) + 3);
+    t.setAttribute("y", 13);
+    t.textContent = c[1];
+    axis.appendChild(t);
+  });
+})();
+
+// the app draws the grid on the real tick positions, mirror that here
+(function () {
+  const grid = document.createElementNS(NS, "svg");
+  grid.setAttribute("class", "wave-grid");
+  canvas.insertBefore(grid, canvas.firstChild);
+  for (let x = 4; x < W; x += 80) {
+    const l = document.createElementNS(NS, "line");
+    l.setAttribute("class", "grid-line");
+    l.setAttribute("x1", x); l.setAttribute("x2", x);
+    l.setAttribute("y1", 0); l.setAttribute("y2", "100%");
+    grid.appendChild(l);
+  }
+})();
+if (location.hash === "#modal") {
+  document.getElementById("modal-root").style.display = "block";
+}
+if (location.hash === "#empty") {
+  const cells = document.querySelectorAll(".wave-name-cell, .wave-row");
+  for (let i = 0; i < cells.length; i++) cells[i].remove();
+  const hint = document.createElement("div");
+  hint.className = "empty-hint";
+  hint.innerHTML = "<div>No signals yet</div><div>Pick one from the signal list, drag a range to zoom,<br/>right click a name for its settings.</div>";
+  canvas.appendChild(hint);
+}
+</script>
+</body>
+</html>

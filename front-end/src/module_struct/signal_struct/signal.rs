@@ -48,8 +48,8 @@ impl Component for SignalStruct {
     fn view(&self, ctx: &Context<Self>) -> Html {
         
         html! {
-            <div style="display:block;height:50%;overflow-y:auto">
-                <div style="display:block;height:90%;overflow-y:auto">
+            <div class="sig-panel">
+                <div class="sig-scroll">
                 {
                     html! {
                     {for ctx.props().module.signal.iter()
@@ -60,7 +60,10 @@ impl Component for SignalStruct {
                     }
                 }
                 </div>
-                <input type="text" oninput={ctx.link().callback(|e: InputEvent| Msg::SetFilter(e.target_unchecked_into::<HtmlInputElement>().value()))} />
+                <div class="filter-wrap">
+                    <input type="text" placeholder="filter signals…"
+                        oninput={ctx.link().callback(|e: InputEvent| Msg::SetFilter(e.target_unchecked_into::<HtmlInputElement>().value()))} />
+                </div>
             </div>
         }
     }

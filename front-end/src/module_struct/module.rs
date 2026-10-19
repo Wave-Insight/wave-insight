@@ -68,13 +68,20 @@ impl Component for ModuleStruct {
         }
         
         html! {
-            <div style="height:95%">
-                <div style="display:block;height:50%;overflow-y:auto">
-                {
-                    show_module(module,0,&callback)
-                }
-                </div>
-                <SignalStruct module={self.show_module.clone()} signaladd={ctx.link().callback(Msg::SignalAdd)}/>
+            <div class="side-stack">
+                <section class="panel">
+                    <div class="panel-head">{"Modules"}</div>
+                    <div class="panel-body">
+                        { show_module(module,0,&callback) }
+                    </div>
+                </section>
+                <section class="panel panel-grow">
+                    <div class="panel-head">
+                        {"Signals"}
+                        <span class="count">{self.show_module.signal.len().to_string()}</span>
+                    </div>
+                    <SignalStruct module={self.show_module.clone()} signaladd={ctx.link().callback(Msg::SignalAdd)}/>
+                </section>
             </div>
         }
     }

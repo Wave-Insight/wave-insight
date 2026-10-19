@@ -20,13 +20,7 @@ use web_sys::{MessageEvent, WebSocket};
 #[cfg(feature = "backend")]
 use wasm_bindgen::{prelude::Closure, JsCast};
 
-#[cfg(feature = "wasm")]
-use wave_insight_lib::{
-    parser::vcd_parser::vcd_parser,
-    parser::verilog_parser::verilog_parser};
 use crate::file_load::FileLoad;
-#[cfg(feature = "wasm")]
-use crate::file_load::FileType;
 
 #[cfg(feature = "tauri")]
 use serde::{Deserialize, Serialize};
@@ -61,6 +55,25 @@ pub enum Msg {
     WsSend(String),
     #[cfg(feature = "server")]
     GetWebsocket(String),
+
+    ///the sidebar splitter was grabbed
+    SplitterDown(MouseEvent),
+    ///the mouse moved while dragging the splitter
+    SplitterMove(MouseEvent),
+    SplitterUp,
+}
+
+///width of the sidebar when nothing else was chosen
+const SIDEBAR_DEFAULT: f64 = 280.0;
+const SIDEBAR_MIN: f64 = 180.0;
+
+fn sidebar_clamp(width: f64) -> f64 {
+    let max = web_sys::window()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .map(|w| (w * 0.45).max(SIDEBAR_MIN + 40.0))
+        .unwrap_or(640.0);
+    width.max(SIDEBAR_MIN).min(max)
 }
 
 pub struct App {
@@ -73,6 +86,9 @@ pub struct App {
     signal_add: (String,Rc<Signal>),
     #[cfg(feature = "server")]
     websocket: Option<WebSocket>,
+    sidebar_width: f64,
+    ///(mouse x, sidebar width) while the splitter is dragged
+    splitter_start: Option<(f64, f64)>,
 }
 
 impl Component for App {
@@ -114,6 +130,8 @@ impl Component for App {
             signal_add: ("".to_string(),Rc::new(Signal::new())),
             #[cfg(feature = "server")]
             websocket: Some(websocket),
+            sidebar_width: SIDEBAR_DEFAULT,
+            splitter_start: None,
         }
     }
 
@@ -172,6 +190,27 @@ impl Component for App {
 
             Msg::NavIconClick => {
                 self.drawer_state = !self.drawer_state;
+                true
+            }
+            Msg::SplitterDown(e) => {
+                e.prevent_default();
+                if e.detail() == 2 {
+                    //double click restores the default width
+                    self.sidebar_width = SIDEBAR_DEFAULT;
+                    self.splitter_start = None;
+                }else {
+                    self.splitter_start = Some((e.x() as f64, self.sidebar_width));
+                }
+                true
+            }
+            Msg::SplitterMove(e) => {
+                if let Some((start_x, start_width)) = self.splitter_start {
+                    self.sidebar_width = sidebar_clamp(start_width + (e.x() as f64 - start_x));
+                }
+                true
+            }
+            Msg::SplitterUp => {
+                self.splitter_start = None;
                 true
             }
             Msg::SignalAdd(input) => {
@@ -247,30 +286,30 @@ impl Component for App {
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
 
-        let window = web_sys::window().expect("should have a window in this context");
-        let win_height = window.inner_height().unwrap().as_f64().unwrap()-64.0;
-        //console::log_1(&format!("height2 {:?}",win_height).into());
-
-        // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
-            //<div style={"height:".to_owned()+&win_height.to_string()+"px"}
-            //    ondrop={link.callback(Msg::FileDrop)}
-            //    ondragover={link.callback(Msg::DragOver)}>//TODO:for wasm version
-            <div style={"height:".to_owned()+&win_height.to_string()+"px"}>
+            <div class="app" style={format!("--sidebar-w:{:.0}px", self.sidebar_width)}>
                 <TopBar onnavigationiconclick={link.callback(|_| Msg::NavIconClick)}/>
-                {if self.drawer_state {
-                    html!{
-                    <div style="width:20%;float:left;height:100%;overflow-y:auto">
-                        {self.file_button(ctx)}
-                        <ModuleStruct module={Rc::clone(&self.module)} signaladd={link.callback(Msg::SignalAdd)}/>
-                    </div>
-                    //TODO:add <div draggable="true"/>
-                    }
-                }else {
-                    html!{}
-                }}
-                <div style={"width:".to_owned()+(if self.drawer_state {"80%"} else {"100%"})+";float:left;display:block;height:100%;overflow-y:auto"} >
-                    <div style="display:block;height:100%;overflow-y:auto">
+                <div class="app-body">
+                    {if self.drawer_state {
+                        html!{
+                        <aside class="sidebar">
+                            {self.file_button(ctx)}
+                            <ModuleStruct module={Rc::clone(&self.module)} signaladd={link.callback(Msg::SignalAdd)}/>
+                        </aside>
+                        }
+                    }else {
+                        html!{}
+                    }}
+                    {if self.drawer_state {
+                        html!{
+                            <div class={if self.splitter_start.is_some() {"splitter dragging"} else {"splitter"}}
+                                title="Drag to resize, double click to reset"
+                                onmousedown={link.callback(Msg::SplitterDown)} />
+                        }
+                    }else {
+                        html!{}
+                    }}
+                    <main class="main-pane">
                         <CodeReader
                             file={self.verilog_source.clone()}
                             line={self.signal_add.1.location_define.line} />
@@ -279,8 +318,19 @@ impl Component for App {
                             module={Rc::clone(&self.module)}
                             signal_value={Rc::clone(&self.signal_value)}
                             end_clock={self.module.end_clock} />
-                    </div>
+                    </main>
                 </div>
+                {if self.splitter_start.is_some() {
+                    html!{
+                        <div class="splitter-shield"
+                            onmousemove={link.callback(Msg::SplitterMove)}
+                            onmouseup={link.callback(|_| Msg::SplitterUp)}
+                            //releasing the button outside the window never fires mouseup
+                            onmouseout={link.callback(|_| Msg::SplitterUp)} />
+                    }
+                }else {
+                    html!{}
+                }}
             </div>
         }
     }

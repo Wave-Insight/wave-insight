@@ -64,26 +64,26 @@ impl Component for SignalValue {
         let color = format!("rgb({},{},{})",props.setting.color.0,props.setting.color.1,props.setting.color.2);
         if self.bool_signal {
             html! {
-                <svg style="height:26px;width:100%">
-                    <polyline points={self.points1.clone()} fill="none" stroke={color} />
+                <svg class="wave-row" style="width:100%">
+                    <polyline class="wave-line" points={self.points1.clone()} stroke={color} />
                     {
                         if let Some(c1) = ctx.props().cursor1 {html!{
-                            <line x1={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                            <line class="cursor cursor-a"
+                                x1={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
                                 x2={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
                                 y1={0}
-                                y2={26}
-                                style="stroke:rgb(255,255,0);stroke-width:3" />
+                                y2={30} />
                         }}else {
                             html!{}
                         }
                     }
                     {
                         if let Some(c2) = ctx.props().cursor2 {html!{
-                            <line x1={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                            <line class="cursor cursor-b"
+                                x1={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
                                 x2={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
                                 y1={0}
-                                y2={26}
-                                style="stroke:rgb(255,255,255);stroke-width:3" />
+                                y2={30} />
                         }}else {
                             html!{}
                         }
@@ -91,28 +91,28 @@ impl Component for SignalValue {
                 </svg>}
         }else {
             html! {
-                <svg style="height:26px;width:100%">
-                    <polyline points={self.points1.clone()} fill="none" stroke={color.clone()} />
-                    <polyline points={self.points2.clone()} fill="none" stroke={color} />
+                <svg class="wave-row" style="width:100%">
+                    <polyline class="wave-line" points={self.points1.clone()} stroke={color.clone()} />
+                    <polyline class="wave-line" points={self.points2.clone()} stroke={color} />
                     {for self.value.clone()}
                     {
                         if let Some(c1) = ctx.props().cursor1 {html!{
-                            <line x1={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                            <line class="cursor cursor-a"
+                                x1={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
                                 x2={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
                                 y1={0}
-                                y2={26}
-                                style="stroke:rgb(255,255,0);stroke-width:3" />
+                                y2={30} />
                         }}else {
                             html!{}
                         }
                     }
                     {
                         if let Some(c2) = ctx.props().cursor2 {html!{
-                            <line x1={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                            <line class="cursor cursor-b"
+                                x1={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
                                 x2={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
                                 y1={0}
-                                y2={26}
-                                style="stroke:rgb(255,255,255);stroke-width:3" />
+                                y2={30} />
                         }}else {
                             html!{}
                         }
@@ -240,7 +240,7 @@ fn value_text(begin: f64, value: &BitsData, show_type: &ShowType, bitcount: u32,
         text_raw.get(..avaliable-1).unwrap().to_string()+"."
     };
     html!{
-        <text x={format!("{begin}")} y={format!("{}",zero_position+17)} fill="rgb(255,255,255)">
+        <text class="wave-value" x={format!("{begin}")} y={format!("{}",zero_position+17)}>
             {
                 text
             }

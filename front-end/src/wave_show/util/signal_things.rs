@@ -56,6 +56,12 @@ impl SignalThings {
     pub fn iter(&self) -> Iter<SignalItem> {
         self.item.iter()
     }
+    pub fn len(&self) -> usize {
+        self.item.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.item.is_empty()
+    }
     pub fn get_choose_idx(&self) -> Vec<usize> {
         self.item.iter()
                 .enumerate()

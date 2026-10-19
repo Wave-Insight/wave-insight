@@ -31,7 +31,7 @@ impl Component for CodeBlock {
         }
 
         html! {
-            <div style="background-color:#dadada;display:block;height:100%;overflow-y:auto">//;height:400px
+            <div class="monaco-wrap">
                 <CodeEditor options={ get_options(text).to_sys_options() } line={ ctx.props().line } />
             </div>
         }

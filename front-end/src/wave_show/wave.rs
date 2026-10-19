@@ -10,12 +10,16 @@ use wasm_bindgen::prelude::*;
 
 use wave_insight_lib::data_struct::Signal;
 
-use super::time::Time;
+use super::time::{build_axis, Time};
 use super::ctrl::Ctrl;
 use super::settings::Settings;
 use super::signal::SignalName;
 use super::signal::SignalValue;
 use super::util::signal_things::SignalThings;
+
+///one signal row is `ROW_HEIGHT` pixels high, keep in sync with `.wave-row`
+///and `.wave-name-cell` in styles.css
+const ROW_HEIGHT: f64 = 30.0;
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct WaveShowProps {
@@ -37,6 +41,20 @@ pub enum Msg {
     NameMouseDown(MouseEvent),
     NameMouseUp(MouseEvent),
     NameClick(usize),
+    ///the layout moved, everything has to be measured again
+    Resize,
+}
+
+///Geometry of the wave area.
+///
+///It is measured from the dom instead of guessed from the window size, so it
+///stays correct with a fixed width sidebar, a zoomed page, a scrollbar
+///appearing/disappearing or a high dpi screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Metrics {
+    canvas_width: f64,
+    canvas_left: f64,
+    names_top: f64,
 }
 
 pub struct WaveShow {
@@ -61,14 +79,22 @@ pub struct WaveShow {
 
     cursor1: Option<i32>,
     cursor2: Option<i32>,
+
+    ///what the last `view` was drawn with, so `rendered` can notice the layout moved
+    used: RefCell<Metrics>,
+    ///the listeners are created once and dropped in `destroy`, forgetting them on
+    ///every render leaked one set of them per render
+    keydown: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
+    keyup: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
+    onresize: Option<Closure<dyn FnMut(JsValue)>>,
 }
 
 impl Component for WaveShow {
     type Message = Msg;
     type Properties = WaveShowProps;
 
-    fn create(_ctx: &Context<Self>) -> Self {
-        Self {
+    fn create(ctx: &Context<Self>) -> Self {
+        let mut this = Self {
             signal_things: SignalThings::new(),
             x_axis: 0f64,
             size: 1f64,
@@ -90,7 +116,14 @@ impl Component for WaveShow {
 
             cursor1: None,
             cursor2: None,
-        }
+
+            used: RefCell::new(Metrics::default()),
+            keydown: None,
+            keyup: None,
+            onresize: None,
+        };
+        this.attach_listeners(ctx);
+        this
     }
 
     fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
@@ -98,7 +131,7 @@ impl Component for WaveShow {
             Msg::Wheel(e) => {
                 e.prevent_default();
                 let delta_y = e.delta_y();
-                if *self.key_press.borrow().get(17).unwrap() {
+                if self.key(17) {//ctrl
                     if delta_y < 0.0 {
                         self.size *= 1.25;
                     }else {
@@ -139,14 +172,14 @@ impl Component for WaveShow {
             }
             Msg::KeyEvent(idx) => {
                 if idx == 90 {//z
-                    if *self.key_press.borrow().get(16).unwrap() {
+                    if self.key(16) {//shift
                         self.size *= 1.25*1.25;
                     }else {
                         self.size *= 0.64;
                     }
                 }else if idx == 70 {//f
                     self.x_axis = 0.0;
-                    self.size = *self.min_size.borrow();
+                    self.size = (*self.min_size.borrow()).max(1e-6);
                 }
                 true
             }
@@ -191,9 +224,13 @@ impl Component for WaveShow {
                     }else {
                         (x, self.mouse_start)
                     };
-                    self.x_axis += (start as f64 - *self.mouse_offset.borrow()) / self.size;
-                    self.size *= *self.mouse_total.borrow() / (end - start) as f64;
-                    //console::log_1(&format!("x:{}",x).into());
+                    let total = *self.mouse_total.borrow();
+                    //the canvas is not measured yet on the very first frame
+                    if total > 1.0 && (end - start) > 1 {
+                        self.x_axis += (start as f64 - *self.mouse_offset.borrow()) / self.size;
+                        self.size *= total / (end - start) as f64;
+                        //console::log_1(&format!("x:{}",x).into());
+                    }
                 }
                 true
             }
@@ -201,32 +238,32 @@ impl Component for WaveShow {
 
             Msg::NameMouseDown(e) => {
                 self.name_choose_valid = true;
-                self.name_choose = ((e.y() as f64 - *self.name_offset.borrow()) / 30.0) as usize;
+                self.name_choose = ((e.y() as f64 - *self.name_offset.borrow()) / ROW_HEIGHT) as usize;
                 //console::log_1(&format!("x:{}",self.name_choose).into());
                 e.prevent_default();
                 true
             }
             Msg::NameMouseUp(e) => {
                 self.name_choose_valid = false;
-                let set_location = (e.y() as f64 - *self.name_offset.borrow()) / 30.0;
+                let set_location = (e.y() as f64 - *self.name_offset.borrow()) / ROW_HEIGHT;
                 let dest_idx = if set_location > self.name_choose as f64 + 0.5 {
                     (set_location - 0.5) as usize
                 }else {
                     (set_location + 0.5) as usize
                 };
-                self.signal_things.exchange(self.name_choose, dest_idx);
+                if self.name_choose < self.signal_things.len() && dest_idx < self.signal_things.len() {
+                    self.signal_things.exchange(self.name_choose, dest_idx);
+                }
                 true
             }
             //TODO:show the destiny when is dragging
             //TODO:drag to the button not work
             //TODO:drag out of the area may cause bug
             Msg::NameClick(idx) => {
-                self.signal_things.onchoose(idx,
-                    *self.key_press.borrow().get(17).unwrap(),
-                    *self.key_press.borrow().get(16).unwrap()
-                );
+                self.signal_things.onchoose(idx, self.key(17), self.key(16));
                 true
             }
+            Msg::Resize => true,
         }
     }
 
@@ -236,25 +273,60 @@ impl Component for WaveShow {
         true
     }
 
+    fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
+        //the first `view` runs before the canvas exists, so measure again once it
+        //is in the document and redraw if the guess was off
+        let measured = measure();
+        if measured.canvas_width > 1.0 && !approximately(measured, *self.used.borrow()) {
+            ctx.link().send_message(Msg::Resize);
+        }
+    }
+
+    fn destroy(&mut self, _ctx: &Context<Self>) {
+        if let Some(window) = web_sys::window() {
+            window.set_onkeydown(None);
+            window.set_onkeyup(None);
+            window.set_onresize(None);
+        }
+        self.keydown = None;
+        self.keyup = None;
+        self.onresize = None;
+    }
+
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
         let end_clock = ctx.props().end_clock;
 
-        self.key_event(ctx);
-
-        let window = web_sys::window().expect("should have a window in this context");
-        let win_width = window.inner_width().unwrap().as_f64().unwrap();
-        let win_height = window.inner_height().unwrap().as_f64().unwrap();
-        let wave_show_width = win_width * 0.8 * 0.9;//TODO:0.8 and 0.9 should be auto set
+        let metrics = measure();
+        let wave_show_width = if metrics.canvas_width > 1.0 {
+            metrics.canvas_width
+        }else {
+            //nothing to measure before the first paint, `rendered` fixes it right
+            //after; 500 is just --sidebar-w + --names-w as a starting guess
+            let win_width = web_sys::window()
+                .and_then(|w| w.inner_width().ok())
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1024.0);
+            (win_width - 500.0).max(100.0)
+        };
+        *self.used.borrow_mut() = Metrics {
+            canvas_width: wave_show_width,
+            canvas_left: metrics.canvas_left,
+            names_top: metrics.names_top,
+        };
         *self.min_size.borrow_mut() = wave_show_width / ((end_clock + 1) as f64);
-        *self.mouse_offset.borrow_mut() = win_width * (1.0 - 0.8*0.9);
+        *self.mouse_offset.borrow_mut() = metrics.canvas_left;
         *self.mouse_total.borrow_mut() = wave_show_width;
+        *self.name_offset.borrow_mut() = metrics.names_top;
 
-        *self.name_offset.borrow_mut() = (win_height-64.0)*0.5+64.0+30.0;//TODO:this should be auto calculate
-        //console::log_1(&format!("width {}",win_width).into());
-        
+        //the bar above and the grid below are built from the same ruler, so a
+        //grid line always sits exactly under its number
+        let axis = build_axis(self.x_axis, self.size, wave_show_width);
+
+        let has_signal = !self.signal_things.is_empty();
+
         html! {
-            <div style="display:block;height:50%;overflow-y:auto">
+            <div class="wave-pane">
                 if self.menu_show {
                     <Ctrl name={self.signal_things[self.on_setting_idx[0]].name.clone()}//TODO:not [0] but all
                         setting={self.signal_things[self.on_setting_idx[0]].setting.clone()}
@@ -268,10 +340,10 @@ impl Component for WaveShow {
                     width={wave_show_width}
                     cursor1={self.cursor1}
                     cursor2={self.cursor2} />
-                <div style="height:90%;overflow-y:auto">//TODO:height of time is 30 px, this should be calculated
-                    <div onmousedown={link.callback(Msg::NameMouseDown)}
-                        onmouseup={link.callback(Msg::NameMouseUp)}
-                        style="float:left;width:10%">
+                <div class="wave-body">
+                    <div class="wave-names" id="wave-names"
+                        onmousedown={link.callback(Msg::NameMouseDown)}
+                        onmouseup={link.callback(Msg::NameMouseUp)}>
                         {
                             for self.signal_things.iter().enumerate().map(|(idx,s)| {
                                 html!{<SignalName
@@ -282,11 +354,19 @@ impl Component for WaveShow {
                             })
                         }
                     </div>
-                    <div onwheel={link.callback(Msg::Wheel)}
+                    <div class="wave-canvas" id="wave-canvas"
+                        onwheel={link.callback(Msg::Wheel)}
                         onmousedown={link.callback(Msg::MouseDown)}
                         onmouseup={link.callback(Msg::MouseUp)}
-                        onmousemove={link.callback(Msg::MouseMove)}
-                        style="float:right;width:90%;background-color:#202020">
+                        onmousemove={link.callback(Msg::MouseMove)}>
+                        <svg class="wave-grid">
+                            {
+                                for axis.labels.iter().map(|&(x, _time)| {
+                                    html!{<line class="grid-line" x1={format!("{x:.2}")} x2={format!("{x:.2}")}
+                                        y1="0" y2="100%" />}
+                                })
+                            }
+                        </svg>
                         {
                             for self.signal_things.iter().enumerate().map(|(idx,s)| {
                                 html!{<SignalValue
@@ -299,38 +379,99 @@ impl Component for WaveShow {
                                     cursor2={self.cursor2} />}
                             })
                         }
+                        {if has_signal {html!{}} else {html!{
+                            <div class="empty-hint">
+                                <div>{"No signals yet"}</div>
+                                <div>{"Pick one from the signal list, drag a range to zoom,"}<br/>
+                                    {"right click a name for its settings."}</div>
+                            </div>
+                        }}}
                     </div>
                 </div>
-                /*<input id="slider" type="range"
-                    min="0" max={end_clock.to_string()} step="1" style="margin:0px;width:99%;height:9%"
-                    oninput={link.callback(|e: InputEvent| Msg::SetX(e.target_unchecked_into::<HtmlInputElement>().value_as_number()))}
-                />*/
             </div>
         }
     }
 }
 
 impl WaveShow {
-    fn key_event(&self, ctx: &Context<Self>) {
-        let callback = ctx.link().callback(Msg::KeyEvent);
-        let window = web_sys::window().expect("should have a window in this context");
-        let key_press = self.key_press.clone();
+    fn key(&self, code: usize) -> bool {
+        self.key_press.borrow().get(code).copied().unwrap_or(false)
+    }
+
+    fn attach_listeners(&mut self, ctx: &Context<Self>) {
+        let window = match web_sys::window() {
+            Some(window) => window,
+            None => return,
+        };
+
+        //key state for the ctrl/shift modifiers and for `z`/`f`
+        let key_press = Rc::clone(&self.key_press);
+        let on_key = ctx.link().callback(Msg::KeyEvent);
         let keydown = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
-            //17:ctrl, 18:alt, 16:shift, 65:a, 48:0, 49:1
-            *key_press.borrow_mut().get_mut(e.key_code() as usize).unwrap() = true;
-            callback.emit(e.key_code());
-            //console::log_1(&format!("key down {}",e.key_code()).into());
+            let code = e.key_code();
+            //keyCode goes past 255 with some layouts, do not index blindly
+            if let Some(slot) = key_press.borrow_mut().get_mut(code as usize) {
+                *slot = true;
+            }
+            on_key.emit(code);
         }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
         window.set_onkeydown(Some(keydown.as_ref().unchecked_ref()));
-        keydown.forget();
 
-        let key_press2 = self.key_press.clone();
+        let key_press = Rc::clone(&self.key_press);
         let keyup = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
-            //17:ctrl, 18:alt, 16:shift, 65:a, 48:0, 49:1
-            *key_press2.borrow_mut().get_mut(e.key_code() as usize).unwrap() = false;
-            //console::log_1(&format!("key up {}",e.key_code()).into());
+            if let Some(slot) = key_press.borrow_mut().get_mut(e.key_code() as usize) {
+                *slot = false;
+            }
         }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
         window.set_onkeyup(Some(keyup.as_ref().unchecked_ref()));
-        keyup.forget();
+
+        let on_resize = ctx.link().callback(|_: ()| Msg::Resize);
+        let onresize = Closure::wrap(Box::new(move |_: JsValue| {
+            on_resize.emit(());
+        }) as Box<dyn FnMut(JsValue)>);
+        window.set_onresize(Some(onresize.as_ref().unchecked_ref()));
+
+        self.keydown = Some(keydown);
+        self.keyup = Some(keyup);
+        self.onresize = Some(onresize);
     }
+}
+
+///read the geometry back from the dom
+fn measure() -> Metrics {
+    let window = match web_sys::window() {
+        Some(window) => window,
+        None => return Metrics::default(),
+    };
+    let document = match window.document() {
+        Some(document) => document,
+        None => return Metrics::default(),
+    };
+
+    let canvas = document.get_element_by_id("wave-canvas");
+    let names = document.get_element_by_id("wave-names");
+
+    let (canvas_width, canvas_left) = match &canvas {
+        Some(canvas) => {
+            let rect = canvas.get_bounding_client_rect();
+            (rect.width(), rect.left())
+        },
+        None => (0.0, 0.0),
+    };
+    let names_top = match &names {
+        Some(names) => names.get_bounding_client_rect().top(),
+        None => 0.0,
+    };
+
+    Metrics {
+        canvas_width,
+        canvas_left,
+        names_top,
+    }
+}
+
+fn approximately(a: Metrics, b: Metrics) -> bool {
+    (a.canvas_width - b.canvas_width).abs() <= 0.5
+        && (a.canvas_left - b.canvas_left).abs() <= 0.5
+        && (a.names_top - b.names_top).abs() <= 0.5
 }

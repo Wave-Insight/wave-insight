@@ -138,19 +138,14 @@ impl Component for FileLoad {
                         }
                         Msg::Files(result)
                     });
-        #[cfg(feature = "backend")]
-        let button_style = "
-            background-color:#ffffff;
-            border-radius:6px;
-            border:1px solid #dcdcdc;
-            display:inline-block;
-            cursor:pointer;
-            color:#666666;font-size:15px;font-weight:bold;
-            margin:2% 6.5%;height:20px;width:20%;";
         #[cfg(feature = "wasm")]
         html! {
-            <div style="height:5%">
-                <input type="file" multiple=true onchange={onchangefunc}/>
+            <div class="file-strip">
+                <label class="file-drop">
+                    <input class="file-native" type="file" multiple=true onchange={onchangefunc}/>
+                    <span class="file-drop-icon">{"＋"}</span>
+                    <span class="file-drop-text">{"Load .vcd / .v files"}</span>
+                </label>
             </div>
         }
         #[cfg(feature = "backend")]
@@ -163,8 +158,8 @@ impl Component for FileLoad {
                         ongetverilog={ctx.props().ongetverilog.clone()}
                     />
                 }
-                <div style="height:5%">
-                    <button type="button" style={button_style} onclick={link.callback(|_| Msg::Get)}>{"File"}</button>
+                <div class="file-strip">
+                    <button type="button" class="btn" onclick={link.callback(|_| Msg::Get)}>{"Open file…"}</button>
                 </div>
             </div>
         }

@@ -1,6 +1,5 @@
 use yew::prelude::*;
 
-use material_yew::{MatTabBar, MatTab};
 use crate::code_reader::code_block::CodeBlock;
 
 #[derive(Debug, Properties, PartialEq, Clone)]
@@ -46,23 +45,23 @@ impl Component for CodeReader {
 
         // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
-            <div style="height:50%;overflow-y:auto">
-                <MatTabBar onactivated={link.callback(Msg::SetActive)}>
+            <div class="code-pane">
+                <nav class="tabs">
                 {
-                    if props.file.is_empty() {
-                        html! {<MatTab label="" />}
-                    } else {
-                        html! {}
-                    }
-                }
-                {
-                    for props.file.iter().map(|(file_name,_text)| {
-                        html! {<MatTab label={file_name.clone()} />}
+                    for props.file.iter().enumerate().map(|(idx,(file_name,_text))| {
+                        let class = if idx == self.activate_index {"tab active"} else {"tab"};
+                        html! {
+                            <button type="button" class={class}
+                                onclick={link.callback(move |_| Msg::SetActive(idx))}>
+                                {file_name.clone()}
+                            </button>
+                        }
                     })
                 }
-                </MatTabBar>
-                <CodeBlock text={ text.clone() } line={ props.line }/>
-                //{ <Highlighted code={props.file[0].1} /> }
+                </nav>
+                <div class="code-host">
+                    <CodeBlock text={ text.clone() } line={ props.line }/>
+                </div>
             </div>
         }
     }

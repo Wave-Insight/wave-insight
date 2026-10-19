@@ -44,14 +44,12 @@ impl Component for SignalComponent {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
-        // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
-            <div>
-                <p style="line-height:0.2;white-space:pre"
-                    onclick={link.callback(|_| Msg::Click)}>{
-                        &ctx.props().name
-                    }
-                </p>
+            <div class="sig-row" onclick={link.callback(|_| Msg::Click)}
+                title={ctx.props().name.clone()}>
+                <span class="sig-name">{&ctx.props().name}</span>
+                <span class="sig-size">{ctx.props().signal.size.to_string()}</span>
+                <span class="sig-add">{"+"}</span>
             </div>
         }
     }

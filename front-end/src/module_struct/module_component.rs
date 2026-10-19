@@ -51,18 +51,19 @@ impl Component for ModuleComponent {
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let fold = if ctx.props().module.sub_module.is_empty() {
+        let caret = if ctx.props().module.sub_module.is_empty() {
             ""
         }else if self.show_submodule {
-            "| "
+            "▾"
         }else {
-            "> "
+            "▸"
         };
         html! {
             <div>
-                <h3 style="line-height:0.4;white-space:pre" onclick={ctx.link().callback(|_| Msg::ClickThis)}>
-                    {self.space.clone()+fold+&self.name}
-                </h3>
+                <div class="tree-row" onclick={ctx.link().callback(|_| Msg::ClickThis)}>
+                    <span class={if self.show_submodule {"tree-caret open"} else {"tree-caret"}}>{caret}</span>
+                    <span class="tree-name">{self.space.clone()+&self.name}</span>
+                </div>
                 {if self.show_submodule {html!{
                     for (ctx.props().module.sub_module).iter().map(|x| {
                         let space = self.space.clone() + "  ";

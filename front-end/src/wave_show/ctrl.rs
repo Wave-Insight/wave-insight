@@ -5,6 +5,21 @@ use wave_insight_lib::data_struct::ShowType;
 
 use super::settings::Settings;
 
+///signal colours, tuned to stay readable on the dark wave canvas
+const PALETTE: [(u8,u8,u8);7] = [
+    (255,107,138),//rose
+    (255,178,92), //amber
+    (255,224,102),//yellow
+    (94,230,168), //mint
+    (76,194,255), //cyan
+    (157,140,255),//violet
+    (255,138,209),//pink
+];
+
+fn btn_class(on: bool) -> &'static str {
+    if on {"btn active"} else {"btn"}
+}
+
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct CtrlProps {
     pub name: String,
@@ -115,103 +130,95 @@ impl Component for Ctrl {
         let link = ctx.link();
         let props = ctx.props();
 
-        let button_style = "
-            background-color:#ffffff;
-            border-radius:6px;
-            border:1px solid #dcdcdc;
-            display:inline-block;
-            cursor:pointer;
-            color:#666666;font-size:15px;font-weight:bold;
-            margin:2% 6.5%;height:5%;width:20%;";
-
-        let button_style_onselect = "
-            background-color:#ffffff;
-            border-radius:6px;
-            border:2px solid #55ff55;
-            display:inline-block;
-            cursor:pointer;
-            color:#666666;font-size:15px;font-weight:bold;
-            margin:2% 6.5%;height:5%;width:20%;";
-
-        let color_style = |(r,g,b):(u8,u8,u8)| format!("
-            background-color:#{r:02X?}{g:02X?}{b:02X?};
-            border-radius:6px;
-            border:2px solid #dcdcdc;
-            display:inline-block;
-            cursor:pointer;
-            margin:2% 1.5%;height:5%;width:10%;");
-
-        let color_style_onselect = |(r,g,b):(u8,u8,u8)| format!("
-            background-color:#{r:02X?}{g:02X?}{b:02X?};
-            border-radius:6px;
-            border:3px solid #008800;
-            display:inline-block;
-            cursor:pointer;
-            margin:2% 1.5%;height:5%;width:10%;");
-
-        // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         html! {
             <div>
-                <div style="background:rgba(0, 0, 0, 0.6);position:fixed;top:0;left:0;right:0;bottom:0;z-index:101;"
-                    onclick={link.callback(Msg::ExitMenu)} >
-                </div>
-                <div style="position:absolute;top:50%;left:50%;
-                            background:#fff;height:70%;width:30%;
-                            transform:translate(-50%, -50%);
-                            border-radius: 15px;border: 2px solid #2e84f8;
-                            z-index:102;">
-                    <h4>{props.name.clone()}</h4>
-                    <h5>{"Format"}</h5>
-                    <button type="button" style={if props.setting.show_type==ShowType::Hex   {button_style_onselect} else {button_style}} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::Hex))}>{"Hex"}</button>
-                    <button type="button" style={if props.setting.show_type==ShowType::UInt  {button_style_onselect} else {button_style}} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::UInt))}>{"Dec"}</button>
-                    <button type="button" style={if props.setting.show_type==ShowType::SInt  {button_style_onselect} else {button_style}} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::SInt))}>{"Signed"}</button>
-                    <button type="button" style={if props.setting.show_type==ShowType::Oct   {button_style_onselect} else {button_style}} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::Oct))}>{"Oct"}</button>
-                    <button type="button" style={if props.setting.show_type==ShowType::Bin   {button_style_onselect} else {button_style}} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::Bin))}>{"Bin"}</button>
-                    <button type="button" style={if props.setting.show_type==ShowType::Ascii {button_style_onselect} else {button_style}} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::Ascii))}>{"ASCII"}</button>
-                    <h5>{"Fixed"}</h5>
-                    <button type="button" style={if props.setting.fixed_active {button_style_onselect} else {button_style}} onclick={link.callback(|_| Msg::ActiveFixed)}>{"active"}</button>
-                    <input type="number" onchange={link.callback(|e: Event| Msg::SetFixed(e.target_unchecked_into::<HtmlInputElement>().value_as_number() as u32))} />
-                    <h5>{"Analog"}</h5>
-                    <button type="button" style={if props.setting.analog_active {button_style_onselect} else {button_style}} onclick={link.callback(|_| Msg::ActiveAnalog)}>{"active"}</button>
-                    <input type="number" onchange={link.callback(|e: Event| Msg::SetAnalog(e.target_unchecked_into::<HtmlInputElement>().value_as_number() as u32))} />
-                    <h5>{"L&D"}</h5>
-                    <button type="button" style={button_style} 
-                        onclick={link.callback(|_| Msg::AddAllLoad)}
-                        onmouseover={link.callback(|_| Msg::FlipLoadShow)}
-                        onmouseout={link.callback(|_| Msg::FlipLoadShow)}>{"load"}</button>
-                    { if self.show_load {html!{
-                        <span style="position:absolute;background-color:#ffffff">
-                            {for props.load.iter().map(|l| {
-                                html!{<p>{l}</p>}
-                            })}
-                        </span>
-                    }}else {
-                        html!{}
-                    }}
-                    <button type="button" style={button_style} 
-                        onclick={link.callback(|_| Msg::AddAllDrive)}
-                        onmouseover={link.callback(|_| Msg::FlipDriveShow)}
-                        onmouseout={link.callback(|_| Msg::FlipDriveShow)}>{"drive"}</button>
-                    { if self.show_drive {html!{
-                        <span style="position:absolute;background-color:#ffffff">
-                            {for props.drive.iter().map(|l| {
-                                html!{<p>{l}</p>}
-                            })}
-                        </span>
-                    }}else {
-                        html!{}
-                    }}
-                    <button type="button" style={button_style}
-                        onclick={link.callback(|_| Msg::DeleteSig)}>
-                        {"delete"}</button>
+                <div class="overlay" onclick={link.callback(Msg::ExitMenu)}></div>
+                <div class="modal">
+                    <h4 class="modal-title">{props.name.clone()}</h4>
 
-                    <button type="button" style={if props.setting.color==(255,0,0  ) {color_style_onselect((255,0,0))  } else {color_style((255,0,0))  }} onclick={link.callback(|_| Msg::ChooseColor((255,0,0)))}></button>
-                    <button type="button" style={if props.setting.color==(255,128,0) {color_style_onselect((255,128,0))} else {color_style((255,128,0))}} onclick={link.callback(|_| Msg::ChooseColor((255,128,0)))}></button>
-                    <button type="button" style={if props.setting.color==(255,255,0) {color_style_onselect((255,255,0))} else {color_style((255,255,0))}} onclick={link.callback(|_| Msg::ChooseColor((255,255,0)))}></button>
-                    <button type="button" style={if props.setting.color==(0,255,0  ) {color_style_onselect((0,255,0))  } else {color_style((0,255,0))  }} onclick={link.callback(|_| Msg::ChooseColor((0,255,0)))}></button>
-                    <button type="button" style={if props.setting.color==(0,255,255) {color_style_onselect((0,255,255))} else {color_style((0,255,255))}} onclick={link.callback(|_| Msg::ChooseColor((0,255,255)))}></button>
-                    <button type="button" style={if props.setting.color==(0,0,255  ) {color_style_onselect((0,0,255))  } else {color_style((0,0,255))  }} onclick={link.callback(|_| Msg::ChooseColor((0,0,255)))}></button>
-                    <button type="button" style={if props.setting.color==(255,0,255) {color_style_onselect((255,0,255))} else {color_style((255,0,255))}} onclick={link.callback(|_| Msg::ChooseColor((255,0,255)))}></button>
+                    <div class="modal-section">
+                        <p class="modal-label">{"Format"}</p>
+                        <div class="modal-row">
+                            <button type="button" class={btn_class(props.setting.show_type==ShowType::Hex)} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::Hex))}>{"Hex"}</button>
+                            <button type="button" class={btn_class(props.setting.show_type==ShowType::UInt)} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::UInt))}>{"Dec"}</button>
+                            <button type="button" class={btn_class(props.setting.show_type==ShowType::SInt)} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::SInt))}>{"Signed"}</button>
+                            <button type="button" class={btn_class(props.setting.show_type==ShowType::Oct)} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::Oct))}>{"Oct"}</button>
+                            <button type="button" class={btn_class(props.setting.show_type==ShowType::Bin)} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::Bin))}>{"Bin"}</button>
+                            <button type="button" class={btn_class(props.setting.show_type==ShowType::Ascii)} onclick={link.callback(|_| Msg::ChooseShowType(ShowType::Ascii))}>{"ASCII"}</button>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <p class="modal-label">{"Fixed point"}</p>
+                        <div class="modal-row">
+                            <button type="button" class={btn_class(props.setting.fixed_active)} onclick={link.callback(|_| Msg::ActiveFixed)}>{"active"}</button>
+                            <input class="modal-input" type="number" onchange={link.callback(|e: Event| Msg::SetFixed(e.target_unchecked_into::<HtmlInputElement>().value_as_number() as u32))} />
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <p class="modal-label">{"Analog"}</p>
+                        <div class="modal-row">
+                            <button type="button" class={btn_class(props.setting.analog_active)} onclick={link.callback(|_| Msg::ActiveAnalog)}>{"active"}</button>
+                            <input class="modal-input" type="number" onchange={link.callback(|e: Event| Msg::SetAnalog(e.target_unchecked_into::<HtmlInputElement>().value_as_number() as u32))} />
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <p class="modal-label">{"Load / drive"}</p>
+                        <div class="modal-row">
+                            <button type="button" class="btn"
+                                onclick={link.callback(|_| Msg::AddAllLoad)}
+                                onmouseover={link.callback(|_| Msg::FlipLoadShow)}
+                                onmouseout={link.callback(|_| Msg::FlipLoadShow)}>{"load"}</button>
+                            { if self.show_load {html!{
+                                <span class="modal-pop">
+                                    {for props.load.iter().map(|l| {
+                                        html!{<p>{l}</p>}
+                                    })}
+                                </span>
+                            }}else {
+                                html!{}
+                            }}
+                            <button type="button" class="btn"
+                                onclick={link.callback(|_| Msg::AddAllDrive)}
+                                onmouseover={link.callback(|_| Msg::FlipDriveShow)}
+                                onmouseout={link.callback(|_| Msg::FlipDriveShow)}>{"drive"}</button>
+                            { if self.show_drive {html!{
+                                <span class="modal-pop">
+                                    {for props.drive.iter().map(|l| {
+                                        html!{<p>{l}</p>}
+                                    })}
+                                </span>
+                            }}else {
+                                html!{}
+                            }}
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <p class="modal-label">{"Colour"}</p>
+                        <div class="modal-row">
+                            {
+                                for PALETTE.iter().map(|&c| {
+                                    let class = if props.setting.color==c {"swatch active"} else {"swatch"};
+                                    html!{
+                                        <button type="button" class={class}
+                                            style={format!("--swatch:#{:02X}{:02X}{:02X}",c.0,c.1,c.2)}
+                                            onclick={link.callback(move |_| Msg::ChooseColor(c))}>
+                                        </button>
+                                    }
+                                })
+                            }
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <div class="modal-row">
+                            <button type="button" class="btn danger"
+                                onclick={link.callback(|_| Msg::DeleteSig)}>{"Remove signal"}</button>
+                        </div>
+                    </div>
                 </div>
             </div>
         }

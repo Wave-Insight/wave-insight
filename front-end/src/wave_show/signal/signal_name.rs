@@ -1,11 +1,4 @@
-use serde::{Deserialize, Serialize};
 use yew::prelude::*;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct SignalName {
-    padding: String,
-    menu_show: String,
-}
 
 pub enum Msg {
     ContextMenu(MouseEvent),
@@ -21,14 +14,15 @@ pub struct SignalNameProps {
     pub onclick: Callback<()>,
 }
 
+pub struct SignalName {
+}
+
 impl Component for SignalName {
     type Message = Msg;
     type Properties = SignalNameProps;
 
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
-            padding: "0px".to_string(),
-            menu_show: "hidden".to_string(),
         }
     }
 
@@ -45,14 +39,16 @@ impl Component for SignalName {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
-        let background = if ctx.props().choose {"#aaaaff"} else {"#ffffff"};
+        let class = if ctx.props().choose {"wave-name-cell chosen"} else {"wave-name-cell"};
         html! {
-            <div style={"padding:".to_owned()+&self.padding+";background-color:"+background}>
-                <p oncontextmenu={link.callback(Msg::ContextMenu)}
-                    onclick={ctx.props().onclick.reform(|_| ())}
-                    style={"font-size:16px;margin:0px;height:30px"}>
+            <div class={class}>
+                <p class="wave-name-text" title={ctx.props().name.clone()}
+                    oncontextmenu={link.callback(Msg::ContextMenu)}
+                    onclick={ctx.props().onclick.reform(|_: MouseEvent| ())}>
                     {&ctx.props().name}
                 </p>
+                <span class="wave-more" title="Signal settings"
+                    onclick={ctx.props().menu.reform(|_: MouseEvent| ())}>{"⋯"}</span>
             </div>
         }
     }

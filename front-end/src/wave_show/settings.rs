@@ -23,7 +23,7 @@ impl Settings {
     pub fn new() -> Self {
         Self {
             show_type: ShowType::Hex,
-            color: (0,255,0),
+            color: (76,194,255),
 
             fixed_active: false,
             fixed_point: 0,
