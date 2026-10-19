@@ -8,6 +8,10 @@ edition = "2021"
 [dependencies]
 wave-insight-lib = { path = "../wave-insight-lib" }
 
+#stdio transport of the `lsp` binary; the protocol core itself lives in
+#`wave-insight-lib::lsp` so the desktop and the wasm build share it
+lsp-server = "0.7"
+
 futures-channel = "0.3"
 #keep in sync with the pinned `tungstenite` below, a `*` here would jump to a
 #release where `Message::Text` takes `Utf8Bytes` instead of `String`

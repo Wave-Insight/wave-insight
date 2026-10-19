@@ -4,6 +4,7 @@
 
 pub mod data_struct;
 pub mod design;
+pub mod lsp;
 pub mod parser;
 pub mod waveform;
 

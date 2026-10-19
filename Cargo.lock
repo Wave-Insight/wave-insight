@@ -94,6 +94,7 @@ version = "0.1.0"
 dependencies = [
  "futures-channel",
  "futures-util",
+ "lsp-server",
  "num",
  "serde_json",
  "tokio",
@@ -2016,6 +2017,19 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "lsp-server"
+version = "0.7.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d6ada348dbc2703cbe7637b2dda05cff84d3da2819c24abcb305dd613e0ba2e"
+dependencies = [
+ "crossbeam-channel",
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
 ]
 
 [[package]]
