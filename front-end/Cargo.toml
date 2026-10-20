@@ -42,6 +42,11 @@ features = [
     "HtmlElement",
     "HtmlHeadElement",
     "HtmlScriptElement",
+    #wave_show: the wave body is drawn on one <canvas> instead of one <svg> per row
+    #(web-sys 0.3.106 folds the 2d context mixins into CanvasRenderingContext2d)
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "TextMetrics",
     #console error reporting when the monaco CDN cannot be reached
     "console",]
 

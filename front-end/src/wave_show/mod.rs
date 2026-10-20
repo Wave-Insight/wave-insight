@@ -7,3 +7,5 @@ mod signal;
 mod ctrl;
 mod time;
 mod util;
+mod geometry;
+mod canvas;
