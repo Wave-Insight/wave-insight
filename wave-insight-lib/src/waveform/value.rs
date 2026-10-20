@@ -138,7 +138,20 @@ impl Bits {
 
     /// One character per bit, exactly like a VCD binary literal (`10xz01`).
     pub fn bit_string(&self) -> String {
-        self.bits.iter().map(|b| b.as_char()).collect()
+        let mut out = String::with_capacity(self.bits.len());
+        self.write_bit_string(&mut out);
+        out
+    }
+
+    /// Append the bit string to `out` without allocating a temporary `String`.
+    ///
+    /// This is what a renderer wants: one reusable buffer for a whole frame
+    /// instead of one `String` per drawn value.
+    pub fn write_bit_string(&self, out: &mut String) {
+        out.reserve(self.bits.len());
+        for bit in &self.bits {
+            out.push(bit.as_char());
+        }
     }
 
     /// Numeric value if every bit is `0`/`1`, `None` if any bit is unknown or
@@ -303,5 +316,49 @@ impl WaveValue {
             wellen::SignalValueRef::Real(value) => WaveValue::Real(value),
             wellen::SignalValueRef::String(value) => WaveValue::String(value.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_bit_string_matches_bit_string() {
+        let bits = Bits::new_msb_first(vec![
+            BitValue::One,
+            BitValue::Zero,
+            BitValue::X,
+            BitValue::Z,
+            BitValue::H,
+            BitValue::U,
+            BitValue::W,
+            BitValue::L,
+            BitValue::Dash,
+        ]);
+        assert_eq!(bits.bit_string(), "10xzhuwl-");
+
+        //appending into a reused buffer gives the same text
+        let mut buffer = String::from("prefix:");
+        bits.write_bit_string(&mut buffer);
+        assert_eq!(buffer, format!("prefix:{}", bits.bit_string()));
+    }
+
+    #[test]
+    fn legacy_chunk_keeps_the_bit_order() {
+        //0b1010_1100 as a four state vector, msb first
+        let bits =
+            Bits::new_msb_first(vec![BitValue::One, BitValue::Zero, BitValue::One, BitValue::Zero]);
+        assert_eq!(bits.to_legacy_chunk(), vec![(0, 0b1010)]);
+        assert_eq!(bits.to_bits_data().to_string(4, &crate::data_struct::ShowType::Bin), "1010");
+
+        //nine bits: two bytes with the padding in the first one
+        let mut msb_first = vec![BitValue::One];
+        msb_first.extend(std::iter::repeat(BitValue::Zero).take(8));
+        let nine = Bits::new_msb_first(msb_first);
+        assert_eq!(nine.to_legacy_chunk(), vec![(0, 0b0000_0001), (0, 0)]);
+        assert_eq!(nine.as_u64(), Some(0x100));
+        assert_eq!(nine.get(8), Some(BitValue::One));
+        assert_eq!(nine.get(0), Some(BitValue::Zero));
     }
 }

@@ -16,16 +16,39 @@
 //!   type and payload kind. Hierarchy resolution only touches the file header.
 //! * [`WaveValue`] - owned values that keep `x`/`z`/`h`/`u`/`w`/`l`/`-` apart
 //!   and can also be a real, a string or an event.
-//! * Value queries, eager and lazy:
-//!   * [`Waveform::changes_in_window`] / [`Waveform::stream_changes`] - ask for
-//!     one (or a few) signals inside one time window, **without** materialising
-//!     the rest of the trace. This is the path new UI code should use.
-//!   * [`Waveform::all_changes`] / [`Waveform::value_at`] - random access to a
-//!     single signal, backed by a per-signal decode cache.
+//! * Value queries, three tiers (see [Choosing a value query](self#choosing-a-value-query)):
+//!   * [`Waveform::decoded_changes`] / [`DecodedSignal`] - cached per signal
+//!     history, the per frame path for a renderer,
+//!   * [`Waveform::value_at`] - one time stamp, `O(log n)`, no history,
+//!   * [`Waveform::changes_in_window`] / [`Waveform::stream_changes`] - streamed
+//!     window, nothing kept, re-reads the body on every call.
 //! * [`Waveform::legacy_module`] / [`Waveform::legacy_module_value`] /
 //!   [`Waveform::to_legacy`] - an adapter that still produces the old
 //!   [`Module`] + [`ModuleValue`] pair so the current front end keeps working
 //!   unchanged. It expands everything (see below), so treat it as a bridge.
+//!
+//! # Choosing a value query
+//!
+//! | what you are doing | call | cost |
+//! |---|---|---|
+//! | drawing the visible rows | [`Waveform::decoded_changes_many`], then [`DecodedSignal::window`] per row | one pass over the body for the whole screen |
+//! | drawing one row | [`Waveform::decoded_changes`] + [`DecodedSignal::window`] | decode once per signal, then binary search |
+//! | cursor readout, tooltips | [`Waveform::value_at`] | one value, no history |
+//! | one-off query over a huge signal | [`Waveform::changes_in_window`] | re-reads the body, `O(window)` memory |
+//! | export / tests / small dumps | [`Waveform::all_changes`] | converts the history on every call |
+//!
+//! A renderer must not call [`Waveform::changes_in_window`] per frame: it
+//! re-streams the file on every call (that is what made the old per-row SVG
+//! redraw slow). [`Waveform::decoded_changes`] is the accessor that makes a
+//! redraw independent of the file size: it hands out a cheap handle that derefs
+//! to `&[Change]`, so the visible slice is a binary search and no value is
+//! cloned. The handle keeps working after [`Waveform::unload_signal`], because
+//! it owns its snapshot.
+//!
+//! Ask for a whole screen of rows in **one** call
+//! ([`Waveform::decoded_changes_many`]): wellen reads a set of signals per pass
+//! over the body, so decoding rows one by one re-scans the file once per row. On
+//! an 8 MB FST dump, 30 signals took 1.04 s sequentially and 73 ms batched.
 //!
 //! # Memory behaviour
 //!
@@ -46,13 +69,21 @@
 //! 2. [`Waveform::stream_changes`] re-reads the body through wellen's streaming
 //!    API and only decodes the requested signals inside the requested window.
 //!    Peak memory is proportional to the window, not to the trace.
-//! 3. [`Waveform::all_changes`], [`Waveform::value_at`] and the legacy adapter
-//!    do materialise, but per signal and on demand: wellen keeps the decoded
-//!    signal in its packed encoding (2 or 4 bits per bit) inside a cache you
-//!    can empty with [`Waveform::unload_signal`]. For a wide bus the payload is
-//!    comparable to the old model; the win is that narrow signals no longer pay
-//!    per-change allocation overhead and that nothing is decoded twice.
-//! 4. [`Waveform::legacy_module_value`] materialises **everything** by design:
+//! 3. [`Waveform::value_at`] and [`Waveform::all_changes`] materialise per
+//!    signal and on demand: wellen keeps the decoded signal in its packed
+//!    encoding (2 or 4 bits per bit) inside a cache you can empty with
+//!    [`Waveform::unload_signal`]. For a wide bus the payload is comparable to
+//!    the old model; the win is that narrow signals no longer pay per-change
+//!    allocation overhead and that nothing is decoded twice.
+//! 4. [`Waveform::decoded_changes`] keeps a second, converted copy of a signal
+//!    that a renderer draws: `size_of::<Change>()` (40 bytes on 64 bit) per
+//!    change plus bus payloads, so 500k changes of one signal are ~20 MB. That
+//!    is the price of a redraw that never touches the file. It is built per
+//!    displayed signal on first use and [`Waveform::unload_signal`] frees it
+//!    again; [`Waveform::cache_stats`] reports what is held. A signal that is
+//!    too big to hold should be drawn with [`Waveform::changes_in_window`]
+//!    instead.
+//! 5. [`Waveform::legacy_module_value`] materialises **everything** by design:
 //!    it is the compatibility path for the current UI and is only suitable for
 //!    small dumps. For VCD the body also has to be parsed into wellen's in
 //!    memory representation first, which is what makes it the slowest path.
@@ -139,6 +170,7 @@
 //!   panic raised by your own [`Waveform::stream_changes`] visitor is re-raised,
 //!   not swallowed.
 
+mod decoded;
 mod error;
 mod format;
 mod hierarchy;
@@ -150,12 +182,13 @@ mod value;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use wellen::{LoadOptions, Signal, SignalRef, SignalSource, Time};
 
 use crate::data_struct::{Module, ModuleValue};
 
+pub use decoded::{Change, DecodedSignal};
 pub use error::{Result, WaveformError};
 pub use format::{TimeUnit, Timescale, WaveFormat};
 pub use hierarchy::{HierarchyView, ScopeNode, SignalInfo, SignalKind};
@@ -343,9 +376,11 @@ impl Waveform {
 
     /// Every change of one variable, in chronological order.
     ///
-    /// This decodes the whole history of that variable and keeps it in the
-    /// cache until [`Waveform::unload_signal`] is called. For a redraw of a
-    /// visible window prefer [`Waveform::changes_in_window`].
+    /// This decodes the whole history of that variable, converts it into owned
+    /// values and **does not keep the result**: the next call converts again.
+    /// Use it for tests, exports and small signals, not in a draw loop - a
+    /// renderer wants [`Waveform::decoded_changes`] (cached) or
+    /// [`Waveform::changes_in_window`] (streamed).
     pub fn all_changes(&self, signal: usize) -> Result<Vec<(Time, WaveValue)>> {
         let signal_ref = self.signal_ref(signal)?;
         let mut guard = self.lock_body();
@@ -353,10 +388,10 @@ impl Waveform {
         body.ensure_loaded(signal_ref)?;
 
         let time_table = &body.time_table;
-        let decoded = body.signals.get(&signal_ref).ok_or_else(|| {
-            WaveformError::Backend(format!("signal `{}` did not decode", self.path_of(signal)))
-        })?;
-        Ok(decoded
+        let packed = body
+            .packed(signal_ref)
+            .ok_or_else(|| WaveformError::Backend(format!("signal `{}` did not decode", self.path_of(signal))))?;
+        Ok(packed
             .iter_changes()
             .map(|(time_index, value)| {
                 (
@@ -367,37 +402,116 @@ impl Waveform {
             .collect())
     }
 
+    /// The decoded history of one variable, cached and shared.
+    ///
+    /// This is the per frame accessor for a renderer: the signal is decoded and
+    /// converted **once**, the result stays in the per signal cache, and every
+    /// later call returns the same allocation (see
+    /// [`DecodedSignal::shares_storage_with`]) without touching the file again.
+    ///
+    /// The handle derefs to `&[Change]`, so slicing it is free:
+    ///
+    /// ```no_run
+    /// # use wave_insight_lib::waveform::{Waveform, WaveValue};
+    /// # fn draw(waveform: &Waveform, signal: usize) -> Result<(), Box<dyn std::error::Error>> {
+    /// let decoded = waveform.decoded_changes(signal)?;
+    /// // value in effect at the left edge of the visible window
+    /// let seed: Option<&WaveValue> = decoded.value_at(1_000);
+    /// // only the transitions that are actually on screen
+    /// for (time, value) in decoded.window(1_000, Some(2_000)) {
+    ///     let _ = (seed, time, value);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Memory
+    ///
+    /// The cache keeps the whole history of the signal: `size_of::<Change>()`
+    /// (40 bytes on 64 bit) per change plus the heap payload of bus values, so
+    /// 500k changes of one signal are ~20 MB. That is the price of never
+    /// re-reading the file for a redraw. It is paid per *displayed* signal, on
+    /// demand, and it is given back by [`Waveform::unload_signal`] (call it when
+    /// a row scrolls out of view). [`Waveform::cache_stats`] reports what is
+    /// currently held.
+    ///
+    /// If a signal is too big to hold, [`Waveform::changes_in_window`] streams
+    /// just the visible window (`O(window)` memory, but it re-reads the body),
+    /// and [`Waveform::value_at`] answers a single time stamp without decoding
+    /// any history at all.
+    pub fn decoded_changes(&self, signal: usize) -> Result<DecodedSignal> {
+        let signal_ref = self.signal_ref(signal)?;
+        let mut guard = self.lock_body();
+        let body = self.ensure_body(&mut guard)?;
+        body.decoded(signal_ref)
+    }
+
+    /// The decoded histories of several variables, decoded in **one** pass.
+    ///
+    /// This is the call a renderer should use for the rows of a frame: wellen
+    /// reads a set of signals per pass over the body, so decoding 60 signals one
+    /// by one re-scans the file 60 times while this does it once. On a large FST
+    /// dump that is the difference between a ~20 ms and a ~1 s frame when the
+    /// visible rows change.
+    ///
+    /// Signals that are already cached are not decoded again; duplicates in
+    /// `signals` are decoded once. The returned handles are in the order of
+    /// `signals` (duplicates included) and share storage with the handles
+    /// [`Waveform::decoded_changes`] would return.
+    pub fn decoded_changes_many(&self, signals: &[usize]) -> Result<Vec<DecodedSignal>> {
+        if signals.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut refs = Vec::with_capacity(signals.len());
+        for &index in signals {
+            refs.push(self.signal_ref(index)?);
+        }
+
+        let mut guard = self.lock_body();
+        let body = self.ensure_body(&mut guard)?;
+        body.ensure_loaded_many(&refs)?;
+
+        let mut decoded = Vec::with_capacity(refs.len());
+        for &signal_ref in &refs {
+            decoded.push(body.decoded(signal_ref)?);
+        }
+        Ok(decoded)
+    }
+
+    /// What the per signal cache currently holds.
+    ///
+    /// Cheap (`O(cached signals)`) and side effect free: it never reads the body
+    /// itself, so calling it before the first query reports zeros. Meant for
+    /// diagnostics and for UI code that wants to prune the cache
+    /// ([`Waveform::unload_signal`]) when it grows.
+    pub fn cache_stats(&self) -> CacheStats {
+        let guard = self.lock_body();
+        match guard.as_ref() {
+            Some(body) => body.cache_stats(),
+            None => CacheStats::default(),
+        }
+    }
+
     /// The value one variable had at `time`.
     ///
     /// Returns the last change at or before `time`, `None` if the variable has
-    /// not changed yet (or has no changes at all).
+    /// not changed yet (or has no changes at all). This reuses the same per
+    /// signal cache as [`Waveform::decoded_changes`]: it never builds a history,
+    /// it reads a single value, and if the signal was already decoded by
+    /// [`Waveform::decoded_changes`] it answers out of that slice.
     pub fn value_at(&self, signal: usize, time: Time) -> Result<Option<WaveValue>> {
         let signal_ref = self.signal_ref(signal)?;
         let mut guard = self.lock_body();
         let body = self.ensure_body(&mut guard)?;
-        body.ensure_loaded(signal_ref)?;
-
-        let Some(time_index) = body.time_index_at_or_before(time) else {
-            return Ok(None);
-        };
-        let Some(decoded) = body.signals.get(&signal_ref) else {
-            return Ok(None);
-        };
-        let Some(offset) = decoded.get_offset(time_index) else {
-            return Ok(None);
-        };
-        //delta cycles can produce several changes with the same time stamp;
-        //the last one wins
-        let element = offset.elements.saturating_sub(1);
-        Ok(Some(WaveValue::from_wellen(
-            decoded.get_value_at(&offset, element),
-        )))
+        body.value_at(signal_ref, time)
     }
 
     /// Drop the decoded data of one variable from the random access cache.
     ///
-    /// The hierarchy and the time table stay; only the value data is freed.
-    /// Does nothing if the body was never materialised.
+    /// Frees both the packed decode and the decoded history; the hierarchy and
+    /// the time table stay. Handles already obtained from
+    /// [`Waveform::decoded_changes`] keep their snapshot alive (they own it), the
+    /// next call decodes again. Does nothing if the body was never materialised.
     pub fn unload_signal(&self, signal: usize) -> Result<()> {
         let signal_ref = self.signal_ref(signal)?;
         let mut guard = self.lock_body();
@@ -405,6 +519,29 @@ impl Waveform {
             body.signals.remove(&signal_ref);
         }
         Ok(())
+    }
+
+    /// Drop every decoded signal from the cache, keeping the parsed body.
+    ///
+    /// Use it when the visible row set changes as a whole (new filter, new
+    /// module selected) to give the memory back without paying for the body
+    /// again. [`Waveform::unload_signal`] is the fine grained variant.
+    pub fn unload_all_signals(&self) {
+        let mut guard = self.lock_body();
+        if let Some(body) = guard.as_mut() {
+            body.signals.clear();
+        }
+    }
+
+    /// Throw away the whole random access cache and go back to the state right
+    /// after opening: the next value query re-reads the file.
+    ///
+    /// This frees the parsed body (for VCD that is wellen's in-memory
+    /// representation of the whole trace), the time table and every decoded
+    /// signal, which together are the biggest block the backend holds. Handles
+    /// obtained from [`Waveform::decoded_changes`] keep their snapshot alive.
+    pub fn release_cache(&self) {
+        *self.lock_body() = None;
     }
 
     /// Report value changes without materialising the whole trace.
@@ -616,6 +753,36 @@ pub(crate) fn time_to_i32(time: Time) -> i32 {
     time.min(i32::MAX as u64) as i32
 }
 
+/// What [`Waveform::cache_stats`] found in the per signal cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    /// Number of time steps in the body (0 if the body was never read).
+    pub time_steps: usize,
+    /// Signals decoded from the file (packed, wellen's own representation).
+    pub loaded_signals: usize,
+    /// Signals with a decoded history (see [`Waveform::decoded_changes`]).
+    pub decoded_signals: usize,
+    /// Total number of changes in all decoded histories.
+    pub decoded_changes: usize,
+}
+
+impl CacheStats {
+    /// Bytes held by the decoded histories, excluding bus value payloads.
+    ///
+    /// This is `decoded_changes * size_of::<Change>()`; each bus value also owns
+    /// its own allocation, and the packed decodes are not counted at all.
+    pub fn decoded_bytes(&self) -> usize {
+        self.decoded_changes * std::mem::size_of::<Change>()
+    }
+}
+
+/// A signal in the cache: the packed decode plus, once someone asked for it, the
+/// converted history that a renderer draws from.
+struct CachedSignal {
+    packed: Signal,
+    decoded: Option<DecodedSignal>,
+}
+
 /// Wellen's body plus a per signal decode cache.
 ///
 /// This is deliberately *not* `wellen::simple::Waveform`: that type forces
@@ -627,7 +794,7 @@ struct EagerBody {
     source: SignalSource,
     time_table: Vec<Time>,
     /// Decoded signals, keyed by wellen's handle index.
-    signals: HashMap<SignalRef, Signal>,
+    signals: HashMap<SignalRef, CachedSignal>,
 }
 
 impl EagerBody {
@@ -652,31 +819,131 @@ impl EagerBody {
 
     /// Decode `signal` if it is not cached yet.
     fn ensure_loaded(&mut self, signal: SignalRef) -> Result<()> {
-        if self.signals.contains_key(&signal) {
+        self.ensure_loaded_many(&[signal])
+    }
+
+    /// Decode every signal in `signals` that is not cached yet, in one pass.
+    ///
+    /// `wellen` reads a whole set of signals per request, so calling this once
+    /// for the visible rows is much cheaper than looping over
+    /// [`EagerBody::ensure_loaded`].
+    fn ensure_loaded_many(&mut self, signals: &[SignalRef]) -> Result<()> {
+        let mut missing: Vec<SignalRef> = Vec::new();
+        for &signal in signals {
+            if !self.signals.contains_key(&signal) && !missing.contains(&signal) {
+                missing.push(signal);
+            }
+        }
+        if missing.is_empty() {
             return Ok(());
         }
         //wellen unwraps the encoding of every requested signal, refuse instead
-        if self.hierarchy.get_signal_tpe(signal).is_none() {
+        if let Some(bad) = missing
+            .iter()
+            .find(|signal| self.hierarchy.get_signal_tpe(**signal).is_none())
+        {
             return Err(WaveformError::Backend(format!(
                 "signal #{} has no encoding information",
-                signal.index()
+                bad.index()
             )));
         }
         //decoding a corrupt body can panic inside wellen/fst-reader
-        catch_parse(self.format, "decode signal", || {
-            let loaded = self.source.load_signals(&[signal], &self.hierarchy, false);
-            for decoded in loaded {
-                self.signals.insert(decoded.signal_ref(), decoded);
+        catch_parse(self.format, "decode signals", || {
+            let loaded = self.source.load_signals(&missing, &self.hierarchy, false);
+            for packed in loaded {
+                self.signals.insert(
+                    packed.signal_ref(),
+                    CachedSignal {
+                        packed,
+                        decoded: None,
+                    },
+                );
             }
             Ok(())
         })?;
-        if !self.signals.contains_key(&signal) {
+        if let Some(bad) = missing
+            .iter()
+            .find(|signal| !self.signals.contains_key(*signal))
+        {
             return Err(WaveformError::Backend(format!(
                 "signal #{} could not be decoded",
-                signal.index()
+                bad.index()
             )));
         }
         Ok(())
+    }
+
+    /// The packed decode of a signal, if it is cached.
+    fn packed(&self, signal: SignalRef) -> Option<&Signal> {
+        self.signals.get(&signal).map(|cached| &cached.packed)
+    }
+
+    /// The decoded history of a signal, building and caching it on first use.
+    fn decoded(&mut self, signal: SignalRef) -> Result<DecodedSignal> {
+        self.ensure_loaded(signal)?;
+        let time_table = &self.time_table;
+        let cached = self.signals.get_mut(&signal).ok_or_else(|| {
+            WaveformError::Backend(format!("signal #{} is not cached", signal.index()))
+        })?;
+        if cached.decoded.is_none() {
+            let changes: Arc<[Change]> = cached
+                .packed
+                .iter_changes()
+                .map(|(time_index, value)| {
+                    (
+                        time_table[time_index as usize],
+                        WaveValue::from_wellen(value),
+                    )
+                })
+                .collect::<Vec<Change>>()
+                .into();
+            cached.decoded = Some(DecodedSignal::new(changes));
+        }
+        cached
+            .decoded
+            .clone()
+            .ok_or_else(|| WaveformError::Backend("decoded history vanished".to_string()))
+    }
+
+    /// The value at `time`, preferring an already decoded history.
+    fn value_at(&mut self, signal: SignalRef, time: Time) -> Result<Option<WaveValue>> {
+        self.ensure_loaded(signal)?;
+        let Some(cached) = self.signals.get(&signal) else {
+            return Ok(None);
+        };
+        //if a renderer already decoded this signal, answer out of that slice:
+        //same representation, no second conversion path in the result
+        if let Some(decoded) = &cached.decoded {
+            return Ok(decoded.value_at(time).cloned());
+        }
+        let Some(time_index) = self.time_index_at_or_before(time) else {
+            return Ok(None);
+        };
+        let Some(offset) = cached.packed.get_offset(time_index) else {
+            return Ok(None);
+        };
+        //delta cycles can produce several changes with the same time stamp;
+        //the last one wins
+        let element = offset.elements.saturating_sub(1);
+        Ok(Some(WaveValue::from_wellen(
+            cached.packed.get_value_at(&offset, element),
+        )))
+    }
+
+    /// Snapshot of the cache contents.
+    fn cache_stats(&self) -> CacheStats {
+        let mut stats = CacheStats {
+            time_steps: self.time_table.len(),
+            ..CacheStats::default()
+        };
+        for cached in self.signals.values() {
+            stats.loaded_signals += 1;
+            if let Some(decoded) = &cached.decoded {
+                stats.decoded_signals += 1;
+                stats.decoded_changes += decoded.len();
+            }
+        }
+        stats
     }
 
     /// Index of the last change at or before `time`.
