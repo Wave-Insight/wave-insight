@@ -6,6 +6,13 @@
     <title>Wave-Insight</title>
 
     <link data-trunk rel="css" href="styles.css" />
+    <!--
+      The editor is a pinned, self-hosted monaco build (see monaco/README.md).
+      Trunk copies the directory to `dist/monaco/`, i.e. next to the wasm bundle,
+      and `src/code_reader/monaco_glue.rs` loads it from `./monaco/vs`. The app
+      therefore never talks to a CDN and works offline / behind a firewall.
+    -->
+    <link data-trunk rel="copy-dir" href="monaco" />
   </head>
 
   <body></body>

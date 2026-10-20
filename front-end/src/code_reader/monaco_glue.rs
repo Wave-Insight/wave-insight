@@ -6,10 +6,11 @@
 //! requires `PartialEq`/`Clone` from the JS option bindings. Instead of pinning
 //! a git revision we drive monaco directly over `js_sys`:
 //!
-//! * the editor is loaded lazily, exactly once per page, from a CDN:
-//!   `vs/loader.js` is injected, `require.config({paths: {vs: ...}})` is called
-//!   and `require(["vs/editor/editor.main"])` resolves the real editor,
-//! * [`VS_ROOTS`] lists the mirrors that are tried when a host is unreachable,
+//! * the editor is loaded lazily, exactly once per page, from the pinned build
+//!   the app ships: `monaco/vs/loader.js` is injected, the AMD
+//!   `require.config({paths: {vs: ...}})` root is derived from the URL the
+//!   browser actually resolved, and `require(["vs/editor/editor.main"])`
+//!   resolves the real editor — no CDN is contacted (see `monaco/README.md`),
 //! * a [`MonacoEditor`] owns the JS handle so the Yew component can keep it
 //!   across renders and dispose it on unmount.
 //!
@@ -23,7 +24,7 @@
 //! Copyright (c) 2020 Simon Berger, MIT OR Apache-2.0. The full license texts
 //! are kept next to this file in `rust-monaco.LICENSE.txt`.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use js_sys::{Array, Function, Object, Reflect};
@@ -31,19 +32,19 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::HtmlElement;
 
-/// Where the AMD build of monaco-editor can be fetched from, tried in order.
+/// The pinned monaco-editor release, shipped with the app (see `monaco/README.md`).
 ///
-/// Each entry must point at a `min/vs` directory of the same release and is
-/// only used as the base URL for `loader.js` and `require.config({paths.vs})`.
-/// The Monaco docs use `cdn.jsdelivr.net`, but that host is blocked on the
-/// development network (connection reset), so it is not listed; cdnjs is the
-/// primary mirror and the other two are fallbacks for restricted networks.
-/// Bump the version in every entry together.
-const VS_ROOTS: &[&str] = &[
-    "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs",
-    "https://unpkg.com/monaco-editor@0.44.0/min/vs",
-    "https://fastly.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs",
-];
+/// The value is only a marker for the update instructions and the loader log;
+/// the files themselves live in `front-end/monaco/vs` and are copied to
+/// `dist/monaco/vs` by trunk.
+const VS_VERSION: &str = "0.44.0";
+
+/// Where the pinned `vs` directory is served from, relative to `index.html`.
+///
+/// The loader script is injected with this relative URL and the AMD
+/// `paths.vs` root is derived from the *absolute* URL the browser resolved, so
+/// the app also works when it is deployed under a sub path.
+const VS_ROOT: &str = "./monaco/vs";
 
 /// The entry point that pulls in the editor, the languages and the workers.
 const EDITOR_MODULE: &str = "vs/editor/editor.main";
@@ -114,7 +115,7 @@ impl EditorOptions {
     }
 }
 
-/// A live monaco editor, or the promise of one while the CDN is loading.
+/// A live monaco editor, or the promise of one while the editor is loading.
 ///
 /// The handle is created asynchronously (the first call has to download the
 /// editor), so the methods below are safe to call right after
@@ -278,7 +279,7 @@ impl MonacoEditor {
 
     /// Run `callback` with the `monaco` namespace and the live editor once both
     /// exist. This is how the language providers are registered without
-    /// assuming the CDN finished loading.
+    /// assuming the editor finished loading.
     pub fn on_ready(&self, callback: Box<dyn Fn(&JsValue, &JsValue)>) {
         let mut callback = Some(callback);
         let ready = {
@@ -409,14 +410,12 @@ enum LoaderState {
     Loading(Vec<ReadyCallback>),
     /// The `monaco` namespace is available.
     Ready(JsValue),
-    /// The CDN could not be used; editors will never be created.
+    /// The shipped editor could not be loaded; editors will never be created.
     Failed,
 }
 
 thread_local! {
     static LOADER: RefCell<LoaderState> = RefCell::new(LoaderState::Idle);
-    /// Index into [`VS_ROOTS`] of the mirror currently being tried.
-    static CDN_INDEX: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Run `callback` with the `monaco` namespace, loading it first if needed.
@@ -460,49 +459,42 @@ fn ensure_loaded(callback: ReadyCallback) {
     }
 }
 
-/// Try the current [`VS_ROOTS`] entry, falling through to the next mirror when
-/// the loader script itself cannot be fetched.
+/// Load the pinned, self-hosted editor.
+///
+/// There is exactly one place to load from (the copy trunk ships next to the
+/// page), so a failure is final: the app keeps working without an editor pane
+/// and the console says which file is missing.
 fn start_load() {
-    let index = CDN_INDEX.with(Cell::get);
-    let Some(root) = VS_ROOTS.get(index) else {
-        mark_failed();
-        return;
-    };
-    if let Err(err) = inject_loader(root) {
+    let loader_url = format!("{VS_ROOT}/loader.js");
+    if let Err(err) = inject_loader(&loader_url) {
         console_error(&format!(
-            "wave-insight: could not inject the monaco loader from {root}: {}",
+            "wave-insight: could not inject the monaco loader from {loader_url}: {}",
             describe(&err)
         ));
-        try_next_cdn();
-    }
-}
-
-fn try_next_cdn() {
-    let next = CDN_INDEX.with(|index| {
-        let next = index.get() + 1;
-        index.set(next);
-        next
-    });
-    if next < VS_ROOTS.len() {
-        start_load();
-    } else {
-        console_error("wave-insight: no monaco-editor CDN could be reached");
         mark_failed();
     }
 }
 
 /// Inject `<script src="<root>/loader.js">` and wire the AMD bootstrap.
-fn inject_loader(root: &str) -> Result<(), JsValue> {
+fn inject_loader(loader_url: &str) -> Result<(), JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
     let document = window
         .document()
         .ok_or_else(|| JsValue::from_str("no document"))?;
 
     let script: web_sys::HtmlScriptElement = document.create_element("script")?.dyn_into()?;
-    let loader_url = format!("{root}/loader.js");
+    script.set_src(loader_url);
+
+    // `script.src` is the absolute URL the browser resolved, which is exactly
+    // the AMD root: it stays correct when the app is served under a sub path.
+    let absolute = script.src();
+    let root = absolute
+        .strip_suffix("/loader.js")
+        .unwrap_or(absolute.as_str())
+        .to_owned();
 
     let on_load = Closure::once_into_js(move || {
-        if let Err(err) = configure_require() {
+        if let Err(err) = configure_require(&root) {
             console_error(&format!(
                 "wave-insight: could not configure the monaco AMD loader: {}",
                 describe(&err)
@@ -510,18 +502,18 @@ fn inject_loader(root: &str) -> Result<(), JsValue> {
             mark_failed();
         }
     });
-    let failed_url = loader_url.clone();
+    let failed_url = loader_url.to_owned();
     let on_error = Closure::once_into_js(move |err: JsValue| {
         console_error(&format!(
-            "wave-insight: could not download {failed_url}: {}",
+            "wave-insight: could not load {failed_url} (monaco {VS_VERSION} is shipped in \
+             front-end/monaco/vs, see monaco/README.md): {}",
             describe(&err)
         ));
-        try_next_cdn();
+        mark_failed();
     });
 
     script.add_event_listener_with_callback("load", on_load.unchecked_ref())?;
     script.add_event_listener_with_callback("error", on_error.unchecked_ref())?;
-    script.set_src(&loader_url);
     script.set_async(true);
 
     let head = document
@@ -531,8 +523,8 @@ fn inject_loader(root: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
-/// `require.config({paths: {vs: ...}})`, then `require(["vs/editor/editor.main"])`.
-fn configure_require() -> Result<(), JsValue> {
+/// `require.config({paths: {vs: <root>}})`, then `require(["vs/editor/editor.main"])`.
+fn configure_require(root: &str) -> Result<(), JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
     let require = Reflect::get(&window, &JsValue::from_str("require"))?;
     if !require.is_function() {
@@ -540,11 +532,6 @@ fn configure_require() -> Result<(), JsValue> {
             "loader.js did not define a global require()",
         ));
     }
-
-    let root = CDN_INDEX.with(Cell::get);
-    let root = VS_ROOTS
-        .get(root)
-        .ok_or_else(|| JsValue::from_str("no monaco-editor CDN configured"))?;
 
     let configure: Function = Reflect::get(&require, &JsValue::from_str("config"))?.dyn_into()?;
     let paths = Object::new();
