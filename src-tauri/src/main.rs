@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::rc::Rc;
-use wave_insight_lib::parser::vcd_parser::vcd_parser_path;
+use wave_insight_lib::waveform::Waveform;
 use wave_insight_lib::{
     parser::verilog_parser::verilog_parser,
     data_struct::Module,
@@ -20,50 +20,90 @@ struct State {
     module_value: Mutex<ModuleValue>,
 }
 
+///one row of the directory listing the open-file dialog shows
+#[derive(serde::Serialize)]
+struct FileEntry {
+    name: String,
+    is_dir: bool,
+}
+
+///extensions the app can actually open
+fn is_openable(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".vcd")
+        || lower.ends_with(".fst")
+        || lower.ends_with(".ghw")
+        || lower.ends_with(".v")
+        || lower.ends_with(".sv")
+        || lower.ends_with(".svh")
+        || lower.ends_with(".vh")
+}
+
 #[tauri::command]
-fn get_file_list(state: tauri::State<State>, name: Vec<String>) -> Vec<String> {
-    println!("click!");
+fn get_file_list(state: tauri::State<State>, name: Vec<String>) -> Vec<FileEntry> {
     let mut dest_path = state.path.clone();
     name.into_iter().for_each(|x| dest_path.push(&x));
-    let paths = fs::read_dir(&dest_path).unwrap();
 
-    let mut ret = paths.filter_map(|entry| {
-        entry.ok().and_then(|e|
-        e.path().file_name()
-        .and_then(|n| n.to_str())
-        .and_then(|n| {
-            let metadata = fs::metadata(dest_path.join(n)).unwrap();
-            if metadata.is_dir() || n.strip_suffix(".v").is_some() || n.strip_suffix(".vcd").is_some() {
-                Some(String::from(n))
-            }else {
-                None
+    let paths = match fs::read_dir(&dest_path) {
+        Ok(paths) => paths,
+        Err(error) => {
+            eprintln!("can not read {}: {error}", dest_path.display());
+            return vec![];
+        },
+    };
+
+    let mut ret = paths
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let name = path.file_name()?.to_str()?.to_string();
+            let is_dir = path.is_dir();
+            if !is_dir && !is_openable(&name) {
+                return None;
             }
+            Some(FileEntry { name, is_dir })
         })
-    )
-    }).collect::<Vec<String>>();
-    ret.sort();
+        .collect::<Vec<FileEntry>>();
+    //folders first, then names
+    ret.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
     ret
+}
+
+///load a waveform dump, whatever the format: vcd, fst and ghw all go through
+///the waveform backend now
+fn load_waveform(state: &tauri::State<State>, path: std::path::PathBuf) -> Module {
+    match Waveform::open_path(&path).and_then(|waveform| {
+        let module = waveform.legacy_module()?;
+        let values = waveform.legacy_module_value()?;
+        Ok((module, values))
+    }) {
+        Ok((module, values)) => {
+            *state.module.lock().unwrap() = module.clone();
+            *state.module_value.lock().unwrap() = values;
+            module
+        },
+        Err(error) => {
+            eprintln!("can not open {}: {}", path.display(), error.message());
+            Module::new()
+        },
+    }
 }
 
 #[tauri::command]
 fn choose_vcd(state: tauri::State<State>, name: Vec<String>) -> Module {
-    println!("vcd!");
     let mut dest_path = state.path.clone();
     name.into_iter().for_each(|x| dest_path.push(&x));
-    let (module_raw, signal_value_raw) = vcd_parser_path(dest_path, &mut Module::new());
-    *state.module.lock().unwrap() = module_raw.clone();
-    *state.module_value.lock().unwrap() = signal_value_raw;
-    module_raw
+    load_waveform(&state, dest_path)
 }
 
 #[tauri::command]
 fn choose_vcd_absolute(state: tauri::State<State>, path: String) -> Module {
-    println!("vcd drop");
-    let dest_path = PathBuf::from_str(&path).unwrap();//TODO:do not unwrap
-    let (module_raw, signal_value_raw) = vcd_parser_path(dest_path, &mut Module::new());
-    *state.module.lock().unwrap() = module_raw.clone();
-    *state.module_value.lock().unwrap() = signal_value_raw;
-    module_raw
+    match PathBuf::from_str(&path) {
+        Ok(dest_path) => load_waveform(&state, dest_path),
+        Err(error) => {
+            eprintln!("bad path `{path}`: {error}");
+            Module::new()
+        },
+    }
 }
 
 #[tauri::command]

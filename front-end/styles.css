@@ -884,3 +884,108 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
 }
 
 .modal-pop p { margin: 2px 0; }
+
+/* ==========================================================================
+   file picker (desktop "Open file" dialog)
+   ========================================================================== */
+
+.file-modal {
+  width: 560px;
+  max-height: 74vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+
+.file-modal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.file-modal-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.file-browser {
+  flex: 1;
+  min-height: 240px;
+  max-height: 48vh;
+  overflow-y: auto;
+  padding: 6px 8px;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  cursor: pointer;
+  user-select: none;
+}
+
+.file-row:hover { background: var(--bg-3); color: var(--text-0); }
+.file-row.dir { color: var(--text-0); }
+
+.file-row-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  text-align: center;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.file-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.file-row-tag {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 10px;
+  letter-spacing: 0.4px;
+}
+
+.file-row-tag:empty { display: none; }
+
+.file-browser-empty {
+  padding: 26px 12px;
+  text-align: center;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.file-browser-empty.error { color: var(--danger); }
+
+.file-modal-foot {
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
