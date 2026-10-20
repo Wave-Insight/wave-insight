@@ -25,6 +25,9 @@ use crate::top_bar::TopBar;
 
 use crate::file_load::FileLoad;
 
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
+
 #[cfg(feature = "tauri")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "tauri")]
@@ -44,6 +47,10 @@ pub enum Msg {
     Action(Action),
     /// The store's layout slice changed (the app subscribes to it).
     Layout(Layout),
+    /// `.main-pane` was measured; the editor height is derived from it.
+    MainMeasured(f64),
+    /// The window was resized: measure again.
+    Resize,
     /// A signal row was clicked in the sidebar; its hierarchical path.
     SidebarAdd(String),
     /// A dump was opened: the handle values are decoded from, plus its time
@@ -102,6 +109,13 @@ pub struct App {
     /// Bumped by every `update` that returns `true`; published for the QA gate
     /// as `__waveDebug.render_count` (the *shell* re-render count, R2 step 1).
     render_count: Cell<u32>,
+    /// The main pane, measured so the stored editor ratio can become pixels.
+    main: NodeRef,
+    /// Height of `.main-pane` in css pixels, `0` until the first measurement.
+    main_h: f64,
+    /// `window.addEventListener("resize")`: unlike `window.onresize` (owned by
+    /// the wave pane) this one does not steal another component's listener.
+    resize_listener: Option<Closure<dyn FnMut()>>,
     /// The sidebar tree: the dump hierarchy once a waveform is open, the
     /// elaborated design otherwise.
     tree: Option<SidebarTree>,
@@ -178,12 +192,15 @@ impl Component for App {
             state::select::layout,
             ctx.link().callback(Msg::Layout),
         );
-        Self {
+        let mut this = Self {
             store,
             layout,
             _layout_sub: layout_sub,
             root: NodeRef::default(),
             render_count: Cell::new(0),
+            main: NodeRef::default(),
+            main_h: 0.0,
+            resize_listener: None,
             tree: None,
             waveform: None,
             time_range: None,
@@ -198,7 +215,9 @@ impl Component for App {
             goto_token: 0,
             splitter_start: None,
             sidebar_preview: None,
-        }
+        };
+        this.attach_window_listeners(ctx);
+        this
     }
 
     #[allow(unused_variables)] // `ctx` is only used by the tauri/server transports
@@ -213,8 +232,23 @@ impl Component for App {
         changed
     }
 
-    fn rendered(&mut self, _ctx: &Context<Self>, _first_render: bool) {
+    fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
         self.publish_render_count();
+        // R2 step 2: the editor height is a pixel value derived from the measured
+        // main pane, so keep the measurement fresh
+        let measured = self.measure_main();
+        if measured > 1.0 && (measured - self.main_h).abs() > 0.5 {
+            ctx.link().send_message(Msg::MainMeasured(measured));
+        }
+    }
+
+    fn destroy(&mut self, _ctx: &Context<Self>) {
+        if let (Some(window), Some(listener)) = (web_sys::window(), self.resize_listener.take()) {
+            let _ = window.remove_event_listener_with_callback(
+                "resize",
+                listener.as_ref().unchecked_ref(),
+            );
+        }
     }
 
 
@@ -225,9 +259,13 @@ impl Component for App {
         // written straight to the DOM); otherwise the store's layout is
         let sidebar_w = self.sidebar_preview.unwrap_or(self.layout.sidebar_w);
         let empty = self.waveform.is_none() && self.verilog_source.is_empty() && self.tree.is_none();
+        // R2 step 2: with no sources the editor collapses to the tab strip and
+        // the wave pane takes the rest (design doc §3.1, constants §3.4)
+        let collapsed = self.verilog_source.is_empty();
+        let editor_h = self.editor_height(collapsed);
 
         html! {
-            <div class="app" ref={self.root.clone()} style={format!("--sidebar-w:{sidebar_w:.0}px")}>
+            <div class="app" ref={self.root.clone()} style={format!("--sidebar-w:{sidebar_w:.0}px; --editor-h:{editor_h:.0}px")}>
                 <TopBar store={self.store.clone()}
                     onnavigationiconclick={link.callback(|_| Msg::Action(Action::ToggleDrawer))} />
                 <div class="app-body">
@@ -251,7 +289,7 @@ impl Component for App {
                     }else {
                         html!{}
                     }}
-                    <main class="main-pane">
+                    <main class="main-pane" ref={self.main.clone()}>
                         {if empty {
                             // R2 polish: with nothing open the panes used to show
                             // an empty tree and an empty wave area; say what to do.
@@ -271,7 +309,7 @@ impl Component for App {
                         }else {
                             html!{}
                         }}
-                        <div class="code-pane">
+                        <div class={if collapsed {"code-pane collapsed"} else {"code-pane"}}>
                             <CodeReader
                                 file={self.verilog_source.clone()}
                                 goto={self.goto.clone()}
@@ -320,6 +358,54 @@ impl Component for App {
 }
 
 impl App {
+    /// Height of `.main-pane` in css pixels (`0` before the first paint).
+    fn measure_main(&self) -> f64 {
+        self.main
+            .cast::<web_sys::Element>()
+            .map(|element| element.get_bounding_client_rect().height())
+            .unwrap_or(0.0)
+    }
+
+    /// Pixel height of the source pane, derived from the measured main pane and
+    /// the stored ratio (design doc §3.2, constants §3.4):
+    ///
+    /// * collapsed: the tab strip only, no editor content;
+    /// * expanded: `ratio * main`, never below 120 px of content, and the wave
+    ///   pane keeps at least four rows — the row minimum wins over the ratio.
+    fn editor_height(&self, collapsed: bool) -> f64 {
+        const TAB_STRIP: f64 = 32.0;
+        const EDITOR_CONTENT_MIN: f64 = 120.0;
+        const WAVE_MIN: f64 = 4.0 * 30.0;
+        if collapsed {
+            return TAB_STRIP;
+        }
+        let min = TAB_STRIP + EDITOR_CONTENT_MIN;
+        if self.main_h <= 1.0 {
+            // nothing measured yet: a sane expanded height for the first paint
+            return 2.0 * min;
+        }
+        let max = (self.main_h - WAVE_MIN).max(min);
+        (self.main_h * f64::from(self.layout.editor_ratio)).clamp(min, max)
+    }
+
+    /// `window.addEventListener("resize")`, kept out of `window.onresize` so the
+    /// wave pane's own resize listener keeps working.
+    fn attach_window_listeners(&mut self, ctx: &Context<Self>) {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let link = ctx.link().clone();
+        let listener = Closure::<dyn FnMut()>::new(move || {
+            link.send_message(Msg::Resize);
+        });
+        if window
+            .add_event_listener_with_callback("resize", listener.as_ref().unchecked_ref())
+            .is_ok()
+        {
+            self.resize_listener = Some(listener);
+        }
+    }
+
     #[allow(unused_variables)] // `ctx` is only used by the tauri/server transports
     fn handle(&mut self, ctx: &Context<Self>, msg: Msg) -> bool {
         match msg {
@@ -377,6 +463,24 @@ impl App {
             Msg::Layout(layout) => {
                 self.layout = layout;
                 true
+            }
+            Msg::MainMeasured(height) => {
+                if (height - self.main_h).abs() > 0.5 {
+                    self.main_h = height;
+                    // the derived --editor-h changed
+                    true
+                } else {
+                    false
+                }
+            }
+            Msg::Resize => {
+                let height = self.measure_main();
+                if height > 1.0 && (height - self.main_h).abs() > 0.5 {
+                    self.main_h = height;
+                    true
+                } else {
+                    false
+                }
             }
             Msg::SplitterDown(e) => {
                 e.prevent_default();
