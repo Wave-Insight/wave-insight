@@ -42,6 +42,12 @@
   /* the wave area is measured from the dom, these are only the layout widths */
   --sidebar-w: 280px;
   --names-w: 220px;
+  /* one signal row, kept in sync with ROW_HEIGHT in wave_show/geometry.rs */
+  --row-h: 30px;
+  /* height of the time ruler above the rows, kept in sync with .timebar */
+  --timebar-h: 30px;
+  /* the scrollbar the wave body reserves on the right (see ::-webkit-scrollbar) */
+  --scrollbar-w: 10px;
 }
 
 * { box-sizing: border-box; }
@@ -521,7 +527,10 @@ button:active { background: var(--bg-4); }
    waveform
    ========================================================================== */
 
+/* the absolute wave canvas hangs off this pane, so it has to be the containing
+   block (and stay out of the row scroller) */
 .wave-pane {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -564,50 +573,57 @@ button:active { background: var(--bg-4); }
 }
 
 .wave-body {
+  position: relative;
   flex: 1;
-  display: flex;
+  display: block;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  /* the wave canvas is an absolute overlay that leaves the scrollbar free, so
+     the gutter has to exist before the first scroll */
+  scrollbar-gutter: stable;
 }
 
-.wave-names {
-  flex: 0 0 var(--names-w);
-  width: var(--names-w);
-  background: var(--bg-1);
-  border-right: 1px solid var(--line);
-}
-
-.wave-canvas {
+/* the scrollable row list: only its height is real, the row cells are placed
+   absolutely inside it by the virtualized name column */
+.wave-rows {
   position: relative;
-  z-index: 0;
-  flex: 1;
-  min-width: 0;
-  background: var(--wave-bg);
+  width: 100%;
 }
 
-/* the grid is drawn by the app on the real tick positions, see build_axis() */
-.wave-grid {
+/* the wave body is one canvas, drawn as an overlay above the scrolling rows so
+   it never scrolls away and never re-lays-out */
+.wave-canvas {
   position: absolute;
-  inset: 0;
-  z-index: -1;
-  width: 100%;
-  height: 100%;
+  top: var(--timebar-h);
+  left: var(--names-w);
+  right: var(--scrollbar-w);
+  bottom: 0;
+  z-index: 1;
+  background: var(--wave-bg);
+  /* the scroller below handles the mouse: clicks, drags and the wheel all land
+     on .wave-body, the canvas is only a paint target */
   pointer-events: none;
 }
 
-.grid-line {
-  stroke: rgba(255, 255, 255, 0.055);
-  stroke-width: 1;
-  shape-rendering: crispEdges;
+.wave-surface {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .wave-name-cell {
+  position: absolute;
+  left: 0;
+  width: var(--names-w);
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
+  height: var(--row-h);
   padding: 0 8px;
   border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-1);
+  border-right: 1px solid var(--line);
   color: var(--text-1);
   cursor: pointer;
   user-select: none;
@@ -642,37 +658,6 @@ button:active { background: var(--bg-4); }
 
 .wave-name-cell:hover .wave-more { color: var(--text-2); }
 .wave-more:hover { color: var(--accent); }
-
-.wave-row {
-  display: block;
-  height: 30px;
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.wave-row:nth-child(even) { background: rgba(255, 255, 255, 0.012); }
-
-/* svg bits */
-.wave-line {
-  fill: none;
-  stroke-width: 1.6;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-}
-
-.wave-value {
-  fill: var(--text-1);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-}
-
-.cursor {
-  stroke-width: 1;
-  stroke-dasharray: none;
-  vector-effect: non-scaling-stroke;
-}
-
-.cursor.cursor-a { stroke: var(--cursor-a); }
-.cursor.cursor-b { stroke: var(--cursor-b); }
 
 .axis-line {
   stroke: #2b3648;
@@ -884,3 +869,108 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
 }
 
 .modal-pop p { margin: 2px 0; }
+
+/* ==========================================================================
+   file picker (desktop "Open file" dialog)
+   ========================================================================== */
+
+.file-modal {
+  width: 560px;
+  max-height: 74vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+
+.file-modal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.file-modal-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.file-browser {
+  flex: 1;
+  min-height: 240px;
+  max-height: 48vh;
+  overflow-y: auto;
+  padding: 6px 8px;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  cursor: pointer;
+  user-select: none;
+}
+
+.file-row:hover { background: var(--bg-3); color: var(--text-0); }
+.file-row.dir { color: var(--text-0); }
+
+.file-row-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  text-align: center;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.file-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.file-row-tag {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 10px;
+  letter-spacing: 0.4px;
+}
+
+.file-row-tag:empty { display: none; }
+
+.file-browser-empty {
+  padding: 26px 12px;
+  text-align: center;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.file-browser-empty.error { color: var(--danger); }
+
+.file-modal-foot {
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}

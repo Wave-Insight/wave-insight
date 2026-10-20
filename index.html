@@ -5,13 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Wave-Insight</title>
 
-    <link rel="stylesheet" href="/wave-insight/styles-6d2fdd9019a1c380.css" integrity="sha384-fk/yACv6J3RU/4TnFLMtXuLWgv5xnH+eOGZL/EC7kV4aYxUis5owbOuY7YDWbQAj"/>
-  <link rel="modulepreload" href="/wave-insight/front-end-415bb6f70d9c7cb8.js" crossorigin="anonymous" integrity="sha384-tLyvk3x3tapW6LcJ2zJPgr0hfL40QOjpAKq3FftRQi3xLJslLGf9f/Pl8+lc06GX"><link rel="preload" href="/wave-insight/front-end-415bb6f70d9c7cb8_bg.wasm" crossorigin="anonymous" integrity="sha384-z9e7WPV+RE7pg3IMXGVFcg8ckUSdk0a/rCxH3AYdXKk3KEomhzCuiHf2fKFeK8DD" as="fetch" type="application/wasm"></head>
+    <link rel="stylesheet" href="/wave-insight/styles-571e5eb5e407167c.css" integrity="sha384-4IDxEsZgrYlWR0AzVh5yDcpPIEfjjOXG+KqJrIYoVO8EAKrGc7mrYFTChFk6iQua"/>
+    <!--
+      The editor is a pinned, self-hosted monaco build (see monaco/README.md).
+      Trunk copies the directory to `dist/monaco/`, i.e. next to the wasm bundle,
+      and `src/code_reader/monaco_glue.rs` loads it from `./monaco/vs`. The app
+      therefore never talks to a CDN and works offline / behind a firewall.
+    -->
+    
+  <link rel="modulepreload" href="/wave-insight/front-end-7543a54824512685.js" crossorigin="anonymous" integrity="sha384-6BnqvT5OoeJXd9HGqtgtIdQPUBygHtiXHTekOe6BLBlRH5DTnsS4cN0g2RD3yTBJ"><link rel="preload" href="/wave-insight/front-end-7543a54824512685_bg.wasm" crossorigin="anonymous" integrity="sha384-yF7lhS260O4kxd0/jiqkdtWpA8EH+KkoXbruf1AsaYvzW4DXEc28LYdlvwvi7ARZ" as="fetch" type="application/wasm"></head>
 
   <body>
 <script type="module">
-import init, * as bindings from '/wave-insight/front-end-415bb6f70d9c7cb8.js';
-const wasm = await init({ module_or_path: '/wave-insight/front-end-415bb6f70d9c7cb8_bg.wasm' });
+import init, * as bindings from '/wave-insight/front-end-7543a54824512685.js';
+const wasm = await init({ module_or_path: '/wave-insight/front-end-7543a54824512685_bg.wasm' });
 
 
 window.wasmBindings = bindings;
