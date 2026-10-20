@@ -49,7 +49,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -90,7 +90,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "back-end"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "lsp-server",
  "serde_json",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "front-end"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "gloo-file",
  "js-sys",
@@ -4100,7 +4100,7 @@ dependencies = [
 
 [[package]]
 name = "wave-insight-lib"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "linked-hash-map",
  "num",

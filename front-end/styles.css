@@ -103,11 +103,43 @@ html, body {
 }
 
 .main-pane {
+  position: relative; /* anchors the "nothing loaded yet" hint (R2) */
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* R2: call to action while nothing is loaded; never eats pointer events, so the
+   panes behind it stay usable */
+.start-hint {
+  position: absolute;
+  inset: 0;
+  /* above the wave canvas and its name/surface layers (both z-index 1), below
+     the 60 of the splitter shield */
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: var(--bg-0);
+}
+
+.start-hint .empty-hint {
+  max-width: 460px;
+  color: var(--text-1);
+}
+
+.start-hint .empty-hint strong {
+  color: var(--text-0);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.start-hint .empty-hint div + div {
+  margin-top: 4px;
 }
 
 /* draggable divider between the sidebar and the wave area */

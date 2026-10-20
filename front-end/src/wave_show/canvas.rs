@@ -508,6 +508,14 @@ pub fn publish_debug(info: &DebugInfo) {
         "cursor2",
         info.cursor2.map_or(JsValue::NULL, |cursor| JsValue::from_f64(cursor as f64)),
     );
+    // R2: the shell's re-render counter, written by `App::rendered` into
+    // `__waveRenderCount`. Carried over here because this function replaces the
+    // whole debug object on every redraw; it is *not* a per-component counter.
+    if let Ok(count) = js_sys::Reflect::get(&window, &JsValue::from_str("__waveRenderCount")) {
+        if count.as_f64().is_some() {
+            set("render_count", count);
+        }
+    }
     set("at", JsValue::from_f64(js_sys::Date::now()));
     let _ = js_sys::Reflect::set(&window, &JsValue::from_str("__waveDebug"), &object);
 }

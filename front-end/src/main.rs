@@ -8,6 +8,7 @@ mod module_struct;
 mod wave_show;
 mod nav;
 mod lsp;
+mod state;
 
 fn main() {
     yew::start_app::<App>();

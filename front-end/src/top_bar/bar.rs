@@ -1,28 +1,47 @@
 use yew::prelude::*;
 
+use crate::state::{select, Status, Store, Subscription};
+
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct TopBarProps {
+    /// The app store: the bar subscribes to the status line itself, so a status
+    /// change does not re-render the shell (R2 design doc §2.2).
+    pub store: Store,
     #[prop_or_default]
     pub onnavigationiconclick: Callback<()>,
-    /// One line of feedback: the last navigation target or an error.
-    #[prop_or_default]
-    pub status: Option<String>,
+}
+
+pub enum Msg {
+    /// The status slice changed.
+    Status(Option<Status>),
 }
 
 pub struct TopBar {
+    status: Option<Status>,
+    /// Dropping it unsubscribes; keep it for the lifetime of the bar.
+    _status_sub: Subscription,
 }
 
 impl Component for TopBar {
-    type Message = ();
+    type Message = Msg;
     type Properties = TopBarProps;
 
-    fn create(_ctx: &Context<Self>) -> Self {
+    fn create(ctx: &Context<Self>) -> Self {
+        let store = ctx.props().store.clone();
+        let subscription = store.subscribe(select::status, ctx.link().callback(Msg::Status));
         Self {
+            status: store.select(select::status),
+            _status_sub: subscription,
         }
     }
 
-    fn update(&mut self, _ctx: &Context<Self>, _msg: Self::Message) -> bool {
-        true
+    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+        match msg {
+            Msg::Status(status) => {
+                self.status = status;
+                true
+            }
+        }
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
@@ -48,10 +67,16 @@ impl Component for TopBar {
                 </div>
                 <div class="topbar-hint">
                     {
-                        props.status.as_ref().map(|status| {
-                            html!{<span class="brand-tag"
-                                style="color:var(--accent);border-color:var(--accent-line);margin-right:10px">
-                                {status.clone()}</span>}
+                        self.status.as_ref().map(|status| {
+                            // errors are actionable text and get the danger colour,
+                            // information stays in the accent colour
+                            let style = if status.is_error() {
+                                "color:var(--danger);border-color:var(--danger);margin-right:10px"
+                            } else {
+                                "color:var(--accent);border-color:var(--accent-line);margin-right:10px"
+                            };
+                            html!{<span class="brand-tag" style={style}
+                                title={status.text.clone()}>{status.text.clone()}</span>}
                         }).unwrap_or_default()
                     }
                     <kbd>{"ctrl"}</kbd>{" + wheel to zoom · "}

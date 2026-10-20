@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use wave_insight_lib::data_struct::Signal;
@@ -16,6 +17,7 @@ use crate::nav::{
     SidebarTree,
     SignalInspector,
     SourceClick};
+use crate::state::{self, Action, Layout, Status, Store, Subscription};
 use crate::wave_show::WaveShow;
 use crate::module_struct::ModuleStruct;
 
@@ -38,7 +40,10 @@ pub enum Msg {
     #[cfg(feature = "tauri")]
     FileDrop(Vec<String>),
 
-    NavIconClick,
+    /// One typed change for the store; everything the app *does* is an action.
+    Action(Action),
+    /// The store's layout slice changed (the app subscribes to it).
+    Layout(Layout),
     /// A signal row was clicked in the sidebar; its hierarchical path.
     SidebarAdd(String),
     /// A dump was opened: the handle values are decoded from, plus its time
@@ -69,17 +74,13 @@ pub enum Msg {
     SplitterUp,
 }
 
-///width of the sidebar when nothing else was chosen
-const SIDEBAR_DEFAULT: f64 = 280.0;
-const SIDEBAR_MIN: f64 = 180.0;
-
-fn sidebar_clamp(width: f64) -> f64 {
-    let max = web_sys::window()
+/// The widest the sidebar may get for the current window.
+fn sidebar_max() -> f64 {
+    web_sys::window()
         .and_then(|w| w.inner_width().ok())
         .and_then(|v| v.as_f64())
-        .map(|w| (w * 0.45).max(SIDEBAR_MIN + 40.0))
-        .unwrap_or(640.0);
-    width.max(SIDEBAR_MIN).min(max)
+        .map(|w| (w * 0.45).max(state::types::SIDEBAR_MIN + 40.0))
+        .unwrap_or(640.0)
 }
 
 /// Candidates waiting for the user to pick one.
@@ -89,7 +90,18 @@ struct Picker {
 }
 
 pub struct App {
-    drawer_state: bool,
+    /// The one place the app's state lives (R2 step 1: layout + status).
+    store: Store,
+    /// The layout slice, mirrored here so `view` needs no borrow.
+    layout: Layout,
+    /// Kept so the subscription lives exactly as long as the component.
+    _layout_sub: Subscription,
+    /// The app div: the splitter writes `--sidebar-w` here during a drag
+    /// without going through Yew (design doc §4.1).
+    root: NodeRef,
+    /// Bumped by every `update` that returns `true`; published for the QA gate
+    /// as `__waveDebug.render_count` (the *shell* re-render count, R2 step 1).
+    render_count: Cell<u32>,
     /// The sidebar tree: the dump hierarchy once a waveform is open, the
     /// elaborated design otherwise.
     tree: Option<SidebarTree>,
@@ -113,11 +125,11 @@ pub struct App {
     /// Last jump request handed to the source pane.
     goto: Option<Goto>,
     goto_token: u32,
-    /// One line of feedback for the top bar.
-    status: Option<String>,
-    sidebar_width: f64,
     ///(mouse x, sidebar width) while the splitter is dragged
     splitter_start: Option<(f64, f64)>,
+    /// Width written straight to the DOM while the splitter is being dragged;
+    /// committed to the store on mouseup.
+    sidebar_preview: Option<f64>,
 }
 
 impl Component for App {
@@ -158,8 +170,20 @@ impl Component for App {
             ctx.link()
                 .callback(|goto: Goto| Msg::Goto((goto.file, goto.line, goto.col))),
         );
+        // R2: the store is created here and owns the layout and the status line
+        // from now on; the panes are still wired with props (later steps).
+        let store = Store::new();
+        let layout = store.select(state::select::layout);
+        let layout_sub = store.subscribe(
+            state::select::layout,
+            ctx.link().callback(Msg::Layout),
+        );
         Self {
-            drawer_state: true,
+            store,
+            layout,
+            _layout_sub: layout_sub,
+            root: NodeRef::default(),
+            render_count: Cell::new(0),
             tree: None,
             waveform: None,
             time_range: None,
@@ -172,206 +196,42 @@ impl Component for App {
             picker: None,
             goto: None,
             goto_token: 0,
-            status: None,
-            sidebar_width: SIDEBAR_DEFAULT,
             splitter_start: None,
+            sidebar_preview: None,
         }
     }
 
     #[allow(unused_variables)] // `ctx` is only used by the tauri/server transports
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
-        match msg {
-            #[cfg(feature = "tauri")]
-            Msg::FileDrop(path) => {
-                #[derive(Serialize, Deserialize)]
-                struct GetFileListArgs {
-                    path: String,
-                }
-                path.into_iter().for_each(|p| {
-                    let lower = p.to_ascii_lowercase();
-                    if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw") {
-                        let args = to_value(&GetFileListArgs { path: p }).unwrap();
-                        let onwaveform = ctx.link().callback(Msg::GetWaveform);
-                        let onerror = ctx.link().callback(Msg::Error);
-                        spawn_local(async move {
-                            //the command returns the file bytes; the webview
-                            //parses them exactly like a browser upload
-                            let bytes: Vec<u8> = from_value(invoke("choose_vcd_absolute", args).await)
-                                .unwrap_or_default();
-                            if bytes.is_empty() {
-                                onerror.emit("the dump could not be read".to_string());
-                                return;
-                            }
-                            match wave_insight_lib::waveform::Waveform::open_bytes(bytes) {
-                                Ok(waveform) => onwaveform.emit(SharedWaveform::new(waveform)),
-                                Err(error) => onerror.emit(error.message()),
-                            }
-                        });
-                    } else if lower.ends_with(".v") || lower.ends_with(".sv") {
-                        let args = to_value(&GetFileListArgs { path: p.clone() }).unwrap();
-                        let onverilog = ctx.link().callback(Msg::GetVerilog);
-                        let onerror = ctx.link().callback(Msg::Error);
-                        spawn_local(async move {
-                            let text: String =
-                                from_value(invoke("choose_verilog_absolute", args).await).unwrap_or_default();
-                            if text.is_empty() {
-                                onerror.emit(format!("{p}: the source could not be read"));
-                                return;
-                            }
-                            onverilog.emit((p, text));
-                        });
-                    };
-                });
-                true
-            }
-
-            Msg::NavIconClick => {
-                self.drawer_state = !self.drawer_state;
-                true
-            }
-            Msg::SplitterDown(e) => {
-                e.prevent_default();
-                if e.detail() == 2 {
-                    //double click restores the default width
-                    self.sidebar_width = SIDEBAR_DEFAULT;
-                    self.splitter_start = None;
-                }else {
-                    self.splitter_start = Some((e.x() as f64, self.sidebar_width));
-                }
-                true
-            }
-            Msg::SplitterMove(e) => {
-                if let Some((start_x, start_width)) = self.splitter_start {
-                    self.sidebar_width = sidebar_clamp(start_width + (e.x() as f64 - start_x));
-                }
-                true
-            }
-            Msg::SplitterUp => {
-                self.splitter_start = None;
-                true
-            }
-            Msg::SidebarAdd(path) => {
-                self.add_path(&path);
-                true
-            }
-            Msg::GetWaveform(waveform) => {
-                // the dump knows which module it was made from; that is the best
-                // guess for the design top
-                let top_hint = waveform
-                    .as_waveform()
-                    .hierarchy()
-                    .root()
-                    .children()
-                    .first()
-                    .map(|scope| scope.name().to_string());
-                self.design.borrow_mut().set_top_hint(top_hint);
-                // cheap: for VCD this scans the body text, it does not parse it
-                self.time_range = waveform.as_waveform().time_range_hint().ok().flatten();
-                self.waveform = Some(waveform);
-                self.refresh_tree();
-                self.sync_lsp_top();
-                self.status = Some("waveform loaded".to_string());
-                true
-            }
-            Msg::GetVerilog((file, text)) => {
-                self.design.borrow_mut().add_source(&file, &text);
-                match self.verilog_source.iter_mut().find(|(name,_)| name == &file) {
-                    Some(entry) => entry.1 = text.clone(),
-                    None => self.verilog_source.push((file.clone(), text.clone())),
-                }
-                // every loaded source is an open LSP document, not only the
-                // visible tab, so a definition can point into any of them
-                self.lsp.open(&file, &text);
-                self.refresh_tree();
-                self.sync_lsp_top();
-                self.status = Some(format!("parsed {file}"));
-                true
-            }
-            Msg::CloseSource(index) => {
-                if let Some((file, _text)) = self
-                    .verilog_source
-                    .get(index)
-                    .map(|(file, text)| (file.clone(), text.clone()))
-                {
-                    self.verilog_source.remove(index);
-                    // the buffer goes away; the source stays in the design and
-                    // in the language server's database, so declaration targets
-                    // in the closed file keep resolving
-                    self.lsp.close(&file);
-                    self.status = Some(format!("closed {file}"));
-                }
-                true
-            }
-            Msg::Error(message) => {
-                self.status = Some(message);
-                true
-            }
-            Msg::SourceClick(click) => {
-                let candidates = self.candidates_at(&click);
-                match candidates.len() {
-                    0 => {
-                        self.status = Some(format!(
-                            "`{}` is not a signal of the elaborated design", click.word));
-                    }
-                    1 => {
-                        self.add_path(&candidates[0]);
-                    }
-                    _ => {
-                        self.status = Some(format!(
-                            "{} signals match `{}`", candidates.len(), click.word));
-                        self.picker = Some(Picker {
-                            title: format!("{} signals match `{}`", candidates.len(), click.word),
-                            paths: candidates,
-                        });
-                    }
-                }
-                true
-            }
-            Msg::WaveSelect(path) => {
-                self.selected = path;
-                true
-            }
-            Msg::WaveJump(path) => {
-                match self.declare_target(&path) {
-                    Some((file, line, col)) => {
-                        self.goto_to(file, line, col);
-                    }
-                    None => {
-                        self.status = Some(format!(
-                            "no declaration for {path} — load the .v/.sv sources it came from"));
-                    }
-                }
-                true
-            }
-            Msg::Goto((file, line, col)) => {
-                self.goto_to(file, line, col);
-                true
-            }
-            Msg::PickPath(index) => {
-                if let Some(picker) = self.picker.take() {
-                    if let Some(path) = picker.paths.get(index).cloned() {
-                        self.add_path(&path);
-                    }
-                }
-                true
-            }
-            Msg::CancelPick => {
-                self.picker = None;
-                true
-            }
+        let changed = self.handle(ctx, msg);
+        // R2 render_count: how many times the *shell* re-rendered. Leaf
+        // components have their own subscriptions and do not bump this; keep it
+        // that way, the splitter assertion is written against it.
+        if changed {
+            self.render_count.set(self.render_count.get().wrapping_add(1));
         }
+        changed
     }
+
+    fn rendered(&mut self, _ctx: &Context<Self>, _first_render: bool) {
+        self.publish_render_count();
+    }
+
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
         let design_version = self.design.borrow().version();
+        // while the splitter is dragged the preview is authoritative (it was
+        // written straight to the DOM); otherwise the store's layout is
+        let sidebar_w = self.sidebar_preview.unwrap_or(self.layout.sidebar_w);
+        let empty = self.waveform.is_none() && self.verilog_source.is_empty() && self.tree.is_none();
 
         html! {
-            <div class="app" style={format!("--sidebar-w:{:.0}px", self.sidebar_width)}>
-                <TopBar onnavigationiconclick={link.callback(|_| Msg::NavIconClick)}
-                    status={self.status.clone()} />
+            <div class="app" ref={self.root.clone()} style={format!("--sidebar-w:{sidebar_w:.0}px")}>
+                <TopBar store={self.store.clone()}
+                    onnavigationiconclick={link.callback(|_| Msg::Action(Action::ToggleDrawer))} />
                 <div class="app-body">
-                    {if self.drawer_state {
+                    {if self.layout.drawer_open {
                         html!{
                         <aside class="sidebar">
                             {self.file_button(ctx)}
@@ -382,7 +242,7 @@ impl Component for App {
                     }else {
                         html!{}
                     }}
-                    {if self.drawer_state {
+                    {if self.layout.drawer_open {
                         html!{
                             <div class={if self.splitter_start.is_some() {"splitter dragging"} else {"splitter"}}
                                 title="Drag to resize, double click to reset"
@@ -392,6 +252,25 @@ impl Component for App {
                         html!{}
                     }}
                     <main class="main-pane">
+                        {if empty {
+                            // R2 polish: with nothing open the panes used to show
+                            // an empty tree and an empty wave area; say what to do.
+                            html!{
+                                <div class="start-hint">
+                                    <div class="empty-hint">
+                                        <div><strong>{"Nothing loaded yet"}</strong></div>
+                                        <div>{"Drop a waveform ( "}
+                                            <kbd>{".vcd"}</kbd>{" "}<kbd>{".fst"}</kbd>{" "}<kbd>{".ghw"}</kbd>
+                                            {" ) to inspect its signals."}</div>
+                                        <div>{"Drop your "}<kbd>{".sv"}</kbd>{" / "}<kbd>{".v"}</kbd>
+                                            {" sources to get declarations, drivers and loads."}</div>
+                                        <div>{"Use the ＋ button in the sidebar, or drag the files onto it."}</div>
+                                    </div>
+                                </div>
+                            }
+                        }else {
+                            html!{}
+                        }}
                         <div class="code-pane">
                             <CodeReader
                                 file={self.verilog_source.clone()}
@@ -441,6 +320,270 @@ impl Component for App {
 }
 
 impl App {
+    #[allow(unused_variables)] // `ctx` is only used by the tauri/server transports
+    fn handle(&mut self, ctx: &Context<Self>, msg: Msg) -> bool {
+        match msg {
+            #[cfg(feature = "tauri")]
+            Msg::FileDrop(path) => {
+                #[derive(Serialize, Deserialize)]
+                struct GetFileListArgs {
+                    path: String,
+                }
+                path.into_iter().for_each(|p| {
+                    let lower = p.to_ascii_lowercase();
+                    if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw") {
+                        let args = to_value(&GetFileListArgs { path: p }).unwrap();
+                        let onwaveform = ctx.link().callback(Msg::GetWaveform);
+                        let onerror = ctx.link().callback(Msg::Error);
+                        spawn_local(async move {
+                            //the command returns the file bytes; the webview
+                            //parses them exactly like a browser upload
+                            let bytes: Vec<u8> = from_value(invoke("choose_vcd_absolute", args).await)
+                                .unwrap_or_default();
+                            if bytes.is_empty() {
+                                onerror.emit("the dump could not be read".to_string());
+                                return;
+                            }
+                            match wave_insight_lib::waveform::Waveform::open_bytes(bytes) {
+                                Ok(waveform) => onwaveform.emit(SharedWaveform::new(waveform)),
+                                Err(error) => onerror.emit(error.message()),
+                            }
+                        });
+                    } else if lower.ends_with(".v") || lower.ends_with(".sv") {
+                        let args = to_value(&GetFileListArgs { path: p.clone() }).unwrap();
+                        let onverilog = ctx.link().callback(Msg::GetVerilog);
+                        let onerror = ctx.link().callback(Msg::Error);
+                        spawn_local(async move {
+                            let text: String =
+                                from_value(invoke("choose_verilog_absolute", args).await).unwrap_or_default();
+                            if text.is_empty() {
+                                onerror.emit(format!("{p}: the source could not be read"));
+                                return;
+                            }
+                            onverilog.emit((p, text));
+                        });
+                    };
+                });
+                true
+            }
+
+            Msg::Action(action) => {
+                // A dispatch never re-renders by itself: subscribers only enqueue
+                // Yew messages, so the shell only renders if *its* slice moved.
+                let effects = self.store.dispatch(action);
+                debug_assert!(effects.is_empty(), "R2 step 1 has no effects yet");
+                false
+            }
+            Msg::Layout(layout) => {
+                self.layout = layout;
+                true
+            }
+            Msg::SplitterDown(e) => {
+                e.prevent_default();
+                if e.detail() == 2 {
+                    //double click restores the default width
+                    self.splitter_start = None;
+                    self.sidebar_preview = None;
+                    self.store.dispatch(Action::ResizeSidebar {
+                        width: state::types::SIDEBAR_DEFAULT,
+                        max: sidebar_max(),
+                    });
+                    false
+                }else {
+                    self.splitter_start = Some((e.x() as f64, self.layout.sidebar_w));
+                    // the dragged class and the shield are part of the render
+                    true
+                }
+            }
+            Msg::SplitterMove(e) => {
+                if let Some((start_x, start_width)) = self.splitter_start {
+                    let width = state::types::clamp_sidebar(
+                        start_width + (e.x() as f64 - start_x),
+                        sidebar_max(),
+                    );
+                    // Tier A (design doc §4.1): write the CSS variable straight
+                    // to the DOM and return `false`, so a 60 Hz drag never diffs
+                    // a single node. The store is told once, on mouseup.
+                    self.sidebar_preview = Some(width);
+                    self.write_sidebar_variable(width);
+                }
+                false
+            }
+            Msg::SplitterUp => {
+                self.splitter_start = None;
+                match self.sidebar_preview.take() {
+                    Some(width) => {
+                        // the commit goes through the store; the layout
+                        // subscription re-renders the shell once, so returning
+                        // `false` here keeps the commit to a single render
+                        self.store.dispatch(Action::ResizeSidebar { width, max: sidebar_max() });
+                        false
+                    }
+                    // a click without a drag still has to remove the shield
+                    None => true,
+                }
+            }
+            Msg::SidebarAdd(path) => {
+                self.add_path(&path);
+                true
+            }
+            Msg::GetWaveform(waveform) => {
+                // the dump knows which module it was made from; that is the best
+                // guess for the design top
+                let top_hint = waveform
+                    .as_waveform()
+                    .hierarchy()
+                    .root()
+                    .children()
+                    .first()
+                    .map(|scope| scope.name().to_string());
+                self.design.borrow_mut().set_top_hint(top_hint);
+                // cheap: for VCD this scans the body text, it does not parse it
+                self.time_range = waveform.as_waveform().time_range_hint().ok().flatten();
+                self.waveform = Some(waveform);
+                self.refresh_tree();
+                self.sync_lsp_top();
+                self.note(Status::info("waveform loaded"));
+                true
+            }
+            Msg::GetVerilog((file, text)) => {
+                self.design.borrow_mut().add_source(&file, &text);
+                match self.verilog_source.iter_mut().find(|(name,_)| name == &file) {
+                    Some(entry) => entry.1 = text.clone(),
+                    None => self.verilog_source.push((file.clone(), text.clone())),
+                }
+                // every loaded source is an open LSP document, not only the
+                // visible tab, so a definition can point into any of them
+                self.lsp.open(&file, &text);
+                self.refresh_tree();
+                self.sync_lsp_top();
+                self.note(Status::info(format!("parsed {file}")));
+                true
+            }
+            Msg::CloseSource(index) => {
+                if let Some((file, _text)) = self
+                    .verilog_source
+                    .get(index)
+                    .map(|(file, text)| (file.clone(), text.clone()))
+                {
+                    self.verilog_source.remove(index);
+                    // the buffer goes away; the source stays in the design and
+                    // in the language server's database, so declaration targets
+                    // in the closed file keep resolving
+                    self.lsp.close(&file);
+                    self.note(Status::info(format!("closed {file}")));
+                }
+                true
+            }
+            Msg::Error(message) => {
+                self.note(Status::error(message));
+                true
+            }
+            Msg::SourceClick(click) => {
+                let candidates = self.candidates_at(&click);
+                match candidates.len() {
+                    0 => {
+                        self.note(Status::info(format!(
+                            "`{}` is not a signal of the elaborated design", click.word)));
+                    }
+                    1 => {
+                        self.add_path(&candidates[0]);
+                    }
+                    _ => {
+                        self.note(Status::info(format!(
+                            "{} signals match `{}`", candidates.len(), click.word)));
+                        self.picker = Some(Picker {
+                            title: format!("{} signals match `{}`", candidates.len(), click.word),
+                            paths: candidates,
+                        });
+                    }
+                }
+                true
+            }
+            Msg::WaveSelect(path) => {
+                self.selected = path;
+                true
+            }
+            Msg::WaveJump(path) => {
+                match self.declare_target(&path) {
+                    Some((file, line, col)) => {
+                        self.goto_to(file, line, col);
+                    }
+                    None => {
+                        self.note(Status::error(format!(
+                            "no declaration for {path} — load the .v/.sv sources it came from")));
+                    }
+                }
+                true
+            }
+            Msg::Goto((file, line, col)) => {
+                self.goto_to(file, line, col);
+                true
+            }
+            Msg::PickPath(index) => {
+                if let Some(picker) = self.picker.take() {
+                    if let Some(path) = picker.paths.get(index).cloned() {
+                        self.add_path(&path);
+                    }
+                }
+                true
+            }
+            Msg::CancelPick => {
+                self.picker = None;
+                true
+            }
+        }
+    }
+
+    /// One line of feedback for the top bar (through the store, so `TopBar`
+    /// re-renders on its own subscription instead of the whole shell).
+    fn note(&self, status: Status) {
+        self.store.dispatch(Action::Status(status));
+    }
+
+    /// Write the sidebar width straight to the DOM while the splitter is
+    /// dragged: no Yew render, no virtual DOM diff (design doc §4.1). The value
+    /// is committed to the store on mouseup.
+    fn write_sidebar_variable(&self, width: f64) {
+        let Some(app) = self.root.cast::<web_sys::Element>() else {
+            return;
+        };
+        // the inline style of the app div is exactly this one variable, so
+        // rewriting the attribute is equivalent to setProperty() on it and needs
+        // no extra web-sys feature
+        let _ = app.set_attribute("style", &format!("--sidebar-w:{width:.0}px"));
+    }
+
+    /// Publish the shell re-render counter for the QA gate.
+    ///
+    /// Two channels on purpose: `__waveRenderCount` survives a canvas redraw
+    /// (`wave_show::canvas::publish_debug` copies it into its object), while the
+    /// best-effort patch into the existing `__waveDebug` makes the field appear
+    /// before the first redraw.
+    fn publish_render_count(&self) {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let count = wasm_bindgen::JsValue::from_f64(f64::from(self.render_count.get()));
+        let _ = js_sys::Reflect::set(
+            &window,
+            &wasm_bindgen::JsValue::from_str("__waveRenderCount"),
+            &count,
+        );
+        if let Ok(debug) = js_sys::Reflect::get(
+            &window,
+            &wasm_bindgen::JsValue::from_str("__waveDebug"),
+        ) {
+            if debug.is_object() {
+                let _ = js_sys::Reflect::set(
+                    &debug,
+                    &wasm_bindgen::JsValue::from_str("render_count"),
+                    &count,
+                );
+            }
+        }
+    }
+
     /// Rebuild the sidebar tree: the dump hierarchy wins, the design is the
     /// fallback so the module list is usable before a dump is loaded.
     fn refresh_tree(&mut self) {
@@ -477,11 +620,12 @@ impl App {
             return;
         }
         if !self.verilog_source.iter().any(|(name, _)| name == &file) {
-            self.status = Some(format!("{file} is not open in the source pane"));
+            self.note(Status::error(format!(
+                "{file} is not open in the source pane — open it from the file picker again")));
             return;
         }
         self.goto_token = self.goto_token.wrapping_add(1);
-        self.status = Some(format!("{file}:{line}:{col}"));
+        self.note(Status::info(format!("{file}:{line}:{col}")));
         self.goto = Some(Goto { file, line, col, token: self.goto_token });
     }
 
@@ -519,7 +663,7 @@ impl App {
         self.signal_add = (path.to_string(), Rc::new(signal));
         self.signal_add_seq = self.signal_add_seq.wrapping_add(1);
         self.selected = Some(path.to_string());
-        self.status = Some(format!("added {path} to the waveform"));
+        self.note(Status::info(format!("added {path} to the waveform")));
         // only jump when the source pane can show the file: a closed tab would
         // otherwise turn a successful add into an "is not open" message
         if let Some((file, line, col)) = self.declare_target(path) {

@@ -15,20 +15,32 @@ use gloo_file::callbacks::FileReader;
 use web_sys::console;
 
 #[cfg(not(feature = "tauri"))]
+#[derive(Clone, Copy)]
 pub enum FileType {
     ///a waveform dump: vcd, fst or ghw, all handled by the waveform backend
     IsWaveform,
+    ///a SystemVerilog/Verilog source, parsed by the design database
     IsVerilog,
+    ///anything else: refused with a message instead of being fed to the parser
+    Unknown,
 }
 
-///waveforms are told apart by extension; everything else is source
+/// Waveforms and sources are told apart by extension; an extension this app does
+/// not handle is reported instead of being parsed as Verilog (a `.txt` dump used
+/// to end up in sv-parser with a confusing "parsed" status).
 #[cfg(not(feature = "tauri"))]
 pub fn file_type_of(name: &str) -> FileType {
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw") {
         FileType::IsWaveform
-    }else {
+    } else if lower.ends_with(".sv")
+        || lower.ends_with(".v")
+        || lower.ends_with(".svh")
+        || lower.ends_with(".vh")
+    {
         FileType::IsVerilog
+    } else {
+        FileType::Unknown
     }
 }
 
@@ -44,6 +56,9 @@ pub enum Msg {
     /// a drop event, so they go through the same reader as the picker.
     #[cfg(not(feature = "tauri"))]
     FileDrop(DragEvent),
+    /// Reading a file from the browser failed (moved, unreadable, permission).
+    #[cfg(not(feature = "tauri"))]
+    LoadFailed(String, String),
     #[cfg(feature = "tauri")]
     Get,
     #[cfg(feature = "tauri")]
@@ -94,10 +109,24 @@ impl Component for FileLoad {
                         // the design database parses it; no separate scan here
                         match String::from_utf8(bytes) {
                             Ok(text) => ctx.props().ongetverilog.emit((file_name, text)),
-                            Err(_) => ctx.props().onerror.emit(format!("{file_name}: not utf-8")),
+                            Err(_) => ctx.props().onerror.emit(format!(
+                                "{file_name}: not valid UTF-8 text — save the source as UTF-8 and load it again"
+                            )),
                         }
                     },
+                    FileType::Unknown => {
+                        ctx.props().onerror.emit(format!(
+                            "{file_name}: unsupported file type — load a waveform (.vcd/.fst/.ghw) or a source (.v/.sv/.vh/.svh)"
+                        ));
+                    },
                 }
+                true
+            }
+            #[cfg(not(feature = "tauri"))]
+            Msg::LoadFailed(file_name, error) => {
+                ctx.props().onerror.emit(format!(
+                    "{file_name}: could not be read ({error}) — check that the file still exists and is readable"
+                ));
                 true
             }
             #[cfg(not(feature = "tauri"))]
@@ -108,12 +137,12 @@ impl Component for FileLoad {
                     let file_name = file.name();
                     console::log_1(&format!("file name:{file_name}").into());
                     let file_type = file_type_of(&file_name);
-                    let task = gloo_file::callbacks::read_as_bytes(&file, move |res| {
-                        link.send_message(Msg::Loaded(
-                            file_type,
+                    let task = gloo_file::callbacks::read_as_bytes(&file, move |res| match res {
+                        Ok(bytes) => link.send_message(Msg::Loaded(file_type, file_name.clone(), bytes)),
+                        Err(error) => link.send_message(Msg::LoadFailed(
                             file_name.clone(),
-                            res.unwrap_or_default(),
-                        ))
+                            error.to_string(),
+                        )),
                     });
                     self.task.push(task);
                 }
@@ -212,9 +241,13 @@ pub fn open_waveform(ctx: &Context<FileLoad>, file_name: String, bytes: Vec<u8>)
             ctx.props().ongetwaveform.emit(SharedWaveform::new(waveform));
         }
         Err(error) => {
+            // the library message says *what* is wrong ("unknown waveform
+            // format", "corrupt ..."); add what the user can do about it
             let error = error.message();
             console::log_1(&format!("{file_name}: {error}").into());
-            ctx.props().onerror.emit(format!("{file_name}: {error}"));
+            ctx.props().onerror.emit(format!(
+                "{file_name}: could not be opened ({error}) — check that it is an intact VCD/FST/GHW dump"
+            ));
         }
     }
 }
