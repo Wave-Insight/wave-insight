@@ -9,6 +9,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -53,18 +56,30 @@ jobs:
         prerelease: false
 
     #an installer is not always what people want: publish the plain binary as
-    #well, under the names the old releases used
-    - name: Upload the plain binary
+    #well, under the names the old releases used. `cargo tauri build` may put it
+    #in target/release or in target/<triple>/release, so look for both.
+    - name: Rename the plain binary
       shell: bash
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        bin=target/release/app
+        set -euo pipefail
+        echo "== candidates =="
+        ls -l target/release/app target/release/app.exe 2>/dev/null || true
+        ls -l target/*/release/app target/*/release/app.exe 2>/dev/null || true
+        bin=$(ls target/release/app.exe target/release/app \
+                 target/*/release/app.exe target/*/release/app 2>/dev/null | head -n1 || true)
+        if [ -z "$bin" ]; then echo "::error::no tauri binary found"; exit 1; fi
+        echo "using $bin"
         case "${{ matrix.platform }}" in
-          windows-*) bin="$bin.exe"; out="wave_insight_tauri.exe" ;;
+          windows-*) out="wave_insight_tauri.exe" ;;
           ubuntu-*)  out="wave_insight_tauri_ubuntu" ;;
           *)         out="wave_insight_tauri_mac_arm64" ;;
         esac
-        test -f "$bin" || { echo "no binary at $bin"; exit 1; }
         cp "$bin" "$out"
-        gh release upload "${{ github.ref_name }}" "$out" --clobber
+        ls -l "$out"
+
+    - name: Upload the plain binary
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        files: wave_insight_tauri*
+        fail_on_unmatched_files: true
