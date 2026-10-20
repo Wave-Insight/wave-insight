@@ -1,13 +1,23 @@
-<!DOCTYPE html><html lang="en"><head>
-    <meta charset="utf-8">
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Wave-Insight</title>
 
-    <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css?family=Material+Icons&amp;display=block" rel="stylesheet">
-    
-  
-<link rel="preload" href="/wave-insight/front-end-aaa60c5aaa8edb8d_bg.wasm" as="fetch" type="application/wasm" crossorigin="">
-<link rel="modulepreload" href="/wave-insight/front-end-aaa60c5aaa8edb8d.js"></head>
+    <link rel="stylesheet" href="wave-insight/styles-6d2fdd9019a1c380.css" integrity="sha384-fk/yACv6J3RU/4TnFLMtXuLWgv5xnH+eOGZL/EC7kV4aYxUis5owbOuY7YDWbQAj"/>
+  <link rel="modulepreload" href="wave-insight/front-end-aa551c45f32ad2ed.js" crossorigin="anonymous" integrity="sha384-p8M5zHM4sEe0ac2YBCRTtNlnhd8KXkSWZtG0LOJeJjaD5MFu46XUdMhHrvc04jk6"><link rel="preload" href="wave-insight/front-end-aa551c45f32ad2ed_bg.wasm" crossorigin="anonymous" integrity="sha384-MM9B9T6fXtcqeNa8g1r5seHZUzR2la4z1J/860cMDputkzNHFvbZ/tVywhE3vQDk" as="fetch" type="application/wasm"></head>
 
-  <body style="margin:0px">
-<script type="module">import init from '/wave-insight/front-end-aaa60c5aaa8edb8d.js';init('/wave-insight/front-end-aaa60c5aaa8edb8d_bg.wasm');</script></body></html>
+  <body>
+<script type="module">
+import init, * as bindings from 'wave-insight/front-end-aa551c45f32ad2ed.js';
+const wasm = await init({ module_or_path: 'wave-insight/front-end-aa551c45f32ad2ed_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script></body>
+</html>
