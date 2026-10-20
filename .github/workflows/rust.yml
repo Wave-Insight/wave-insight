@@ -3,6 +3,7 @@ name: Rust
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,28 +17,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
-    - name: Install rust 1.67.1 (see rust-toolchain.toml)
-      uses: actions-rs/toolchain@v1
+    - uses: actions/checkout@v4
+
+    #the toolchain version lives in rust-toolchain.toml, do not repeat it here:
+    #`rustup show` downloads it and every later cargo call uses it
+    - name: Install the pinned toolchain
+      run: rustup show
+
+    - name: Add the wasm target
+      run: rustup target add wasm32-unknown-unknown
+
+    - name: Install trunk
+      uses: taiki-e/install-action@v2
       with:
-          toolchain: 1.67.1
-          target: wasm32-unknown-unknown
-          override: true
-          
-    - uses: actions/checkout@v3
-    - name: install trunk
-      run: |
-          cargo install --locked trunk
-          cargo install wasm-bindgen-cli
-      
-    - uses: actions/checkout@v3
+        tool: trunk
+
+    - name: Test the crates that build on the host
+      run: cargo test --workspace --exclude front-end --exclude app
+
     - name: Build
       run: |
           cd front-end
           trunk build --no-default-features --features wasm --release --public-url wave-insight
-          
+
     - name: Deploy
-      uses: peaceiris/actions-gh-pages@v3
+      uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: ./front-end/dist
