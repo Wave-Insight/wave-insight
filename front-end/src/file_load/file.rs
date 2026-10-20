@@ -21,13 +21,25 @@ extern "C" {
 }
 
 pub enum FileType {
-    IsVcd,
+    ///a waveform dump: vcd, fst or ghw, all handled by the waveform backend
+    IsWaveform,
     IsVerilog,
 }
 
+///waveforms are told apart by extension; everything else is source
+pub fn file_type_of(name: &str) -> FileType {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw") {
+        FileType::IsWaveform
+    }else {
+        FileType::IsVerilog
+    }
+}
+
 pub enum Msg {
+    ///the bytes are read raw because fst is binary
     #[cfg(feature = "wasm")]
-    Loaded(FileType,String,String),
+    Loaded(FileType,String,Vec<u8>),
     #[cfg(feature = "wasm")]
     Files(Vec<File>),
     #[cfg(feature = "wasm")]
@@ -82,15 +94,18 @@ impl Component for FileLoad {
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             #[cfg(feature = "wasm")]
-            Msg::Loaded(file_type, file_name, text) => {
+            Msg::Loaded(file_type, file_name, bytes) => {
                 match file_type {
-                    FileType::IsVcd => {
+                    FileType::IsWaveform => {
                         console::log_1(&format!("opening waveform {file_name}").into());
-                        self.open_waveform(ctx, file_name, text);
+                        self.open_waveform(ctx, file_name, bytes);
                     },
                     FileType::IsVerilog => {
                         // the design database parses it; no separate scan here
-                        ctx.props().ongetverilog.emit((file_name, text));
+                        match String::from_utf8(bytes) {
+                            Ok(text) => ctx.props().ongetverilog.emit((file_name, text)),
+                            Err(_) => ctx.props().onerror.emit(format!("{file_name}: not utf-8")),
+                        }
                     },
                 }
                 true
@@ -102,13 +117,12 @@ impl Component for FileLoad {
                     let link = ctx.link().clone();
                     let file_name = file.name();
                     console::log_1(&format!("file name:{file_name}").into());
-                    let file_type = if file_name.ends_with(".vcd") {FileType::IsVcd}
-                                            else {FileType::IsVerilog};
-                    let task = gloo_file::callbacks::read_as_text(&file, move |res| {
+                    let file_type = file_type_of(&file_name);
+                    let task = gloo_file::callbacks::read_as_bytes(&file, move |res| {
                         link.send_message(Msg::Loaded(
                             file_type,
                             file_name.clone(),
-                            res.unwrap_or_else(|e| e.to_string()),
+                            res.unwrap_or_default(),
                         ))
                     });
                     self.task.push(task);
@@ -161,7 +175,7 @@ impl Component for FileLoad {
                     ondrop={link.callback(Msg::FileDrop)}>
                     <input class="file-native" type="file" multiple=true onchange={onchangefunc}/>
                     <span class="file-drop-icon">{"＋"}</span>
-                    <span class="file-drop-text">{"Load or drop .vcd / .v files"}</span>
+                    <span class="file-drop-text">{"Load or drop .vcd / .fst / .ghw / .v files"}</span>
                 </label>
             </div>
         }
@@ -187,8 +201,8 @@ impl Component for FileLoad {
 impl FileLoad {
     /// Open a dump: the header is parsed here, the values are decoded lazily per
     /// signal by the wave view.
-    fn open_waveform(&mut self, ctx: &Context<Self>, file_name: String, text: String) {
-        let error = match Waveform::open_bytes(text.into_bytes()) {
+    fn open_waveform(&mut self, ctx: &Context<Self>, file_name: String, bytes: Vec<u8>) {
+        let error = match Waveform::open_bytes(bytes) {
             Ok(waveform) => match waveform.legacy_module() {
                 Ok(module) => {
                     // `end_clock` lives on the root of the legay tree; the wave
