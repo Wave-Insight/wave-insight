@@ -40,6 +40,37 @@ jobs:
       with:
         tool: trunk
 
+    #an installer is not always what people want, so a plain binary is published
+    #as well, under the names the old releases used. Build it ourselves instead
+    #of hunting for whatever tauri-action left behind: on linux and macos its
+    #output did not end up anywhere `find` looked.
+    - name: Build the plain binary
+      shell: bash
+      run: |
+        set -eux
+        cd front-end
+        trunk build --no-default-features --features tauri --release
+        cd ..
+        cargo build --release -p app
+        ls -l target/release | head -n 30
+
+    - name: Stage the plain binary
+      shell: bash
+      run: |
+        set -eux
+        case "${{ matrix.platform }}" in
+          windows-*) bin=target/release/app.exe ;;
+          *)         bin=target/release/app ;;
+        esac
+        test -f "$bin"
+        case "${{ matrix.platform }}" in
+          windows-*) out="wave_insight_tauri.exe" ;;
+          ubuntu-*)  out="wave_insight_tauri_ubuntu" ;;
+          *)         out="wave_insight_tauri_mac_arm64" ;;
+        esac
+        cp "$bin" "$out"
+        ls -l "$out"
+
     #tauri-action builds the bundles and uploads them to the release itself, so
     #the old upload-release-asset@v1 steps are gone: that action was removed by
     #github and the `@dev` ref of tauri-action no longer resolves to something
@@ -54,30 +85,6 @@ jobs:
         releaseBody: 'See the assets to download and install this version.'
         releaseDraft: false
         prerelease: false
-
-    #an installer is not always what people want: publish the plain binary as
-    #well, under the names the old releases used. Do not guess where cargo put
-    #it (`target/release` vs `src-tauri/target/release` vs a triple directory),
-    #search for it.
-    - name: Rename the plain binary
-      shell: bash
-      run: |
-        set -euxo pipefail
-        bin=$(find . -type f \( -name app -o -name app.exe \) -path '*release*' \
-              -not -path './target/debug/*' 2>/dev/null | head -n1)
-        if [ -z "$bin" ]; then
-          echo "::error::no tauri binary found; here is what release dirs exist:"
-          find . -type d -name release -not -path './target/debug/*' | head -n20
-          exit 1
-        fi
-        echo "using $bin"
-        case "${{ matrix.platform }}" in
-          windows-*) out="wave_insight_tauri.exe" ;;
-          ubuntu-*)  out="wave_insight_tauri_ubuntu" ;;
-          *)         out="wave_insight_tauri_mac_arm64" ;;
-        esac
-        cp "$bin" "$out"
-        ls -l "$out"
 
     - name: Upload the plain binary
       uses: softprops/action-gh-release@v2
