@@ -103,11 +103,43 @@ html, body {
 }
 
 .main-pane {
+  position: relative; /* anchors the "nothing loaded yet" hint (R2) */
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* R2: call to action while nothing is loaded; never eats pointer events, so the
+   panes behind it stay usable */
+.start-hint {
+  position: absolute;
+  inset: 0;
+  /* above the wave canvas and its name/surface layers (both z-index 1), below
+     the 60 of the splitter shield */
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: var(--bg-0);
+}
+
+.start-hint .empty-hint {
+  max-width: 460px;
+  color: var(--text-1);
+}
+
+.start-hint .empty-hint strong {
+  color: var(--text-0);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.start-hint .empty-hint div + div {
+  margin-top: 4px;
 }
 
 /* draggable divider between the sidebar and the wave area */
@@ -469,12 +501,20 @@ button:active { background: var(--bg-4); }
    ========================================================================== */
 
 .code-pane {
-  flex: 0 0 50%;
+  /* R2 step 2: the ratio is stored, the pixel height is derived by App and
+     written here; with no sources the pane is the tab strip only */
+  flex: 0 0 var(--editor-h, 50%);
   display: flex;
   flex-direction: column;
   min-height: 0;
   background: var(--bg-1);
   border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.code-pane.collapsed .code-host,
+.code-pane.collapsed .panel {
+  display: none;
 }
 
 .tabs {
