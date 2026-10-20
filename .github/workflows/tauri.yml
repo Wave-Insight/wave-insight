@@ -56,18 +56,20 @@ jobs:
         prerelease: false
 
     #an installer is not always what people want: publish the plain binary as
-    #well, under the names the old releases used. `cargo tauri build` may put it
-    #in target/release or in target/<triple>/release, so look for both.
+    #well, under the names the old releases used. Do not guess where cargo put
+    #it (`target/release` vs `src-tauri/target/release` vs a triple directory),
+    #search for it.
     - name: Rename the plain binary
       shell: bash
       run: |
-        set -euo pipefail
-        echo "== candidates =="
-        ls -l target/release/app target/release/app.exe 2>/dev/null || true
-        ls -l target/*/release/app target/*/release/app.exe 2>/dev/null || true
-        bin=$(ls target/release/app.exe target/release/app \
-                 target/*/release/app.exe target/*/release/app 2>/dev/null | head -n1 || true)
-        if [ -z "$bin" ]; then echo "::error::no tauri binary found"; exit 1; fi
+        set -euxo pipefail
+        bin=$(find . -type f \( -name app -o -name app.exe \) -path '*release*' \
+              -not -path './target/debug/*' 2>/dev/null | head -n1)
+        if [ -z "$bin" ]; then
+          echo "::error::no tauri binary found; here is what release dirs exist:"
+          find . -type d -name release -not -path './target/debug/*' | head -n20
+          exit 1
+        fi
         echo "using $bin"
         case "${{ matrix.platform }}" in
           windows-*) out="wave_insight_tauri.exe" ;;
