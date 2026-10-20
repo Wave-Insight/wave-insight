@@ -51,3 +51,20 @@ jobs:
         releaseBody: 'See the assets to download and install this version.'
         releaseDraft: false
         prerelease: false
+
+    #an installer is not always what people want: publish the plain binary as
+    #well, under the names the old releases used
+    - name: Upload the plain binary
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        bin=target/release/app
+        case "${{ matrix.platform }}" in
+          windows-*) bin="$bin.exe"; out="wave_insight_tauri.exe" ;;
+          ubuntu-*)  out="wave_insight_tauri_ubuntu" ;;
+          *)         out="wave_insight_tauri_mac_arm64" ;;
+        esac
+        test -f "$bin" || { echo "no binary at $bin"; exit 1; }
+        cp "$bin" "$out"
+        gh release upload "${{ github.ref_name }}" "$out" --clobber
