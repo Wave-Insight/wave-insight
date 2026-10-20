@@ -225,6 +225,16 @@ function __wbg_get_imports() {
             const ret = arg0.insertBefore(arg1, arg2);
             return ret;
         }, arguments); },
+        __wbg_instanceof_ArrayBuffer_a99f175873e5d9b8: function(arg0) {
+            let result;
+            try {
+                result = arg0 instanceof ArrayBuffer;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
         __wbg_instanceof_Element_818e11074cdb63b5: function(arg0) {
             let result;
             try {
@@ -275,6 +285,10 @@ function __wbg_get_imports() {
             const ret = arg0.left;
             return ret;
         },
+        __wbg_length_7f3c00c40364105e: function(arg0) {
+            const ret = arg0.length;
+            return ret;
+        },
         __wbg_log_17c30ef363c61cf4: function(arg0) {
             console.log(arg0);
         },
@@ -305,6 +319,10 @@ function __wbg_get_imports() {
             var len1 = WASM_VECTOR_LEN;
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+        },
+        __wbg_new_1dbf7428bba60a42: function(arg0) {
+            const ret = new Uint8Array(arg0);
+            return ret;
         },
         __wbg_new_227d7c05414eb861: function() {
             const ret = new Error();
@@ -341,12 +359,15 @@ function __wbg_get_imports() {
         __wbg_preventDefault_af59afb0f0a02e20: function(arg0) {
             arg0.preventDefault();
         },
+        __wbg_prototypesetcall_bc27214492979395: function(arg0, arg1, arg2) {
+            Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
+        },
         __wbg_push_2baf45db356cf468: function(arg0, arg1) {
             const ret = arg0.push(arg1);
             return ret;
         },
-        __wbg_readAsText_301ec1c6739475ea: function() { return handleError(function (arg0, arg1) {
-            arg0.readAsText(arg1);
+        __wbg_readAsArrayBuffer_b7dbf754ec0fe4bc: function() { return handleError(function (arg0, arg1) {
+            arg0.readAsArrayBuffer(arg1);
         }, arguments); },
         __wbg_readyState_0df580078b419e28: function(arg0) {
             const ret = arg0.readyState;
@@ -737,6 +758,11 @@ function getArrayJsValueFromWasm0(ptr, len) {
     }
     wasm.__externref_drop_slice(ptr, len);
     return result;
+}
+
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
 }
 
 let cachedDataViewMemory0 = null;
