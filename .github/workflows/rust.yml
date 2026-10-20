@@ -38,7 +38,9 @@ jobs:
     - name: Build
       run: |
           cd front-end
-          trunk build --no-default-features --features wasm --release --public-url wave-insight
+          #leading and trailing slash: a relative public url (no leading /) is
+          #resolved against /wave-insight/ and every asset 404s
+          trunk build --no-default-features --features wasm --release --public-url /wave-insight/
 
     - name: Deploy
       uses: peaceiris/actions-gh-pages@v4
