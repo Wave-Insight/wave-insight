@@ -443,7 +443,7 @@ impl Component for App {
                     if let Some((key, value)) = signal_string.split_once(29u8 as char) {
                         let value_parse: (Vec<i32>, Vec<(u8, u8)>) = serde_json::from_str(value).unwrap();//TODO:do not unwrap
                         self.signal_value_raw.value.insert(key.to_string(), value_parse);
-                        self.signal_value = Rc::new(self.signal_value_raw.clone());
+                        self.signal_value = Rc::new(RefCell::new(self.signal_value_raw.clone()));
                         //TODO:value update here will cause an adition signal add on wave show
                     }
                 }

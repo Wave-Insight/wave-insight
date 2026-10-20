@@ -322,3 +322,40 @@ fn update_source_accepts_unknown_paths_like_add_source() {
     assert_eq!(db.files(), vec![PathBuf::from("new.sv")]);
     assert!(db.module("new_module").is_some());
 }
+
+///`item_at` used to answer `None` for an instantiation unless the module was
+///part of the elaborated hierarchy, which forced every consumer to walk
+///`ModuleDef::instances` itself.
+#[test]
+fn item_at_resolves_an_instance_declaration() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let file = root.join("top.sv");
+    let db = DesignDb::load_files([file.clone(), root.join("cpu.sv")]);
+    let design = db.elaborate("top");
+
+    let text = std::fs::read_to_string(&file).unwrap();
+    let declaration_line = text
+        .lines()
+        .position(|line| line.contains("u_cpu "))
+        .expect("fixture should instantiate u_cpu") as u32
+        + 1;
+    let line = text.lines().nth(declaration_line as usize - 1).unwrap();
+
+    //the instantiated module name answers with the module definition
+    let module_col = line.find("cpu").unwrap() as u32 + 1;
+    match db.item_at(&design, &file, declaration_line, module_col) {
+        Some(wave_insight_lib::design::SourceItem::Module { name, .. }) => {
+            assert_eq!(name, "cpu");
+        },
+        other => panic!("expected the module under the instance type, got {other:?}"),
+    }
+
+    //the instance name itself answers with the declaration
+    let instance_col = line.find("u_cpu").unwrap() as u32 + 1;
+    match db.item_at(&design, &file, declaration_line, instance_col) {
+        Some(wave_insight_lib::design::SourceItem::Instance { path, .. }) => {
+            assert!(path.ends_with("u_cpu"), "got {path}");
+        },
+        other => panic!("expected the instance declaration, got {other:?}"),
+    }
+}

@@ -486,6 +486,26 @@ impl DesignDb {
                     },
                 );
             }
+            //instance declarations, so a cursor on `u_cpu` or on the `cpu` of
+            //`cpu u_cpu (...)` answers here and not only through the elaborated
+            //instance list (which misses modules outside the hierarchy)
+            for declaration in &module.instances {
+                consider(
+                    &declaration.module_span,
+                    SourceItem::Module {
+                        name: declaration.module.clone(),
+                        span: declaration.module_span.clone(),
+                    },
+                );
+                consider(
+                    &declaration.span,
+                    SourceItem::Instance {
+                        path: format!("{}.{}", module.name, declaration.name),
+                        module: declaration.module.clone(),
+                        span: declaration.span.clone(),
+                    },
+                );
+            }
         }
 
         // Elaborated instances and signal references: they are the most
