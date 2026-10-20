@@ -7,11 +7,13 @@ use wave_insight_lib::waveform::TimeRange;
 use yew::prelude::*;
 
 use crate::nav::SharedWaveform;
-use crate::state::{self, select, RowsSlice, Store, Subscription};
+use std::cell::Cell;
+
+use crate::state::{self, select, Cursors, RowsSlice, Store, Subscription, View, Viewport};
 
 use super::canvas;
 use super::ctrl::Ctrl;
-use super::geometry::{self, content_height, visible_rows, View, ROW_HEIGHT};
+use super::geometry::{self, content_height, visible_rows, ROW_HEIGHT};
 use super::settings::Settings;
 use super::signal::SignalName;
 use super::time::{build_axis, Time};
@@ -35,11 +37,7 @@ pub struct WaveShowProps {
     /// The opened dump; values are decoded from it on demand.
     #[prop_or_default]
     pub waveform: Option<SharedWaveform>,
-    /// Start and end of the trace, from
-    /// [`wave_insight_lib::waveform::Waveform::time_range_hint`]. The ruler and
-    /// the fit-to-trace zoom use it; `None` means "unknown" (GHW).
-    #[prop_or_default]
-    pub time_range: Option<TimeRange>,
+
     /// The selected signal, for the driver/load panel.
     #[prop_or_default]
     pub onselect: Callback<Option<String>>,
@@ -51,6 +49,10 @@ pub struct WaveShowProps {
 pub enum Msg {
     /// The store's rows changed (add/remove/reorder/settings/selection).
     Rows(RowsSlice),
+    /// The committed viewport/cursors changed (this is where a gesture lands).
+    Viewport(Viewport),
+    /// The opened dump's time range changed.
+    TimeRange(Option<TimeRange>),
     Wheel(WheelEvent),
     /// the row list was scrolled
     Scroll,
@@ -106,8 +108,16 @@ pub struct WaveShow {
     waveform: Option<SharedWaveform>,
     /// The rows the store owns, as the last snapshot the pane saw.
     rows: RowsSlice,
-    /// Kept so the subscription lives exactly as long as the component.
+    /// The committed cursors, mirrored here for drawing.
+    cursors: Cursors,
+    /// The opened dump's range, mirrored here for the ruler and the fit zoom.
+    time_range: Option<TimeRange>,
+    /// Kept so the subscriptions live exactly as long as the component.
     _rows_sub: Subscription,
+    _viewport_sub: Subscription,
+    _dump_sub: Subscription,
+    /// The pane's own re-render count, published for the tier-A QA gate.
+    pane_render_count: Cell<u32>,
 
     /// Zoom/pan state of the wave body.
     view: View,
@@ -133,8 +143,6 @@ pub struct WaveShow {
     /// also fires mousedown/mouseup) is not mistaken for a reorder drag
     name_start_y: f64,
 
-    cursor1: Option<i32>,
-    cursor2: Option<i32>,
 
     /// what the last `view` was measured with, so `rendered` can notice a moved layout
     used: RefCell<Metrics>,
@@ -156,12 +164,20 @@ impl Component for WaveShow {
     fn create(ctx: &Context<Self>) -> Self {
         let store = ctx.props().store.clone();
         let rows_sub = store.subscribe(select::rows, ctx.link().callback(Msg::Rows));
+        let viewport_sub =
+            store.subscribe(select::viewport, ctx.link().callback(Msg::Viewport));
+        let dump_sub = store.subscribe(select::time_range, ctx.link().callback(Msg::TimeRange));
         let mut this = Self {
             store: store.clone(),
             signal_things: SignalThings::new(),
             waveform: ctx.props().waveform.clone(),
             rows: store.select(select::rows),
+            cursors: store.select(select::cursors),
+            time_range: store.select(select::time_range),
             _rows_sub: rows_sub,
+            _viewport_sub: viewport_sub,
+            _dump_sub: dump_sub,
+            pane_render_count: Cell::new(0),
 
             view: View::default(),
             fitted: false,
@@ -180,8 +196,6 @@ impl Component for WaveShow {
             name_choose: 0,
             name_start_y: 0.0,
 
-            cursor1: None,
-            cursor2: None,
 
             used: RefCell::new(Metrics::default()),
             last_decoded: 0,
@@ -197,196 +211,12 @@ impl Component for WaveShow {
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
-        match msg {
-            Msg::Rows(rows) => {
-                self.rows = rows;
-                self.sync_rows();
-                // the name column, the settings and the canvas all follow the store
-                true
-            }
-            Msg::Wheel(e) => {
-                let metrics = self.measure();
-                // over the name column the wheel scrolls the rows, like any list
-                if (e.x() as f64) < metrics.surface_left {
-                    return false;
-                }
-                e.prevent_default();
-                let delta_y = e.delta_y();
-                if self.key(17) {
-                    //ctrl
-                    if delta_y < 0.0 {
-                        self.view.zoom(1.25);
-                    } else {
-                        self.view.zoom(0.8);
-                    }
-                } else if delta_y > 0.0 {
-                    self.view.pan_px(30.0);
-                } else {
-                    self.view.pan_px(-30.0);
-                }
-                true
-            }
-            Msg::Scroll => {
-                self.scroll_top = scroll_top_from_dom();
-                true
-            }
-            Msg::ShowMenu(idx) => {
-                self.menu_show = true;
-                let choosed_idx = self.signal_things.get_choose_idx();
-                // The button belongs to one row: unless that row is part of the
-                // selection, its settings are what the dialog must show (the
-                // dialog used to open for whatever row happened to be selected).
-                if choosed_idx.contains(&idx) {
-                    self.on_setting_idx = choosed_idx;
-                } else {
-                    self.dispatch(state::Action::RowSelected { index: idx, ctrl: false, shift: false });
-                    self.on_setting_idx = vec![idx];
-                    // the snapshot arrives through the subscription; settings read
-                    // the next frame, exactly like before
-                    self.sync_rows();
-                }
-                true
-            }
-            Msg::SetSignal((close, set)) => {
-                if close {
-                    self.menu_show = false;
-                }
-                self.dispatch(state::Action::RowSettingChanged {
-                    indices: self.on_setting_idx.clone(),
-                    setting: set,
-                });
-                true
-            }
-            Msg::DeleteSig => {
-                self.menu_show = false;
-                let indices = std::mem::take(&mut self.on_setting_idx);
-                self.dispatch(state::Action::RowsRemoved { indices });
-                ctx.props().onselect.emit(None);
-                true
-            }
-            Msg::KeyEvent(idx) => {
-                if idx == 90 {
-                    //z
-                    if self.key(16) {
-                        //shift
-                        self.view.zoom(1.25 * 1.25);
-                    } else {
-                        self.view.zoom(0.64);
-                    }
-                } else if idx == 70 {
-                    //f
-                    let metrics = self.measure();
-                    let end = self.trace_end(ctx.props().time_range);
-                    self.view = View::new(0.0, View::fit_size(end, metrics.surface_w));
-                    self.fitted = true;
-                }
-                true
-            }
-            Msg::MouseDown(e) => {
-                e.prevent_default();
-                let metrics = self.measure();
-                let x = e.x() as f64;
-                if x < metrics.surface_left {
-                    //the name column: start a reorder drag
-                    self.name_choose_valid = true;
-                    self.name_start_y = e.y() as f64;
-                    self.name_choose = self.row_at(e.y() as f64);
-                    return false;
-                }
-                self.mouse_press = true;
-                self.mouse_start_x = x - metrics.surface_left;
-                self.mouse_current_x = self.mouse_start_x;
-                true
-            }
-            Msg::MouseMove(e) => {
-                if !self.mouse_press {
-                    return false;
-                }
-                let metrics = self.measure();
-                self.mouse_current_x = e.x() as f64 - metrics.surface_left;
-                true
-            }
-            Msg::MouseUp(e) => {
-                e.prevent_default();
-                if self.name_choose_valid {
-                    self.name_choose_valid = false;
-                    // A click also fires mousedown and mouseup; only a real drag
-                    // reorders. Without this every click on a name swapped it
-                    // with its neighbour, because the drop position rounded to
-                    // the next row.
-                    if (e.y() as f64 - self.name_start_y).abs() < ROW_HEIGHT / 2.0 {
-                        return true;
-                    }
-                    let metrics = self.measure();
-                    let location =
-                        (e.y() as f64 - metrics.body_top + self.scroll_top) / ROW_HEIGHT;
-                    if location < 0.0 {
-                        return true;
-                    }
-                    let current = self.name_choose;
-                    let dest = if location > current as f64 + 0.5 {
-                        (location - 0.5) as usize
-                    } else {
-                        (location + 0.5) as usize
-                    };
-                    if current < self.rows.len() && dest < self.rows.len() && dest != current {
-                        self.dispatch(state::Action::RowsReordered { from: current, to: dest });
-                    }
-                    return true;
-                }
-                if !self.mouse_press {
-                    return false;
-                }
-                self.mouse_press = false;
-                let metrics = self.measure();
-                let x = e.x() as f64 - metrics.surface_left;
-                if (self.mouse_start_x - x).abs() <= 2.0 {
-                    //a click, not a drag: set (or clear) one of the cursors
-                    let cursor_time = self.view.time_at(x);
-                    if e.button() == 0 {
-                        if self.cursor1 == Some(cursor_time) {
-                            self.cursor1 = None;
-                        } else {
-                            self.cursor1 = Some(cursor_time);
-                        }
-                    } else if self.cursor2 == Some(cursor_time) {
-                        self.cursor2 = None;
-                    } else {
-                        self.cursor2 = Some(cursor_time);
-                    }
-                } else {
-                    //drag a range to zoom into it
-                    self.view.zoom_to_px(self.mouse_start_x, x, metrics.surface_w);
-                }
-                true
-            }
-            Msg::NameClick(idx) => {
-                let ctrl = self.key(17);
-                let shift = self.key(16);
-                // the store owns the selection; read the path before it changes
-                let path = self.signal_things.iter().nth(idx).map(|item| item.path.clone());
-                self.dispatch(state::Action::RowSelected { index: idx, ctrl, shift });
-                self.sync_rows();
-                if let Some(path) = path {
-                    // the inspector follows the last clicked row
-                    ctx.props().onselect.emit(Some(path.clone()));
-                    if !ctrl && !shift {
-                        // plain click = "show me where this is declared"
-                        ctx.props().onjump.emit(path);
-                    }
-                }
-                true
-            }
-            Msg::Jump(idx) => {
-                if let Some(item) = self.signal_things.iter().nth(idx) {
-                    let path = item.path.clone();
-                    ctx.props().onselect.emit(Some(path.clone()));
-                    ctx.props().onjump.emit(path);
-                }
-                true
-            }
-            Msg::Resize => true,
+        let changed = self.handle(ctx, msg);
+        if changed {
+            self.pane_render_count
+                .set(self.pane_render_count.get().wrapping_add(1));
         }
+        changed
     }
 
     fn changed(&mut self, ctx: &Context<Self>) -> bool {
@@ -413,7 +243,8 @@ impl Component for WaveShow {
             ctx.link().send_message(Msg::Resize);
         }
         *self.used.borrow_mut() = measured;
-        self.redraw(ctx.props().time_range);
+        self.redraw();
+        self.publish_pane_render_count();
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
@@ -450,11 +281,7 @@ impl Component for WaveShow {
                         onset={link.callback(Msg::SetSignal)}
                         delete={link.callback(|_| Msg::DeleteSig)} />
                 }
-                <Time x_axis={self.view.x_axis}
-                    size={self.view.size}
-                    width={metrics.surface_w}
-                    cursor1={self.cursor1}
-                    cursor2={self.cursor2} />
+                <Time store={self.store.clone()} width={metrics.surface_w} />
                 <div class="wave-body" id="wave-body"
                     onscroll={link.callback(|_| Msg::Scroll)}
                     onwheel={link.callback(Msg::Wheel)}
@@ -500,6 +327,261 @@ impl Component for WaveShow {
 }
 
 impl WaveShow {
+    /// The real message handling; the trait's `update` only wraps it so the
+    /// QA seam can count the pane's re-renders (R2 step 2 B2).
+    fn handle(&mut self, ctx: &Context<Self>, msg: Msg) -> bool {
+        match msg {
+            Msg::Rows(rows) => {
+                self.rows = rows;
+                self.sync_rows();
+                // the name column, the settings and the canvas all follow the store
+                true
+            }
+            Msg::Viewport(viewport) => {
+                // a committed gesture landed: mirror it and repaint the canvas.
+                // No Yew render — the time bar has its own subscription and the
+                // row list did not change (design doc §4.1, tier A/C).
+                self.view = viewport.view;
+                self.cursors = viewport.cursors;
+                self.redraw();
+                false
+            }
+            Msg::TimeRange(time_range) => {
+                self.time_range = time_range;
+                // the ruler and the fit zoom read it
+                true
+            }
+            Msg::Wheel(e) => {
+                let metrics = self.measure();
+                // over the name column the wheel scrolls the rows, like any list
+                if (e.x() as f64) < metrics.surface_left {
+                    return false;
+                }
+                e.prevent_default();
+                let delta_y = e.delta_y();
+                let mut view = self.view;
+                if self.key(17) {
+                    //ctrl
+                    if delta_y < 0.0 {
+                        view.zoom(1.25);
+                    } else {
+                        view.zoom(0.8);
+                    }
+                } else if delta_y > 0.0 {
+                    view.pan_px(30.0);
+                } else {
+                    view.pan_px(-30.0);
+                }
+                // one dispatch per notch; the canvas is repainted from the local
+                // frame, the time bar re-renders from its own subscription
+                self.commit_view(view);
+                false
+            }
+            Msg::Scroll => {
+                self.scroll_top = scroll_top_from_dom();
+                true
+            }
+            Msg::ShowMenu(idx) => {
+                self.menu_show = true;
+                let choosed_idx = self.signal_things.get_choose_idx();
+                // The button belongs to one row: unless that row is part of the
+                // selection, its settings are what the dialog must show (the
+                // dialog used to open for whatever row happened to be selected).
+                if choosed_idx.contains(&idx) {
+                    self.on_setting_idx = choosed_idx;
+                } else {
+                    self.dispatch(state::Action::RowSelected { index: idx, ctrl: false, shift: false });
+                    self.on_setting_idx = vec![idx];
+                    // the snapshot arrives through the subscription; settings read
+                    // the next frame, exactly like before
+                    self.sync_rows();
+                }
+                true
+            }
+            Msg::SetSignal((close, set)) => {
+                if close {
+                    self.menu_show = false;
+                }
+                self.dispatch(state::Action::RowSettingChanged {
+                    indices: self.on_setting_idx.clone(),
+                    setting: set,
+                });
+                true
+            }
+            Msg::DeleteSig => {
+                self.menu_show = false;
+                let indices = std::mem::take(&mut self.on_setting_idx);
+                self.dispatch(state::Action::RowsRemoved { indices });
+                ctx.props().onselect.emit(None);
+                true
+            }
+            Msg::KeyEvent(idx) => {
+                let mut view = self.view;
+                if idx == 90 {
+                    //z
+                    if self.key(16) {
+                        //shift
+                        view.zoom(1.25 * 1.25);
+                    } else {
+                        view.zoom(0.64);
+                    }
+                } else if idx == 70 {
+                    //f
+                    let metrics = self.measure();
+                    let end = self.trace_end(self.time_range);
+                    view = View::new(0.0, View::fit_size(end, metrics.surface_w));
+                    self.fitted = true;
+                }
+                self.commit_view(view);
+                false
+            }
+            Msg::MouseDown(e) => {
+                e.prevent_default();
+                let metrics = self.measure();
+                let x = e.x() as f64;
+                if x < metrics.surface_left {
+                    //the name column: start a reorder drag
+                    self.name_choose_valid = true;
+                    self.name_start_y = e.y() as f64;
+                    self.name_choose = self.row_at(e.y() as f64);
+                    return false;
+                }
+                self.mouse_press = true;
+                self.mouse_start_x = x - metrics.surface_left;
+                self.mouse_current_x = self.mouse_start_x;
+                // tier A: the band is a local preview, never a Yew render
+                self.redraw();
+                false
+            }
+            Msg::MouseMove(e) => {
+                if !self.mouse_press {
+                    return false;
+                }
+                let metrics = self.measure();
+                self.mouse_current_x = e.x() as f64 - metrics.surface_left;
+                // tier A: repaint the band straight on the canvas, no Yew render
+                self.redraw();
+                false
+            }
+            Msg::MouseUp(e) => {
+                e.prevent_default();
+                if self.name_choose_valid {
+                    self.name_choose_valid = false;
+                    // A click also fires mousedown and mouseup; only a real drag
+                    // reorders. Without this every click on a name swapped it
+                    // with its neighbour, because the drop position rounded to
+                    // the next row.
+                    if (e.y() as f64 - self.name_start_y).abs() < ROW_HEIGHT / 2.0 {
+                        return true;
+                    }
+                    let metrics = self.measure();
+                    let location =
+                        (e.y() as f64 - metrics.body_top + self.scroll_top) / ROW_HEIGHT;
+                    if location < 0.0 {
+                        return true;
+                    }
+                    let current = self.name_choose;
+                    let dest = if location > current as f64 + 0.5 {
+                        (location - 0.5) as usize
+                    } else {
+                        (location + 0.5) as usize
+                    };
+                    if current < self.rows.len() && dest < self.rows.len() && dest != current {
+                        self.dispatch(state::Action::RowsReordered { from: current, to: dest });
+                    }
+                    return true;
+                }
+                if !self.mouse_press {
+                    return false;
+                }
+                self.mouse_press = false;
+                let metrics = self.measure();
+                let x = e.x() as f64 - metrics.surface_left;
+                if (self.mouse_start_x - x).abs() <= 2.0 {
+                    //a click, not a drag: set (or clear) one of the cursors
+                    let cursor_time = self.view.time_at(x);
+                    let mut cursors = self.cursors;
+                    if e.button() == 0 {
+                        cursors.one = if cursors.one == Some(cursor_time) {
+                            None
+                        } else {
+                            Some(cursor_time)
+                        };
+                    } else {
+                        cursors.two = if cursors.two == Some(cursor_time) {
+                            None
+                        } else {
+                            Some(cursor_time)
+                        };
+                    }
+                    self.commit_cursors(cursors);
+                } else {
+                    //drag a range to zoom into it
+                    let mut view = self.view;
+                    view.zoom_to_px(self.mouse_start_x, x, metrics.surface_w);
+                    self.commit_view(view);
+                }
+                false
+            }
+            Msg::NameClick(idx) => {
+                let ctrl = self.key(17);
+                let shift = self.key(16);
+                // the store owns the selection; read the path before it changes
+                let path = self.signal_things.iter().nth(idx).map(|item| item.path.clone());
+                self.dispatch(state::Action::RowSelected { index: idx, ctrl, shift });
+                self.sync_rows();
+                if let Some(path) = path {
+                    // the inspector follows the last clicked row
+                    ctx.props().onselect.emit(Some(path.clone()));
+                    if !ctrl && !shift {
+                        // plain click = "show me where this is declared"
+                        ctx.props().onjump.emit(path);
+                    }
+                }
+                true
+            }
+            Msg::Jump(idx) => {
+                if let Some(item) = self.signal_things.iter().nth(idx) {
+                    let path = item.path.clone();
+                    ctx.props().onselect.emit(Some(path.clone()));
+                    ctx.props().onjump.emit(path);
+                }
+                true
+            }
+            Msg::Resize => true,
+        }
+    }
+
+
+    /// Commit a zoom/pan: mirror it for the current frame, dispatch it once and
+    /// repaint. No Yew render — the canvas is the only thing that changes, and
+    /// the time bar re-renders from its own store subscription.
+    fn commit_view(&mut self, view: View) {
+        self.view = view;
+        self.dispatch(state::Action::ViewCommitted(view));
+        self.redraw();
+    }
+
+    /// Commit the cursors (one dispatch per click, never per mousemove).
+    fn commit_cursors(&mut self, cursors: Cursors) {
+        self.cursors = cursors;
+        self.dispatch(state::Action::CursorsChanged(cursors));
+        self.redraw();
+    }
+
+    /// Publish the pane's re-render count next to the shell's, for the QA gate.
+    fn publish_pane_render_count(&self) {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let count = JsValue::from_f64(f64::from(self.pane_render_count.get()));
+        let _ = js_sys::Reflect::set(
+            &window,
+            &JsValue::from_str("__wavePaneRenderCount"),
+            &count,
+        );
+    }
+
     /// One store change; the resulting snapshot arrives as `Msg::Rows`.
     fn dispatch(&self, action: state::Action) {
         let effects = self.store.dispatch(action);
@@ -599,7 +681,7 @@ impl WaveShow {
     }
 
     /// Paint the wave canvas from the current state.
-    fn redraw(&mut self, time_range: Option<TimeRange>) {
+    fn redraw(&mut self) {
         let redraw_started = js_sys::Date::now();
         let metrics = self.measure();
         if !metrics.is_usable() {
@@ -619,7 +701,7 @@ impl WaveShow {
             //first real measurement (and the first decoded rows): show the whole
             //trace. GHW has no cheap time range, so fall back to the span of the
             //histories we have.
-            let end = self.trace_end(time_range);
+            let end = self.trace_end(self.time_range);
             self.view = View::new(0.0, View::fit_size(end, metrics.surface_w));
             self.fitted = true;
         }
@@ -636,8 +718,8 @@ impl WaveShow {
             scroll_top: self.scroll_top,
             rows: &visible,
             grid: &axis.labels,
-            cursor1: self.cursor1,
-            cursor2: self.cursor2,
+            cursor1: self.cursors.one,
+            cursor2: self.cursors.two,
             drag: if self.mouse_press
                 && (self.mouse_current_x - self.mouse_start_x).abs() > 1.0
             {
@@ -664,8 +746,8 @@ impl WaveShow {
             total_rows: rows,
             scroll_top: self.scroll_top,
             first_row: draw.start,
-            cursor1: self.cursor1,
-            cursor2: self.cursor2,
+            cursor1: self.cursors.one,
+            cursor2: self.cursors.two,
             view: self.view,
         });
     }

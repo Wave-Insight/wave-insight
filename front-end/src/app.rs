@@ -1,7 +1,6 @@
 use std::cell::Cell;
 
 use wave_insight_lib::data_struct::Signal;
-use wave_insight_lib::waveform::TimeRange;
 
 use yew::prelude::*;
 
@@ -120,8 +119,6 @@ pub struct App {
     tree: Option<SidebarTree>,
     /// The opened dump.
     waveform: Option<SharedWaveform>,
-    /// Start and end of the trace; the ruler and the fit zoom use it.
-    time_range: Option<TimeRange>,
     /// Parsed sources plus the elaborated design.
     design: SharedDesign,
     /// The language server client the source editor talks to.
@@ -197,7 +194,6 @@ impl Component for App {
             resize_listener: None,
             tree: None,
             waveform: None,
-            time_range: None,
             design,
             lsp,
             verilog_source: vec![],
@@ -317,7 +313,6 @@ impl Component for App {
                         <WaveShow
                             store={self.store.clone()}
                             waveform={self.waveform.clone()}
-                            time_range={self.time_range}
                             onselect={link.callback(Msg::WaveSelect)}
                             onjump={link.callback(Msg::WaveJump)} />
                     </main>
@@ -534,7 +529,9 @@ impl App {
                     .map(|scope| scope.name().to_string());
                 self.design.borrow_mut().set_top_hint(top_hint);
                 // cheap: for VCD this scans the body text, it does not parse it
-                self.time_range = waveform.as_waveform().time_range_hint().ok().flatten();
+                let time_range = waveform.as_waveform().time_range_hint().ok().flatten();
+                // the ruler and the fit zoom read it from the store now
+                self.store.dispatch(Action::DumpOpened { time_range });
                 self.waveform = Some(waveform);
                 self.refresh_tree();
                 self.sync_lsp_top();

@@ -516,6 +516,12 @@ pub fn publish_debug(info: &DebugInfo) {
             set("render_count", count);
         }
     }
+    // the wave pane's own re-render count (same carry-over for the same reason)
+    if let Ok(count) = js_sys::Reflect::get(&window, &JsValue::from_str("__wavePaneRenderCount")) {
+        if count.as_f64().is_some() {
+            set("pane_render_count", count);
+        }
+    }
     set("at", JsValue::from_f64(js_sys::Date::now()));
     let _ = js_sys::Reflect::set(&window, &JsValue::from_str("__waveDebug"), &object);
 }

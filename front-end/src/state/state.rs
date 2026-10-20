@@ -7,7 +7,9 @@
 
 use std::rc::Rc;
 
-use super::types::{Layout, Row, RowsSlice, Settings, Status};
+use wave_insight_lib::waveform::TimeRange;
+
+use super::types::{Layout, Row, RowsSlice, Settings, Status, Viewport};
 
 /// The wave rows, versioned so a subscriber compares one integer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -24,6 +26,13 @@ impl Rows {
     }
 }
 
+/// The opened dump's derived data. The handle itself is still a prop until the
+/// following step; what the panes need from it today is the time range.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Dump {
+    pub time_range: Option<TimeRange>,
+}
+
 /// State that is not read on every frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Nav {
@@ -37,6 +46,8 @@ pub struct State {
     pub layout: Layout,
     pub nav: Nav,
     pub rows: Rows,
+    pub dump: Dump,
+    pub viewport: Viewport,
 }
 
 impl State {

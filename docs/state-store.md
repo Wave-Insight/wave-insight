@@ -219,14 +219,21 @@ propagation, so an unrelated dispatch simply never reaches it.
 `App` subscribes to **only `layout`**. Everything else is a leaf subscription,
 so a zoom no longer walks the sidebar or the editor.
 
-**Debug seam `window.__waveDebug.render_count`.** `App` owns a `Cell<u32>` that
-is bumped at the end of every `update` that returns `true`, and `rendered()`
-copies it into the page-level `__waveDebug` object next to the renderer's
-counters. It measures *shell* re-renders only: a leaf that re-renders on its own
-subscription does not bump it, and reading it never triggers a render. The
-splitter assertion is written against exactly this ("how many times the shell
-re-rendered"), so do not turn it into a per-component counter — that would make
-the assertion meaningless.
+**Debug seams for the render counts.** `App` owns a `Cell<u32>` that is bumped at
+the end of every `update` that returns `true`, and `rendered()` copies it into
+`__waveDebug.render_count` (via the page-level `__waveRenderCount` that
+`canvas::publish_debug` carries over on every redraw). It measures *shell*
+re-renders only: a leaf that re-renders on its own subscription does not bump it,
+and reading it never triggers a render. The splitter assertion is written against
+exactly this ("how many times the shell re-rendered"), so do not turn it into a
+per-component counter — that would make the assertion meaningless.
+
+`WaveShow` has the same pair for its own renders (`pane_render_count`, carried
+from `__wavePaneRenderCount`). It exists to prove the tier-A rule for gestures
+that never touch the shell: during a cursor drag or a range-zoom the pane count
+must not move at all (the canvas repaints from its own frame), and on mouseup the
+commit is one dispatch. Two counters, two questions — shell re-renders and pane
+re-renders — and neither replaces the other.
 
 ### 2.3 Derived vs stored
 

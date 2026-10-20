@@ -1,5 +1,14 @@
-use serde::{Deserialize, Serialize};
+//! The time ruler above the wave area.
+//!
+//! R2 step 2 (B2): the pane *subscribes* to the store's committed viewport and
+//! cursors instead of being handed numbers as props. A zoom/pan or a cursor
+//! click is committed to the store once (on mouseup / one wheel notch); this
+//! component re-renders from that subscription, while the wave pane only
+//! repaints its canvas — the row list is never diffed for a gesture.
+
 use yew::prelude::*;
+
+use crate::state::{select, Store, Subscription, Viewport};
 
 ///A computed time ruler.
 ///
@@ -13,24 +22,25 @@ pub struct Axis {
     pub labels: Vec<(f64, i64)>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct Time {
-    points: String,
-    labels: Vec<(f64, i64)>,
-    cursor1: Option<i32>,
-    cursor2: Option<i32>,
-}
-
 pub enum Msg {
+    /// The committed viewport/cursors changed.
+    Viewport(Viewport),
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct TimeProps {
-    pub x_axis: f64,
-    pub size: f64,
+    /// The app store: the ruler subscribes to `viewport` itself.
+    pub store: Store,
+    /// Width of the wave surface, measured by the pane.
     pub width: f64,
-    pub cursor1: Option<i32>,
-    pub cursor2: Option<i32>,
+}
+
+pub struct Time {
+    points: String,
+    labels: Vec<(f64, i64)>,
+    viewport: Viewport,
+    width: f64,
+    _viewport_sub: Subscription,
 }
 
 impl Component for Time {
@@ -38,30 +48,48 @@ impl Component for Time {
     type Properties = TimeProps;
 
     fn create(ctx: &Context<Self>) -> Self {
-        let axis = build_axis(ctx.props().x_axis, ctx.props().size, ctx.props().width);
+        let store = ctx.props().store.clone();
+        let subscription =
+            store.subscribe(select::viewport, ctx.link().callback(Msg::Viewport));
+        let viewport = store.select(select::viewport);
+        let axis = build_axis(viewport.view.x_axis, viewport.view.size, ctx.props().width);
         Self {
             points: axis.points,
             labels: axis.labels,
-            cursor1: None,
-            cursor2: None,
+            viewport,
+            width: ctx.props().width,
+            _viewport_sub: subscription,
+        }
+    }
+
+    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+        match msg {
+            Msg::Viewport(viewport) => {
+                self.viewport = viewport;
+                self.rebuild();
+                true
+            }
         }
     }
 
     fn changed(&mut self, ctx: &Context<Self>) -> bool {
-        let axis = build_axis(ctx.props().x_axis, ctx.props().size, ctx.props().width);
-        self.points = axis.points;
-        self.labels = axis.labels;
-        self.cursor1 = ctx.props().cursor1;
-        self.cursor2 = ctx.props().cursor2;
-        true
+        if (self.width - ctx.props().width).abs() > 0.5 {
+            self.width = ctx.props().width;
+            self.rebuild();
+            true
+        } else {
+            false
+        }
     }
 
-    fn view(&self, ctx: &Context<Self>) -> Html {
+    fn view(&self, _ctx: &Context<Self>) -> Html {
+        let view = self.viewport.view;
+        let cursors = self.viewport.cursors;
         html! {
             <div class="timebar">
                 <div class="timebar-readout">
                     <code>{
-                        if let Some(cur) = self.cursor1.zip(self.cursor2).map(|(x,y)| y - x){
+                        if let Some(cur) = cursors.one.zip(cursors.two).map(|(x,y)| y - x){
                             format!("Δ {cur}")
                         } else {"Δ -".to_string()}
                     }</code>
@@ -77,9 +105,9 @@ impl Component for Time {
                         })
                     }
                     {
-                        if let Some(c1) = self.cursor1 {html!{
+                        if let Some(c1) = cursors.one {html!{
                             <text class="axis-text cursor-a"
-                                x={format!("{}",((c1 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                                x={format!("{}",((c1 as f64) - view.x_axis)*view.size)}
                                 y={format!("{}",13)}>
                                 {
                                     format!("{c1}")
@@ -90,9 +118,9 @@ impl Component for Time {
                         }
                     }
                     {
-                        if let Some(c2) = self.cursor2 {html!{
+                        if let Some(c2) = cursors.two {html!{
                             <text class="axis-text cursor-b"
-                                x={format!("{}",((c2 as f64) - ctx.props().x_axis)*ctx.props().size)}
+                                x={format!("{}",((c2 as f64) - view.x_axis)*view.size)}
                                 y={format!("{}",13)}>
                                 {
                                     format!("{c2}")
@@ -106,6 +134,14 @@ impl Component for Time {
                 </svg>
             </div>
         }
+    }
+}
+
+impl Time {
+    fn rebuild(&mut self) {
+        let axis = build_axis(self.viewport.view.x_axis, self.viewport.view.size, self.width);
+        self.points = axis.points;
+        self.labels = axis.labels;
     }
 }
 

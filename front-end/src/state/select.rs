@@ -5,7 +5,9 @@
 //! only re-render on the slices listed in `docs/state-store.md` §2.2.
 
 use super::state::State;
-use super::types::{Layout, RowsSlice, Status};
+use wave_insight_lib::waveform::TimeRange;
+
+use super::types::{Cursors, Layout, RowsSlice, Status, View, Viewport};
 
 /// The two CSS variables and the drawer flag. Subscribed by `App` only.
 pub fn layout(state: &State) -> Layout {
@@ -39,4 +41,25 @@ pub fn editor_ratio(state: &State) -> f32 {
 /// The wave rows (order, settings and selection). Subscribed by the wave pane.
 pub fn rows(state: &State) -> RowsSlice {
     state.rows.slice()
+}
+/// The committed viewport and cursors (one subscription for both: the wave pane
+/// mirrors them for drawing, the time bar renders from them).
+pub fn viewport(state: &State) -> Viewport {
+    state.viewport
+}
+
+/// The zoom/pan alone.
+#[allow(dead_code)] // the pane subscribes to the combined viewport
+pub fn view(state: &State) -> View {
+    state.viewport.view
+}
+
+/// The cursors alone.
+pub fn cursors(state: &State) -> Cursors {
+    state.viewport.cursors
+}
+
+/// The opened dump's time range (ruler + fit-to-trace).
+pub fn time_range(state: &State) -> Option<TimeRange> {
+    state.dump.time_range
 }

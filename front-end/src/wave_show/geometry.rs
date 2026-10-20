@@ -8,13 +8,16 @@
 //! Time is in wave units (the dump's time steps, `u64`); `x` is in css pixels
 //! inside the wave surface, `0` being the left edge of the visible window.
 
+pub use crate::state::types::{Time, View};
+#[cfg(test)]
+use crate::state::types::{clamp_i32, clamp_time};
+
 use wave_insight_lib::waveform::Change;
 
 /// A time stamp in wave units.
 ///
 /// The library's [`Change`] is `(Time, WaveValue)` with `Time = u64`; the alias
 /// is not re-exported, so the renderer uses its own name for it.
-pub type Time = u64;
 
 /// Height of one signal row, in css pixels.
 ///
@@ -30,129 +33,6 @@ pub const PREFETCH_ROWS: usize = 12;
 /// A dump can have hundreds of changes per pixel; drawing all of them costs a
 /// line call each and looks the same as drawing the last one per bucket.
 const MIN_PX_PER_CHANGE: f64 = 1.0;
-
-/// Zoom and pan state: which time range is visible and how wide it is drawn.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct View {
-    /// Time at the left edge of the wave surface.
-    pub x_axis: f64,
-    /// Pixels per time step.
-    pub size: f64,
-}
-
-impl Default for View {
-    fn default() -> Self {
-        Self {
-            x_axis: 0.0,
-            size: 1.0,
-        }
-    }
-}
-
-impl View {
-    pub fn new(x_axis: f64, size: f64) -> Self {
-        Self { x_axis, size }
-    }
-
-    /// Pixels per time step, never zero (a zero scale would divide by zero).
-    fn scale(&self) -> f64 {
-        if self.size.is_finite() && self.size > 1e-9 {
-            self.size
-        } else {
-            1e-9
-        }
-    }
-
-    /// x position of a time stamp, relative to the left edge.
-    pub fn x_of(&self, time: Time) -> f64 {
-        (time as f64 - self.x_axis) * self.scale()
-    }
-
-    /// Time at an x position.
-    pub fn time_of(&self, x: f64) -> f64 {
-        x / self.scale() + self.x_axis
-    }
-
-    /// The time step a click at `x` lands on (what the cursors store).
-    pub fn time_at(&self, x: f64) -> i32 {
-        clamp_i32(self.time_of(x).floor())
-    }
-
-    /// Visible time window for a surface `width` css pixels wide.
-    ///
-    /// The result is clamped to `>= 0` (a waveform has no negative time) and
-    /// `end >= start`, so it can be used as a slice bound directly.
-    pub fn window(&self, width: f64) -> (Time, Time) {
-        let start = self.time_of(0.0).floor();
-        let end = self.time_of(width.max(0.0)).ceil();
-        let start = clamp_time(start);
-        let end = clamp_time(end).max(start);
-        (start, end)
-    }
-
-    /// Scale that fits `end_time` time steps into `width` pixels.
-    pub fn fit_size(end_time: i64, width: f64) -> f64 {
-        let steps = (end_time.max(1) as f64) + 1.0;
-        let width = if width.is_finite() && width > 0.0 {
-            width
-        } else {
-            1.0
-        };
-        (width / steps).max(1e-9)
-    }
-
-    /// Pan by a number of pixels (positive = to the right = later in time).
-    pub fn pan_px(&mut self, dx: f64) {
-        self.x_axis = (self.x_axis + dx / self.scale()).max(0.0);
-    }
-
-    /// Zoom around the left edge of the surface.
-    pub fn zoom(&mut self, factor: f64) {
-        if !factor.is_finite() || factor <= 0.0 {
-            return;
-        }
-        self.size = self.scale() * factor;
-    }
-
-    /// Zoom so that the range `[from_px, to_px]` fills the surface again.
-    ///
-    /// Both x positions are in css pixels of the current view; the left edge
-    /// lands on the left of the selection. A selection narrower than one pixel
-    /// is ignored (that is a click, not a drag).
-    pub fn zoom_to_px(&mut self, from_px: f64, to_px: f64, surface_width: f64) {
-        let (from, to) = if from_px <= to_px {
-            (from_px, to_px)
-        } else {
-            (to_px, from_px)
-        };
-        let selected = to - from;
-        if !(selected >= 1.0) || !(surface_width > 0.0) {
-            return;
-        }
-        let left = self.time_of(from);
-        self.size = self.scale() * surface_width / selected;
-        self.x_axis = left.max(0.0);
-    }
-}
-
-/// Cursors and `Settings` are `i32`; clamp instead of wrapping.
-pub fn clamp_i32(value: f64) -> i32 {
-    if !value.is_finite() {
-        return 0;
-    }
-    value.clamp(0.0, i32::MAX as f64) as i32
-}
-
-/// A non-negative, saturating `f64 -> Time` conversion.
-pub fn clamp_time(value: f64) -> Time {
-    if value.is_nan() || value <= 0.0 {
-        0
-    } else if value >= u64::MAX as f64 {
-        u64::MAX
-    } else {
-        value as u64
-    }
-}
 
 /// The rows that intersect the viewport, plus a prefetch margin.
 ///

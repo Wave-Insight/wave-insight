@@ -91,6 +91,15 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 state.set_rows(items);
             }
         }
+        Action::DumpOpened { time_range } => {
+            state.dump.time_range = time_range;
+        }
+        Action::ViewCommitted(view) => {
+            state.viewport.view = view;
+        }
+        Action::CursorsChanged(cursors) => {
+            state.viewport.cursors = cursors;
+        }
         Action::RowSettingChanged { indices, setting } => {
             let mut items = (*state.rows.items).clone();
             let mut changed = false;
@@ -164,6 +173,7 @@ fn choose(items: &mut [Row], index: usize, ctrl: bool, shift: bool) -> bool {
 mod tests {
     use super::*;
     use crate::state::types::{Layout, Settings, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN};
+    use wave_insight_lib::waveform::TimeRange;
 
     fn state() -> State {
         State::default()
@@ -342,6 +352,34 @@ mod tests {
         reduce(&mut state, Action::RowSelected { index: 0, ctrl: true, shift: false });
         assert!(!state.rows.items[0].chosen);
         assert!(state.rows.items[1].chosen);
+    }
+
+    #[test]
+    fn the_viewport_and_cursors_are_committed_values() {
+        let mut state = state();
+        reduce(&mut state, Action::ViewCommitted(crate::state::types::View::new(120.0, 4.0)));
+        assert_eq!(state.viewport.view.x_axis, 120.0);
+        assert_eq!(state.viewport.view.size, 4.0);
+        reduce(
+            &mut state,
+            Action::CursorsChanged(crate::state::types::Cursors { one: Some(10), two: None }),
+        );
+        assert_eq!(state.viewport.cursors.one, Some(10));
+        assert_eq!(state.viewport.cursors.two, None);
+    }
+
+    #[test]
+    fn opening_a_dump_stores_its_time_range() {
+        let mut state = state();
+        assert_eq!(state.dump.time_range, None);
+        reduce(
+            &mut state,
+            Action::DumpOpened { time_range: Some(TimeRange { start: 0, end: 99 }) },
+        );
+        // the range is what `trace_end`/the fit zoom read
+        assert_eq!(state.dump.time_range, Some(TimeRange { start: 0, end: 99 }));
+        reduce(&mut state, Action::DumpOpened { time_range: None });
+        assert_eq!(state.dump.time_range, None);
     }
 
     #[test]
