@@ -1,8 +1,15 @@
-//! Plain data owned by the store: the layout and the status line.
+//! Plain data owned by the store: layout, status, the wave rows and the
+//! per-row presentation settings.
 //!
 //! Everything here is `Copy`/`Clone` + `PartialEq` and has no behaviour beyond
-//! clamping, so it can be compared by value in a subscription and tested on the
-//! host target (no `web_sys`).
+//! clamping/formatting, so it can be compared in a subscription and tested on
+//! the host target (no `web_sys`). The *decoded values* of a row are not here:
+//! they belong to the waveform backend's cache and stay with the renderer.
+
+use std::rc::Rc;
+
+use serde::{Deserialize, Serialize};
+use wave_insight_lib::data_struct::ShowType;
 
 /// Width of the sidebar when nothing else was chosen.
 pub const SIDEBAR_DEFAULT: f64 = 280.0;
@@ -97,6 +104,107 @@ impl Status {
     }
 }
 
+/// How one row is rendered: base number format, colour and the fixed/analog
+/// readouts. Moved here from `wave_show/settings.rs` in R2 step 2 (B1) so the
+/// store owns it; `wave_show::Settings` still names the same type.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct Settings {
+    pub show_type: ShowType,
+    pub color: (u8, u8, u8),
+
+    pub fixed_active: bool,
+    pub fixed_point: u32,
+
+    pub analog_active: bool,
+    pub analog_initerpolate: u32,
+
+    pub load_all: bool,
+    pub load_one: i32,
+    pub drive_all: bool,
+    pub drive_one: i32,
+}
+
+impl Settings {
+    pub fn new() -> Self {
+        Self {
+            show_type: ShowType::Hex,
+            color: (76, 194, 255),
+
+            fixed_active: false,
+            fixed_point: 0,
+
+            analog_active: false,
+            analog_initerpolate: 1,
+
+            load_all: false,
+            load_one: -1,
+            drive_all: false,
+            drive_one: -1,
+        }
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One row of the wave view, as the store owns it.
+///
+/// Order, per-row settings and the multi-selection are user state and live here;
+/// the decoded values do not (they are the waveform backend's cache, sliced by
+/// the renderer).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Row {
+    /// Hierarchical path; also the identity used to dedupe and to resolve the
+    /// signal in the dump.
+    pub path: String,
+    /// Display name without the `[n:0]` suffix (the renderer adds that from the
+    /// resolved width).
+    pub name: String,
+    /// Width the design declares; the dump's width wins when it has the signal.
+    pub width: usize,
+    pub setting: Settings,
+    pub chosen: bool,
+    /// Source locations of the drivers/loads, for the settings dialog.
+    pub load: Vec<String>,
+    pub drive: Vec<String>,
+}
+
+/// A versioned snapshot of the rows.
+///
+/// Cloning is one `Rc` bump and comparing is one integer, which is what makes a
+/// row subscription cheap enough to fire only when the rows really changed.
+#[derive(Clone, Debug)]
+pub struct RowsSlice {
+    pub version: u64,
+    pub items: Rc<Vec<Row>>,
+}
+
+impl RowsSlice {
+    pub fn empty() -> Self {
+        Self { version: 0, items: Rc::new(Vec::new()) }
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+}
+
+impl PartialEq for RowsSlice {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+    }
+}
+
+impl Default for RowsSlice {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +246,23 @@ mod tests {
     fn status_keeps_its_tone() {
         assert!(!Status::info("parsed top.sv").is_error());
         assert!(Status::error("top.sv: not utf-8").is_error());
+    }
+
+    #[test]
+    fn rows_compare_by_version() {
+        let row = Row {
+            path: "top.clk".into(),
+            name: "top.clk".into(),
+            width: 1,
+            setting: Settings::new(),
+            chosen: false,
+            load: Vec::new(),
+            drive: Vec::new(),
+        };
+        let a = RowsSlice { version: 3, items: Rc::new(vec![row.clone()]) };
+        let b = RowsSlice { version: 3, items: Rc::new(vec![]) };
+        let c = RowsSlice { version: 4, items: Rc::new(vec![row]) };
+        assert_eq!(a, b, "same version means unchanged, whatever the contents");
+        assert_ne!(a, c);
     }
 }

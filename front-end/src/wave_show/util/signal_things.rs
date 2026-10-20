@@ -1,4 +1,10 @@
-//! The rows of the wave view.
+//! The rows of the wave view, as the *renderer* sees them.
+//!
+//! R2 step 2 (B1) moved the row list, its order, the per-row settings and the
+//! multi-selection into the store (`state::Rows`). This type is no longer the
+//! owner: it is a view model the component keeps in sync from the store
+//! snapshot ([`SignalThings::sync`]), plus the one thing the store must not own —
+//! the decoded values.
 //!
 //! A row keeps a *handle* to its values, never a copy: the backend's
 //! [`DecodedSignal`] is sliced per frame by the canvas
@@ -7,14 +13,12 @@
 //! (`Waveform::decoded_changes_many`) for the rows that are on screen, once.
 
 use std::ops::{Index, IndexMut};
-use std::rc::Rc;
-use std::slice::{Iter, IterMut, SliceIndex};
+use std::slice::{Iter, SliceIndex};
 
-use wave_insight_lib::data_struct::Signal;
 use wave_insight_lib::waveform::{DecodedSignal, SignalKind, WaveValue, Waveform};
 
+use crate::state::{Row, Settings};
 use crate::wave_show::geometry::{self, Time};
-use crate::wave_show::Settings;
 
 /// What kind of waveform a row draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,13 +108,17 @@ impl RowValues {
     }
 }
 
-/// One row of the wave view.
+/// One row of the wave view, as the renderer draws it.
+///
+/// Built by [`SignalThings::sync`] from a store [`Row`]; never mutated by the
+/// UI (the store is the owner now).
 pub struct SignalItem {
     /// Display name, including the `[n:0]` suffix for buses.
     pub name: String,
-    /// The signal as the design description has it (`value_key` is the
-    /// hierarchical path).
-    pub signal: Rc<Signal>,
+    /// The row's identity in the store (the hierarchical path).
+    pub path: String,
+    /// Width the design declares (the suffix is derived from it).
+    pub declared: usize,
     /// Index in the opened waveform, resolved once so a draw never hashes a path.
     pub index: Option<usize>,
     /// The dump's width for this row (falls back to the declared width).
@@ -141,9 +149,9 @@ struct Resolved {
 
 /// Look a row up in the dump. Only the hierarchy is read here (cheap, cached by
 /// the library), no values are decoded.
-fn resolve(signal: &Signal, waveform: Option<&Waveform>) -> Resolved {
-    let declared = signal.size.max(1);
-    let Some(info) = waveform.and_then(|waveform| waveform.signal_by_path(&signal.value_key)) else {
+fn resolve(path: &str, declared: usize, waveform: Option<&Waveform>) -> Resolved {
+    let declared = declared.max(1);
+    let Some(info) = waveform.and_then(|waveform| waveform.signal_by_path(path)) else {
         //no dump (or the signal is not in it): fall back to the design width
         return Resolved {
             index: None,
@@ -160,6 +168,7 @@ fn resolve(signal: &Signal, waveform: Option<&Waveform>) -> Resolved {
     }
 }
 
+/// The rows the renderer draws: a local view model synced from the store.
 pub struct SignalThings {
     item: Vec<SignalItem>,
 }
@@ -169,53 +178,61 @@ impl SignalThings {
         Self { item: Vec::new() }
     }
 
-    /// Append (or keep) one row.
+    /// Rebuild the view model from the store's rows.
     ///
-    /// The same signal can be added from the sidebar, from the source editor
-    /// and from a driver list, so duplicates are dropped by hierarchical path.
-    pub fn push(&mut self, name: &str, signal: &Rc<Signal>, waveform: Option<&Waveform>) {
-        if name.is_empty() || signal.value_key.is_empty() {
-            return;
+    /// The store owns order/settings/selection; this method only maps them onto
+    /// the render model, keeping the decoded values of rows that survived (they
+    /// are keyed by path, not by index, so a reorder never drops a decode).
+    ///
+    /// Returns the signal indices whose rows disappeared: the caller unloads
+    /// them from the backend cache.
+    pub fn sync(&mut self, rows: &[Row], waveform: Option<&Waveform>) -> Vec<usize> {
+        let mut previous = std::mem::take(&mut self.item);
+        let mut next = Vec::with_capacity(rows.len());
+        for row in rows {
+            let existing = previous.iter().position(|item| item.path == row.path);
+            let mut item = match existing {
+                Some(index) => previous.remove(index),
+                None => SignalItem {
+                    name: String::new(),
+                    path: row.path.clone(),
+                    declared: row.width.max(1),
+                    index: None,
+                    width: row.width.max(1),
+                    is_bool: row.width <= 1,
+                    setting: Settings::new(),
+                    load: Vec::new(),
+                    driver: Vec::new(),
+                    choose: false,
+                    values: RowValues::Empty,
+                },
+            };
+            let resolved = resolve(&row.path, row.width, waveform);
+            item.path = row.path.clone();
+            item.declared = row.width.max(1);
+            item.index = resolved.index;
+            item.width = resolved.width;
+            item.is_bool = resolved.is_bool;
+            item.name = if resolved.is_bool {
+                row.name.clone()
+            } else {
+                format!("{}[{}:0]", row.name, item.declared - 1)
+            };
+            item.setting = row.setting.clone();
+            item.load = row.load.clone();
+            item.driver = row.drive.clone();
+            item.choose = row.chosen;
+            next.push(item);
         }
-        if self
-            .item
-            .iter()
-            .any(|item| item.signal.value_key == signal.value_key)
-        {
-            return;
+        // rows that are gone give their cached signal back to the backend
+        let mut unload = Vec::new();
+        for item in previous {
+            if let (RowValues::Backend(_), Some(index)) = (&item.values, item.index) {
+                unload.push(index);
+            }
         }
-
-        let declared = signal.size.max(1);
-        let resolved = resolve(signal, waveform);
-        let name_size = if resolved.is_bool {
-            name.to_owned()
-        } else {
-            format!("{name}[{}:0]", declared - 1)
-        };
-        let insert_idx = self
-            .item
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.choose)
-            .map(|(idx, _)| idx)
-            .last()
-            .map(|x| x + 1)
-            .unwrap_or(self.item.len());
-        self.item.insert(
-            insert_idx,
-            SignalItem {
-                name: name_size,
-                signal: Rc::clone(signal),
-                index: resolved.index,
-                width: resolved.width,
-                is_bool: resolved.is_bool,
-                setting: Settings::new(),
-                load: signal.load.clone(),
-                driver: signal.drive.clone(),
-                choose: false,
-                values: RowValues::Empty,
-            },
-        );
+        self.item = next;
+        unload
     }
 
     /// Re-resolve every row against a new dump and drop the old values.
@@ -224,7 +241,7 @@ impl SignalThings {
     /// that are actually visible, in one batched call.
     pub fn refresh(&mut self, waveform: Option<&Waveform>) {
         for item in &mut self.item {
-            let resolved = resolve(&item.signal, waveform);
+            let resolved = resolve(&item.path, item.declared, waveform);
             item.index = resolved.index;
             item.width = resolved.width;
             item.is_bool = resolved.is_bool;
@@ -272,27 +289,8 @@ impl SignalThings {
         unload
     }
 
-    pub fn remove(&mut self, idx: &[usize]) {
-        idx.iter().enumerate().for_each(|(r, &x)| {
-            if x - r < self.item.len() {
-                self.item.remove(x - r);
-            }
-        });
-    }
-
-    pub fn exchange(&mut self, from: usize, to: usize) {
-        if from < self.item.len() && to < self.item.len() {
-            let item = self.item.remove(from);
-            self.item.insert(to, item);
-        }
-    }
-
     pub fn iter(&self) -> Iter<'_, SignalItem> {
         self.item.iter()
-    }
-
-    pub fn iter_mut(&mut self) -> IterMut<'_, SignalItem> {
-        self.item.iter_mut()
     }
 
     pub fn len(&self) -> usize {
@@ -306,60 +304,6 @@ impl SignalThings {
             .filter(|(_, item)| item.choose)
             .map(|(idx, _)| idx)
             .collect()
-    }
-
-    pub fn onchoose(&mut self, idx: usize, ctrl: bool, shift: bool) {
-        if idx >= self.item.len() {
-            return;
-        }
-        if ctrl {
-            self.item[idx].choose = !self.item[idx].choose
-        } else if shift {
-            let choosed_idx = self.get_choose_idx();
-            if !choosed_idx.is_empty() {
-                let head_idx = choosed_idx[0];
-                let tail_idx = *choosed_idx.last().unwrap();
-                if choosed_idx.contains(&idx) {
-                    self.item.iter_mut().for_each(|i| i.choose = false);
-                } else if tail_idx < idx {
-                    self.item.iter_mut().for_each(|i| i.choose = false);
-                    self.item
-                        .get_mut(head_idx..(idx + 1))
-                        .unwrap()
-                        .iter_mut()
-                        .for_each(|i| i.choose = true);
-                } else if idx < head_idx {
-                    self.item.iter_mut().for_each(|i| i.choose = false);
-                    self.item
-                        .get_mut(idx..(tail_idx + 1))
-                        .unwrap()
-                        .iter_mut()
-                        .for_each(|i| i.choose = true);
-                } else if ((head_idx as isize) - (idx as isize)).abs()
-                    <= ((idx as isize) - (tail_idx as isize)).abs()
-                {
-                    self.item.iter_mut().for_each(|i| i.choose = false);
-                    self.item
-                        .get_mut(head_idx..(idx + 1))
-                        .unwrap()
-                        .iter_mut()
-                        .for_each(|i| i.choose = true);
-                } else {
-                    self.item.iter_mut().for_each(|i| i.choose = false);
-                    self.item
-                        .get_mut(idx..(tail_idx + 1))
-                        .unwrap()
-                        .iter_mut()
-                        .for_each(|i| i.choose = true);
-                }
-            } else {
-                self.item[idx].choose = true;
-            }
-        } else {
-            let choose = self.item[idx].choose;
-            self.item.iter_mut().for_each(|i| i.choose = false);
-            self.item[idx].choose = !choose;
-        }
     }
 }
 
@@ -390,19 +334,18 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use wave_insight_lib::data_struct::CodeLocation;
     use wave_insight_lib::waveform::{Bits, Change};
 
-    fn signal(path: &str, size: usize) -> Rc<Signal> {
-        Rc::new(Signal {
-            size,
-            value_key: path.to_string(),
-            drive: Vec::new(),
+    fn store_row(path: &str, width: usize) -> Row {
+        Row {
+            path: path.to_string(),
+            name: path.to_string(),
+            width,
+            setting: Settings::new(),
+            chosen: false,
             load: Vec::new(),
-            location_define: CodeLocation::new(),
-            location_drive: Vec::new(),
-            location_load: Vec::new(),
-        })
+            drive: Vec::new(),
+        }
     }
 
     fn decoded(width: usize, changes: usize) -> DecodedSignal {
@@ -413,30 +356,69 @@ mod tests {
         DecodedSignal::from_changes(changes)
     }
 
-    fn row(path: &str, index: Option<usize>, values: RowValues) -> SignalItem {
-        SignalItem {
-            name: path.to_string(),
-            signal: signal(path, 1),
-            index,
-            width: 1,
-            is_bool: true,
-            setting: Settings::new(),
-            load: Vec::new(),
-            driver: Vec::new(),
-            choose: false,
-            values,
-        }
+    fn synced(paths: &[(&str, usize)]) -> SignalThings {
+        let rows: Vec<Row> = paths.iter().map(|(path, width)| store_row(path, *width)).collect();
+        let mut things = SignalThings::new();
+        things.sync(&rows, None);
+        things
+    }
+
+    #[test]
+    fn sync_maps_the_store_rows_onto_the_render_model() {
+        let things = synced(&[("top.clk", 1), ("top.pc", 8)]);
+        assert_eq!(things.len(), 2);
+        // a 1-bit signal has no suffix, a bus carries its declared width
+        assert_eq!(things[0].name, "top.clk");
+        assert!(things[0].is_bool);
+        assert_eq!(things[1].name, "top.pc[7:0]");
+        assert!(!things[1].is_bool);
+        assert_eq!(things[1].declared, 8);
+    }
+
+    #[test]
+    fn sync_keeps_the_values_of_rows_that_survive_a_reorder() {
+        let mut things = synced(&[("a", 1), ("b", 1)]);
+        things.set_backend(0, decoded(1, 3));
+        // the store reorders: the decoded row must follow its path, not its index
+        let rows = vec![store_row("b", 1), store_row("a", 1)];
+        let unload = things.sync(&rows, None);
+        assert!(unload.is_empty());
+        assert_eq!(things[1].path, "a");
+        assert!(!things[1].values.is_empty(), "the decode followed the row");
+        assert!(things[0].values.is_empty());
+    }
+
+    #[test]
+    fn sync_reports_the_signals_of_rows_that_are_gone() {
+        let mut things = synced(&[("a", 1), ("b", 1)]);
+        // pretend both were resolved against a dump
+        things[0].index = Some(4);
+        things[1].index = Some(5);
+        things.set_backend(1, decoded(1, 2));
+        let unload = things.sync(&[store_row("a", 1)], None);
+        assert_eq!(unload, vec![5], "only the decoded, removed row is unloaded");
+        assert_eq!(things.len(), 1);
+    }
+
+    #[test]
+    fn sync_carries_settings_and_the_selection_over() {
+        let mut rows = vec![store_row("a", 1)];
+        rows[0].setting.fixed_active = true;
+        rows[0].chosen = true;
+        let mut things = SignalThings::new();
+        things.sync(&rows, None);
+        assert!(things[0].setting.fixed_active);
+        assert!(things[0].choose);
+        assert_eq!(things.get_choose_idx(), vec![0]);
     }
 
     #[test]
     fn pending_lists_only_rows_that_need_a_decode() {
-        let mut things = SignalThings::new();
-        things.item.push(row("a", Some(7), RowValues::Empty));
-        things
-            .item
-            .push(row("b", Some(8), RowValues::Backend(decoded(1, 3))));
-        things.item.push(row("c", None, RowValues::Empty));
-        things.item.push(row("d", Some(9), RowValues::Empty));
+        let mut things = synced(&[("a", 1), ("b", 1), ("c", 1), ("d", 1)]);
+        things[0].index = Some(7);
+        things[1].index = Some(8);
+        things[3].index = Some(9);
+        things.set_backend(1, decoded(1, 3));
 
         //only the empty rows with a signal index are worth asking the backend
         assert_eq!(things.pending(0..4), vec![(0, 7), (3, 9)]);
@@ -447,16 +429,13 @@ mod tests {
 
     #[test]
     fn drop_outside_frees_rows_that_left_the_viewport() {
-        let mut things = SignalThings::new();
-        things
-            .item
-            .push(row("a", Some(1), RowValues::Backend(decoded(1, 2))));
-        things
-            .item
-            .push(row("b", Some(2), RowValues::Backend(decoded(1, 2))));
-        things
-            .item
-            .push(row("c", Some(3), RowValues::Backend(decoded(1, 2))));
+        let mut things = synced(&[("a", 1), ("b", 1), ("c", 1)]);
+        things[0].index = Some(1);
+        things[1].index = Some(2);
+        things[2].index = Some(3);
+        for row in 0..3 {
+            things.set_backend(row, decoded(1, 2));
+        }
 
         //keep row 1 only: the others go back to "no data" and are unloaded
         let unload = things.drop_outside(1..2);
@@ -464,6 +443,17 @@ mod tests {
         assert!(!things[1].values.is_empty(), "row inside the window survives");
         assert!(things[0].values.is_empty(), "row before the window was dropped");
         assert!(things[2].values.is_empty(), "row after the window was dropped");
+    }
+
+    #[test]
+    fn refresh_drops_the_values_and_re_resolves() {
+        let mut things = synced(&[("a", 1)]);
+        things[0].index = Some(3);
+        things.set_backend(0, decoded(1, 2));
+        things.refresh(None);
+        assert!(things[0].values.is_empty());
+        assert_eq!(things[0].index, None);
+        assert!(things[0].is_bool);
     }
 
     #[test]

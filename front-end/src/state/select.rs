@@ -5,7 +5,7 @@
 //! only re-render on the slices listed in `docs/state-store.md` §2.2.
 
 use super::state::State;
-use super::types::{Layout, Status};
+use super::types::{Layout, RowsSlice, Status};
 
 /// The two CSS variables and the drawer flag. Subscribed by `App` only.
 pub fn layout(state: &State) -> Layout {
@@ -34,4 +34,9 @@ pub fn sidebar_width(state: &State) -> f64 {
 #[allow(dead_code)] // the step-4 editor/wave splitter subscribes to this
 pub fn editor_ratio(state: &State) -> f32 {
     state.layout.editor_ratio
+}
+
+/// The wave rows (order, settings and selection). Subscribed by the wave pane.
+pub fn rows(state: &State) -> RowsSlice {
+    state.rows.slice()
 }

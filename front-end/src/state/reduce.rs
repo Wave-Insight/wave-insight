@@ -4,10 +4,14 @@
 //! unit tested on the host target (`cargo test -p front-end --bins`) and so a
 //! change is always "this fact changes these fields". Anything that needs the
 //! outside world is returned as an [`Effect`] for the app to execute.
+//!
+//! Row semantics mirror the old `SignalThings` exactly (dedupe by path, insert
+//! after the last chosen row, index-shifting removal, the three selection
+//! modes) so moving them into the store does not move behaviour.
 
 use super::action::{Action, Effect};
 use super::state::State;
-use super::types::{clamp_ratio, clamp_sidebar};
+use super::types::{clamp_ratio, clamp_sidebar, Row};
 
 pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
     match action {
@@ -29,17 +33,157 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
         Action::ClearStatus => {
             state.nav.status = None;
         }
+        Action::RowAdded { path, name, width, load, drive } => {
+            if !path.is_empty() {
+                let mut items = (*state.rows.items).clone();
+                if !items.iter().any(|row| row.path == path) {
+                    // insert after the last chosen row, like the old push()
+                    let insert_at = items
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, row)| row.chosen)
+                        .map(|(index, _)| index)
+                        .last()
+                        .map(|index| index + 1)
+                        .unwrap_or(items.len());
+                    items.insert(
+                        insert_at,
+                        Row {
+                            path,
+                            name,
+                            width: width.max(1),
+                            setting: State::default_row_setting(),
+                            chosen: false,
+                            load,
+                            drive,
+                        },
+                    );
+                    state.set_rows(items);
+                }
+            }
+        }
+        Action::RowsRemoved { indices } => {
+            if !indices.is_empty() {
+                let mut sorted = indices;
+                sorted.sort_unstable();
+                sorted.dedup();
+                let mut items = (*state.rows.items).clone();
+                // remove from the back so the earlier indices stay valid
+                for index in sorted.into_iter().rev() {
+                    if index < items.len() {
+                        items.remove(index);
+                    }
+                }
+                state.set_rows(items);
+            }
+        }
+        Action::RowSelected { index, ctrl, shift } => {
+            let mut items = (*state.rows.items).clone();
+            if index < items.len() && choose(&mut items, index, ctrl, shift) {
+                state.set_rows(items);
+            }
+        }
+        Action::RowsReordered { from, to } => {
+            let mut items = (*state.rows.items).clone();
+            if from < items.len() && to < items.len() && from != to {
+                let row = items.remove(from);
+                items.insert(to, row);
+                state.set_rows(items);
+            }
+        }
+        Action::RowSettingChanged { indices, setting } => {
+            let mut items = (*state.rows.items).clone();
+            let mut changed = false;
+            for index in indices {
+                if let Some(row) = items.get_mut(index) {
+                    row.setting = setting.clone();
+                    changed = true;
+                }
+            }
+            if changed {
+                state.set_rows(items);
+            }
+        }
     }
     Vec::new()
+}
+
+/// The three selection modes of the wave rows, exactly as the view had them.
+///
+/// Returns `true` when the selection changed.
+fn choose(items: &mut [Row], index: usize, ctrl: bool, shift: bool) -> bool {
+    if index >= items.len() {
+        return false;
+    }
+    if ctrl {
+        items[index].chosen = !items[index].chosen;
+        return true;
+    }
+    let chosen: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.chosen)
+        .map(|(index, _)| index)
+        .collect();
+    if shift && !chosen.is_empty() {
+        let head = chosen[0];
+        let tail = *chosen.last().unwrap_or(&head);
+        for row in items.iter_mut() {
+            row.chosen = false;
+        }
+        if chosen.contains(&index) {
+            // clicking inside the selection clears it
+            return true;
+        }
+        let (start, end) = if tail < index {
+            (head, index)
+        } else if index < head {
+            (index, tail)
+        } else if (head as isize - index as isize).abs() <= (index as isize - tail as isize).abs() {
+            (head, index)
+        } else {
+            (index, tail)
+        };
+        if let Some(range) = items.get_mut(start..=end) {
+            for row in range {
+                row.chosen = true;
+            }
+        }
+        return true;
+    }
+    // a plain click toggles the clicked row and clears everything else
+    let was_chosen = items[index].chosen;
+    for row in items.iter_mut() {
+        row.chosen = false;
+    }
+    items[index].chosen = !was_chosen;
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::types::{Layout, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN};
+    use crate::state::types::{Layout, Settings, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN};
 
     fn state() -> State {
         State::default()
+    }
+
+    fn add(state: &mut State, path: &str) {
+        reduce(
+            state,
+            Action::RowAdded {
+                path: path.to_string(),
+                name: path.to_string(),
+                width: 8,
+                load: vec![],
+                drive: vec![],
+            },
+        );
+    }
+
+    fn paths(state: &State) -> Vec<String> {
+        state.rows.items.iter().map(|row| row.path.clone()).collect()
     }
 
     #[test]
@@ -101,5 +245,117 @@ mod tests {
         let mut state = state();
         assert!(reduce(&mut state, Action::ToggleDrawer).is_empty());
         assert!(reduce(&mut state, Action::Status(Status::info("ok"))).is_empty());
+    }
+
+    #[test]
+    fn adding_a_row_appends_it_once() {
+        let mut state = state();
+        add(&mut state, "top.clk");
+        add(&mut state, "top.pc");
+        // the same signal can be added from several places; it is deduped by path
+        add(&mut state, "top.clk");
+        assert_eq!(paths(&state), vec!["top.clk", "top.pc"]);
+    }
+
+    #[test]
+    fn adding_a_row_puts_it_after_the_last_chosen_one() {
+        let mut state = state();
+        add(&mut state, "a");
+        add(&mut state, "b");
+        reduce(&mut state, Action::RowSelected { index: 0, ctrl: false, shift: false });
+        add(&mut state, "c");
+        assert_eq!(paths(&state), vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn removing_rows_shifts_the_rest_and_ignores_bad_indices() {
+        let mut state = state();
+        add(&mut state, "a");
+        add(&mut state, "b");
+        add(&mut state, "c");
+        reduce(&mut state, Action::RowsRemoved { indices: vec![2, 0, 9] });
+        assert_eq!(paths(&state), vec!["b"]);
+    }
+
+    #[test]
+    fn reordering_moves_a_row_and_keeps_the_others() {
+        let mut state = state();
+        add(&mut state, "a");
+        add(&mut state, "b");
+        add(&mut state, "c");
+        reduce(&mut state, Action::RowsReordered { from: 2, to: 0 });
+        assert_eq!(paths(&state), vec!["c", "a", "b"]);
+        // out of range is a no-op
+        reduce(&mut state, Action::RowsReordered { from: 9, to: 0 });
+        assert_eq!(paths(&state), vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn rows_are_versioned_so_unchanged_actions_do_not_bump() {
+        let mut state = state();
+        add(&mut state, "a");
+        let version = state.rows.version;
+        // a duplicate add changes nothing, so the version must not move
+        add(&mut state, "a");
+        assert_eq!(state.rows.version, version);
+        // and a real change makes the slice compare different
+        let before = state.rows.slice();
+        add(&mut state, "b");
+        assert_ne!(before, state.rows.slice());
+    }
+
+    #[test]
+    fn settings_are_applied_to_every_given_row() {
+        let mut state = state();
+        add(&mut state, "a");
+        add(&mut state, "b");
+        let mut setting = Settings::new();
+        setting.fixed_active = true;
+        reduce(&mut state, Action::RowSettingChanged { indices: vec![0, 1], setting });
+        assert!(state.rows.items[0].setting.fixed_active);
+        assert!(state.rows.items[1].setting.fixed_active);
+        assert!(!state.rows.items[0].chosen);
+    }
+
+    #[test]
+    fn plain_click_selects_exactly_one_row() {
+        let mut state = state();
+        add(&mut state, "a");
+        add(&mut state, "b");
+        reduce(&mut state, Action::RowSelected { index: 1, ctrl: false, shift: false });
+        assert!(!state.rows.items[0].chosen);
+        assert!(state.rows.items[1].chosen);
+        // clicking the same row again clears it
+        reduce(&mut state, Action::RowSelected { index: 1, ctrl: false, shift: false });
+        assert!(!state.rows.items[1].chosen);
+    }
+
+    #[test]
+    fn ctrl_click_toggles_one_row_and_keeps_the_others() {
+        let mut state = state();
+        add(&mut state, "a");
+        add(&mut state, "b");
+        reduce(&mut state, Action::RowSelected { index: 0, ctrl: false, shift: false });
+        reduce(&mut state, Action::RowSelected { index: 1, ctrl: true, shift: false });
+        assert!(state.rows.items[0].chosen);
+        assert!(state.rows.items[1].chosen);
+        reduce(&mut state, Action::RowSelected { index: 0, ctrl: true, shift: false });
+        assert!(!state.rows.items[0].chosen);
+        assert!(state.rows.items[1].chosen);
+    }
+
+    #[test]
+    fn shift_click_selects_the_range() {
+        let mut state = state();
+        for path in ["a", "b", "c", "d"] {
+            add(&mut state, path);
+        }
+        reduce(&mut state, Action::RowSelected { index: 0, ctrl: false, shift: false });
+        reduce(&mut state, Action::RowSelected { index: 3, ctrl: false, shift: true });
+        let chosen: Vec<bool> = state.rows.items.iter().map(|row| row.chosen).collect();
+        assert_eq!(chosen, vec![true, true, true, true]);
+        // shift inside the range clears it
+        reduce(&mut state, Action::RowSelected { index: 2, ctrl: false, shift: true });
+        assert!(state.rows.items.iter().all(|row| !row.chosen));
     }
 }

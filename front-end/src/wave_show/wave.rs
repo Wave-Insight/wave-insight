@@ -3,11 +3,11 @@ use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wave_insight_lib::data_struct::Signal;
 use wave_insight_lib::waveform::TimeRange;
 use yew::prelude::*;
 
 use crate::nav::SharedWaveform;
+use crate::state::{self, select, RowsSlice, Store, Subscription};
 
 use super::canvas;
 use super::ctrl::Ctrl;
@@ -29,7 +29,9 @@ const NAME_OVERSCAN: usize = 4;
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct WaveShowProps {
-    pub signaladd: (String, Rc<Signal>),
+    /// The app store: the rows (order, settings, selection) are subscribed from
+    /// here, and every row change is dispatched back as an action (R2 step 2 B1).
+    pub store: Store,
     /// The opened dump; values are decoded from it on demand.
     #[prop_or_default]
     pub waveform: Option<SharedWaveform>,
@@ -38,10 +40,6 @@ pub struct WaveShowProps {
     /// the fit-to-trace zoom use it; `None` means "unknown" (GHW).
     #[prop_or_default]
     pub time_range: Option<TimeRange>,
-    /// Bumped by the app for every add; the row is pushed once per bump, so a
-    /// row the user deleted is not re-added by the next unrelated re-render.
-    #[prop_or_default]
-    pub added_seq: u32,
     /// The selected signal, for the driver/load panel.
     #[prop_or_default]
     pub onselect: Callback<Option<String>>,
@@ -51,6 +49,8 @@ pub struct WaveShowProps {
 }
 
 pub enum Msg {
+    /// The store's rows changed (add/remove/reorder/settings/selection).
+    Rows(RowsSlice),
     Wheel(WheelEvent),
     /// the row list was scrolled
     Scroll,
@@ -99,11 +99,15 @@ impl Metrics {
 }
 
 pub struct WaveShow {
+    /// The app store the rows are read from and dispatched to.
+    store: Store,
     signal_things: SignalThings,
     /// The dump the rows are decoded from.
     waveform: Option<SharedWaveform>,
-    /// Value of [`WaveShowProps::added_seq`] that was already turned into a row.
-    added_seq: u32,
+    /// The rows the store owns, as the last snapshot the pane saw.
+    rows: RowsSlice,
+    /// Kept so the subscription lives exactly as long as the component.
+    _rows_sub: Subscription,
 
     /// Zoom/pan state of the wave body.
     view: View,
@@ -150,10 +154,14 @@ impl Component for WaveShow {
     type Properties = WaveShowProps;
 
     fn create(ctx: &Context<Self>) -> Self {
+        let store = ctx.props().store.clone();
+        let rows_sub = store.subscribe(select::rows, ctx.link().callback(Msg::Rows));
         let mut this = Self {
+            store: store.clone(),
             signal_things: SignalThings::new(),
             waveform: ctx.props().waveform.clone(),
-            added_seq: ctx.props().added_seq,
+            rows: store.select(select::rows),
+            _rows_sub: rows_sub,
 
             view: View::default(),
             fitted: false,
@@ -183,12 +191,19 @@ impl Component for WaveShow {
             keyup: None,
             onresize: None,
         };
+        this.sync_rows();
         this.attach_listeners(ctx);
         this
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
+            Msg::Rows(rows) => {
+                self.rows = rows;
+                self.sync_rows();
+                // the name column, the settings and the canvas all follow the store
+                true
+            }
             Msg::Wheel(e) => {
                 let metrics = self.measure();
                 // over the name column the wheel scrolls the rows, like any list
@@ -224,8 +239,11 @@ impl Component for WaveShow {
                 if choosed_idx.contains(&idx) {
                     self.on_setting_idx = choosed_idx;
                 } else {
-                    self.signal_things.onchoose(idx, false, false);
+                    self.dispatch(state::Action::RowSelected { index: idx, ctrl: false, shift: false });
                     self.on_setting_idx = vec![idx];
+                    // the snapshot arrives through the subscription; settings read
+                    // the next frame, exactly like before
+                    self.sync_rows();
                 }
                 true
             }
@@ -233,17 +251,16 @@ impl Component for WaveShow {
                 if close {
                     self.menu_show = false;
                 }
-                self.on_setting_idx.iter().for_each(|&x| {
-                    if let Some(item) = self.signal_things.iter_mut().nth(x) {
-                        item.setting = set.clone();
-                    }
+                self.dispatch(state::Action::RowSettingChanged {
+                    indices: self.on_setting_idx.clone(),
+                    setting: set,
                 });
                 true
             }
             Msg::DeleteSig => {
                 self.menu_show = false;
                 let indices = std::mem::take(&mut self.on_setting_idx);
-                self.signal_things.remove(&indices);
+                self.dispatch(state::Action::RowsRemoved { indices });
                 ctx.props().onselect.emit(None);
                 true
             }
@@ -312,11 +329,8 @@ impl Component for WaveShow {
                     } else {
                         (location + 0.5) as usize
                     };
-                    if current < self.signal_things.len()
-                        && dest < self.signal_things.len()
-                        && dest != current
-                    {
-                        self.signal_things.exchange(current, dest);
+                    if current < self.rows.len() && dest < self.rows.len() && dest != current {
+                        self.dispatch(state::Action::RowsReordered { from: current, to: dest });
                     }
                     return true;
                 }
@@ -349,9 +363,11 @@ impl Component for WaveShow {
             Msg::NameClick(idx) => {
                 let ctrl = self.key(17);
                 let shift = self.key(16);
-                self.signal_things.onchoose(idx, ctrl, shift);
-                if let Some(item) = self.signal_things.iter().nth(idx) {
-                    let path = item.signal.value_key.clone();
+                // the store owns the selection; read the path before it changes
+                let path = self.signal_things.iter().nth(idx).map(|item| item.path.clone());
+                self.dispatch(state::Action::RowSelected { index: idx, ctrl, shift });
+                self.sync_rows();
+                if let Some(path) = path {
                     // the inspector follows the last clicked row
                     ctx.props().onselect.emit(Some(path.clone()));
                     if !ctrl && !shift {
@@ -363,7 +379,7 @@ impl Component for WaveShow {
             }
             Msg::Jump(idx) => {
                 if let Some(item) = self.signal_things.iter().nth(idx) {
-                    let path = item.signal.value_key.clone();
+                    let path = item.path.clone();
                     ctx.props().onselect.emit(Some(path.clone()));
                     ctx.props().onjump.emit(path);
                 }
@@ -384,18 +400,9 @@ impl Component for WaveShow {
             self.scroll_top = scroll_top_from_dom();
             redraw = true;
         }
-        // only a real "add" pushes a row; `changed` also runs for every other
-        // prop update (status, selection, a new dump), and pushing then would
-        // bring back a row the user just deleted
-        if self.added_seq != ctx.props().added_seq {
-            self.added_seq = ctx.props().added_seq;
-            let (signal_name, signal) = &ctx.props().signaladd;
-            self.signal_things.push(
-                signal_name,
-                signal,
-                self.waveform.as_ref().map(|waveform| waveform.as_waveform()),
-            );
-            redraw = true;
+        // the rows themselves arrive through the store subscription (`Msg::Rows`)
+        if redraw {
+            self.sync_rows();
         }
         redraw
     }
@@ -493,6 +500,25 @@ impl Component for WaveShow {
 }
 
 impl WaveShow {
+    /// One store change; the resulting snapshot arrives as `Msg::Rows`.
+    fn dispatch(&self, action: state::Action) {
+        let effects = self.store.dispatch(action);
+        debug_assert!(effects.is_empty(), "R2 step 2 has no effects yet");
+    }
+
+    /// Map the store's rows onto the render model, keeping decoded values for
+    /// rows that survived and unloading the ones that are gone.
+    fn sync_rows(&mut self) {
+        let waveform = self.waveform.as_ref().map(|waveform| waveform.as_waveform());
+        let unload = self.signal_things.sync(&self.rows.items, waveform);
+        if let Some(waveform) = waveform {
+            for index in unload {
+                let _ = waveform.unload_signal(index);
+            }
+        }
+    }
+
+
     fn key(&self, code: usize) -> bool {
         self.key_press.borrow().get(code).copied().unwrap_or(false)
     }

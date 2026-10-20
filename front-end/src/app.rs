@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::rc::Rc;
 
 use wave_insight_lib::data_struct::Signal;
 use wave_insight_lib::waveform::TimeRange;
@@ -128,11 +127,6 @@ pub struct App {
     /// The language server client the source editor talks to.
     lsp: LspBridge,
     verilog_source: Vec<(String,String)>,
-    signal_add: (String,Rc<Signal>),
-    /// Bumped for every signal the user adds, so the wave view can tell "the
-    /// same signal was added again" from "nothing happened" (and does not
-    /// resurrect a row the user deleted on the next re-render).
-    signal_add_seq: u32,
     /// Hierarchical path of the signal selected in the wave view.
     selected: Option<String>,
     picker: Option<Picker>,
@@ -207,8 +201,6 @@ impl Component for App {
             design,
             lsp,
             verilog_source: vec![],
-            signal_add: ("".to_string(),Rc::new(Signal::new())),
-            signal_add_seq: 0,
             selected: None,
             picker: None,
             goto: None,
@@ -323,8 +315,7 @@ impl Component for App {
                                 ongoto={link.callback(Msg::Goto)} />
                         </div>
                         <WaveShow
-                            signaladd={(self.signal_add.0.clone(),Rc::clone(&self.signal_add.1))}
-                            added_seq={self.signal_add_seq}
+                            store={self.store.clone()}
                             waveform={self.waveform.clone()}
                             time_range={self.time_range}
                             onselect={link.callback(Msg::WaveSelect)}
@@ -763,9 +754,16 @@ impl App {
     /// Add one hierarchical path to the wave view and, when the design knows
     /// it and its file is open, show where it is declared.
     fn add_path(&mut self, path: &str) {
+        // the row list is store state now: resolve what the reducer cannot know
+        // (width from the dump/design, driver + load locations) and dispatch
         let signal = self.signal_for_path(path);
-        self.signal_add = (path.to_string(), Rc::new(signal));
-        self.signal_add_seq = self.signal_add_seq.wrapping_add(1);
+        self.store.dispatch(Action::RowAdded {
+            path: path.to_string(),
+            name: path.to_string(),
+            width: signal.size,
+            load: signal.load.clone(),
+            drive: signal.drive.clone(),
+        });
         self.selected = Some(path.to_string());
         self.note(Status::info(format!("added {path} to the waveform")));
         // only jump when the source pane can show the file: a closed tab would

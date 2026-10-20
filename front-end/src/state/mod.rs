@@ -28,9 +28,9 @@ pub use action::{Action, Effect};
 #[allow(unused_imports)]
 pub use reduce::reduce;
 #[allow(unused_imports)]
-pub use state::{Nav, State};
+pub use state::{Nav, Rows, State};
 #[allow(unused_imports)]
 pub use store::{Store, Subscription};
 #[allow(unused_imports)]
-pub use types::StatusTone;
+pub use types::{Row, RowsSlice, Settings, StatusTone};
 pub use types::{Layout, Status};
