@@ -63,7 +63,9 @@ impl Component for SignalInspector {
             <section class="panel" style="flex:0 0 auto;max-height:190px">
                 <div class="panel-head">
                     {"Drivers / loads"}
-                    <span class="count" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    // a signal path is case sensitive, so keep the panel head's
+                    // `text-transform: uppercase` off it
+                    <span class="count" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-transform:none"
                         title={top.clone().map(|top| format!("top: {top}")).unwrap_or_default()}>
                         {props.path.clone().unwrap_or_else(|| "—".to_string())}
                     </span>

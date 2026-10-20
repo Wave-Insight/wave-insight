@@ -30,10 +30,12 @@ pub struct CodeBlock {
     /// editor is created once and only its model is switched afterwards.
     host: NodeRef,
     editor: Option<MonacoEditor>,
-    /// The document the editor is showing, so prop changes can be diffed.
-    shown_file: Option<String>,
-    /// The text the app last handed to that document.
-    shown_text: Option<String>,
+    /// The file whose model the editor is showing right now.
+    current: Option<String>,
+    /// Per file: the buffer text the app handed over last. A difference means
+    /// the file was re-read (and the model must be overwritten); the same text
+    /// means the model may hold unsaved edits that must be kept.
+    shown: std::collections::HashMap<String, String>,
     /// Token of the jump request that was already applied.
     shown_token: Option<u32>,
     /// File name and click callback as the JS listener must see them *now*:
@@ -50,8 +52,8 @@ impl Component for CodeBlock {
         Self {
             host: NodeRef::default(),
             editor: None,
-            shown_file: None,
-            shown_text: None,
+            current: None,
+            shown: std::collections::HashMap::new(),
             shown_token: None,
             file: Rc::new(RefCell::new(ctx.props().file.clone())),
             click: Rc::new(RefCell::new(ctx.props().onwordclick.clone())),
@@ -74,15 +76,23 @@ impl Component for CodeBlock {
         let Some(editor) = &self.editor else {
             return;
         };
+        if props.file.is_empty() {
+            return;
+        }
 
-        // Another file tab was activated, or the app re-read the file. A user
-        // edit is *not* a prop change, so typing never resets the buffer.
-        let file_changed = self.shown_file.as_deref() != Some(props.file.as_str());
-        let text_changed = self.shown_text.as_deref() != Some(props.text.as_str());
-        if !props.file.is_empty() && (file_changed || text_changed) {
-            editor.show_document(&document_uri(&props.file), LANGUAGE_ID, &props.text);
-            self.shown_file = Some(props.file.clone());
-            self.shown_text = Some(props.text.clone());
+        // The app re-read this file (its text differs from what the app handed
+        // over last): replace the buffer. Otherwise only the visible tab
+        // changed, and the model keeps whatever the user typed into it.
+        let uri = document_uri(&props.file);
+        let app_text_changed = self.shown.get(&props.file) != Some(&props.text);
+        let file_changed = self.current.as_deref() != Some(props.file.as_str());
+        if app_text_changed {
+            editor.show_document(&uri, LANGUAGE_ID, &props.text);
+            self.shown.insert(props.file.clone(), props.text.clone());
+            self.current = Some(props.file.clone());
+        } else if file_changed {
+            editor.attach_document(&uri, LANGUAGE_ID, &props.text);
+            self.current = Some(props.file.clone());
         }
 
         if let Some(goto) = &props.goto {
@@ -153,8 +163,8 @@ impl CodeBlock {
 
         if !props.file.is_empty() {
             editor.show_document(&document_uri(&props.file), LANGUAGE_ID, &props.text);
-            self.shown_file = Some(props.file.clone());
-            self.shown_text = Some(props.text.clone());
+            self.shown.insert(props.file.clone(), props.text.clone());
+            self.current = Some(props.file.clone());
         }
 
         // The handle remembers the position until monaco finished downloading.

@@ -180,7 +180,11 @@ fn wave_svg(props: &SignalValueProps) -> (String,String,Vec<Html>) {
     let x_axis = props.x_axis;
     let size = props.size;
     let show_type = &props.setting.show_type;
-    let bitcount = props.signal.size as u32;
+    // The declared width and the width the dump really holds can disagree; the
+    // legacy formatters subtract the two, so never ask for more bits than the
+    // values have (that used to panic with "attempt to subtract with overflow").
+    let declared = props.signal.size.max(1);
+    let bitcount = declared.min(props.series.bits_width.unwrap_or(declared)) as u32;
     let zero_position = 3;
     let base_height = 10;
     let height = 2*base_height;

@@ -17,6 +17,13 @@ pub struct Series {
     pub bools: Option<Rc<Vec<(i32, BoolData)>>>,
     /// Values of a bit vector.
     pub bits: Option<Rc<Vec<(i32, BitsData)>>>,
+    /// Bit width of the decoded values, i.e. what the dump really holds.
+    ///
+    /// A dump and the source it was made from can disagree (a truncated vector,
+    /// a `$var` that is narrower than the declared port), and the legacy
+    /// `BitsData` formatters panic when asked for more bits than the value has.
+    /// The row therefore formats with `min(declared, actual)`.
+    pub bits_width: Option<usize>,
 }
 
 impl Series {
@@ -28,13 +35,19 @@ impl Series {
 
         let mut bools = Vec::new();
         let mut bits = Vec::new();
+        let mut bits_width = None;
         for (time, value) in changes {
             // the renderer works in `i32` time steps, like the old model
             let time = (time as i64).min(i32::MAX as i64) as i32;
-            if let Some(value) = value.to_bool_data() {
-                bools.push((time, value));
-            } else if let Some(value) = value.to_bits_data() {
-                bits.push((time, value));
+            // the dump's own width, before the value is turned into BitsData
+            let width = value.as_bits().map(|bits| bits.width());
+            if let Some(flag) = value.to_bool_data() {
+                bools.push((time, flag));
+            } else if let Some(data) = value.to_bits_data() {
+                if bits_width.is_none() {
+                    bits_width = width;
+                }
+                bits.push((time, data));
             }
         }
 
@@ -44,6 +57,7 @@ impl Series {
         }
         if !bits.is_empty() {
             series.bits = Some(Rc::new(bits));
+            series.bits_width = bits_width;
         }
         Some(series)
     }
@@ -115,7 +129,17 @@ impl SignalThings {
         }
 
         let size = signal.size.max(1);
-        let bool_signal = size == 1;
+        let series = waveform
+            .and_then(|waveform| Series::load(waveform, &signal.value_key))
+            .map(SeriesRef::new)
+            .unwrap_or_default();
+        // the dump decides what a row is drawn as: a source can declare a wider
+        // vector than the trace really holds (and vice versa)
+        let bool_signal = match (series.bools.is_some(), series.bits.is_some()) {
+            (true, _) => true,
+            (false, true) => false,
+            _ => size == 1,
+        };
         let name_size = 
             if bool_signal {name.to_owned()}
             else {name.to_owned()+"["+&(size-1).to_string()+":0]"};
@@ -126,10 +150,6 @@ impl SignalThings {
             .last()
             .map(|x| x+1)
             .unwrap_or(self.item.len());
-        let series = waveform
-            .and_then(|waveform| Series::load(waveform, &signal.value_key))
-            .map(SeriesRef::new)
-            .unwrap_or_default();
         self.item.insert(insert_idx, SignalItem {
             name: name_size,
             signal: Rc::clone(signal),

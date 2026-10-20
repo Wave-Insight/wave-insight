@@ -35,6 +35,10 @@ pub struct WaveShowProps {
     #[prop_or_default]
     pub signal_value: Option<Rc<RefCell<ModuleValue>>>,
     pub end_clock: i32,
+    /// Bumped by the app for every add; the row is pushed once per bump, so a
+    /// row the user deleted is not re-added by the next unrelated re-render.
+    #[prop_or_default]
+    pub added_seq: u32,
     /// The selected signal, for the driver/load panel.
     #[prop_or_default]
     pub onselect: Callback<Option<String>>,
@@ -77,6 +81,8 @@ pub struct WaveShow {
     signal_things: SignalThings,
     /// The dump the rows were decoded from.
     waveform: Option<SharedWaveform>,
+    /// Value of [`WaveShowProps::added_seq`] that was already turned into a row.
+    added_seq: u32,
     x_axis: f64,
     size: f64,
     min_size: RefCell<f64>,
@@ -93,6 +99,9 @@ pub struct WaveShow {
 
     name_choose_valid: bool,
     name_choose: usize,
+    ///where the mouse went down on the names column, so a plain click (which
+    ///also fires mousedown/mouseup) is not mistaken for a reorder drag
+    name_start_y: f64,
     name_offset: RefCell<f64>,
 
     cursor1: Option<i32>,
@@ -115,6 +124,7 @@ impl Component for WaveShow {
         let mut this = Self {
             signal_things: SignalThings::new(),
             waveform: ctx.props().waveform.clone(),
+            added_seq: ctx.props().added_seq,
             x_axis: 0f64,
             size: 1f64,
             min_size: RefCell::new(0f64),
@@ -131,6 +141,7 @@ impl Component for WaveShow {
 
             name_choose_valid: false,
             name_choose: 0,
+            name_start_y: 0f64,
             name_offset: RefCell::new(0f64),
 
             cursor1: None,
@@ -168,10 +179,14 @@ impl Component for WaveShow {
             Msg::ShowMenu(idx) => {
                 self.menu_show = true;
                 let choosed_idx = self.signal_things.get_choose_idx();
-                if choosed_idx.is_empty() {
-                    self.on_setting_idx = vec![idx];
-                }else {
+                // The button belongs to one row: unless that row is part of the
+                // selection, its settings are what the dialog must show (the
+                // dialog used to open for whatever row happened to be selected).
+                if choosed_idx.contains(&idx) {
                     self.on_setting_idx = choosed_idx;
+                }else {
+                    self.signal_things.onchoose(idx, false, false);
+                    self.on_setting_idx = vec![idx];
                 }
                 true
             }
@@ -258,6 +273,7 @@ impl Component for WaveShow {
 
             Msg::NameMouseDown(e) => {
                 self.name_choose_valid = true;
+                self.name_start_y = e.y() as f64;
                 self.name_choose = ((e.y() as f64 - *self.name_offset.borrow()) / ROW_HEIGHT) as usize;
                 //console::log_1(&format!("x:{}",self.name_choose).into());
                 e.prevent_default();
@@ -265,13 +281,23 @@ impl Component for WaveShow {
             }
             Msg::NameMouseUp(e) => {
                 self.name_choose_valid = false;
+                // A click also fires mousedown and mouseup; only a real drag
+                // reorders. Without this every click on a name swapped it with
+                // its neighbour, because the drop position rounded to the next
+                // row.
+                if (e.y() as f64 - self.name_start_y).abs() < ROW_HEIGHT / 2.0 {
+                    return true;
+                }
                 let set_location = (e.y() as f64 - *self.name_offset.borrow()) / ROW_HEIGHT;
                 let dest_idx = if set_location > self.name_choose as f64 + 0.5 {
                     (set_location - 0.5) as usize
                 }else {
                     (set_location + 0.5) as usize
                 };
-                if self.name_choose < self.signal_things.len() && dest_idx < self.signal_things.len() {
+                if self.name_choose < self.signal_things.len()
+                    && dest_idx < self.signal_things.len()
+                    && dest_idx != self.name_choose
+                {
                     self.signal_things.exchange(self.name_choose, dest_idx);
                 }
                 true
@@ -313,12 +339,18 @@ impl Component for WaveShow {
             self.signal_things
                 .refresh(self.waveform.as_ref().map(|waveform| waveform.as_waveform()));
         }
-        let (signal_name,signal) = &ctx.props().signaladd;
-        self.signal_things.push(
-            signal_name,
-            signal,
-            self.waveform.as_ref().map(|waveform| waveform.as_waveform()),
-        );
+        // only a real "add" pushes a row; `changed` also runs for every other
+        // prop update (status, selection, a new dump), and pushing then would
+        // bring back a row the user just deleted
+        if self.added_seq != ctx.props().added_seq {
+            self.added_seq = ctx.props().added_seq;
+            let (signal_name,signal) = &ctx.props().signaladd;
+            self.signal_things.push(
+                signal_name,
+                signal,
+                self.waveform.as_ref().map(|waveform| waveform.as_waveform()),
+            );
+        }
         true
     }
 
@@ -408,7 +440,10 @@ impl Component for WaveShow {
                         onwheel={link.callback(Msg::Wheel)}
                         onmousedown={link.callback(Msg::MouseDown)}
                         onmouseup={link.callback(Msg::MouseUp)}
-                        onmousemove={link.callback(Msg::MouseMove)}>
+                        onmousemove={link.callback(Msg::MouseMove)}
+                        // right click sets the second cursor; the browser menu
+                        // must not open on top of the wave area
+                        oncontextmenu={Callback::from(|event: MouseEvent| event.prevent_default())}>
                         <svg class="wave-grid">
                             {
                                 for axis.labels.iter().map(|&(x, _time)| {
@@ -477,7 +512,11 @@ impl WaveShow {
             if let Some(slot) = key_press.borrow_mut().get_mut(code as usize) {
                 *slot = true;
             }
-            on_key.emit(code);
+            // The zoom shortcuts are page wide, but typing `z` into the source
+            // editor or a filter box must not zoom the waveform.
+            if !typing_in_text_field(&e) {
+                on_key.emit(code);
+            }
         }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
         window.set_onkeydown(Some(keydown.as_ref().unchecked_ref()));
 
@@ -514,9 +553,13 @@ fn format_value(value: &WaveValue, setting: &Settings, size: usize) -> Option<St
             .to_string(),
         );
     }
+    // never ask for more bits than this value holds: the declared width and the
+    // dump can disagree, and the legacy formatters panic on the difference
+    let actual = value.as_bits().map(|bits| bits.width()).unwrap_or(size);
+    let bitcount = size.max(1).min(actual);
     value
         .to_bits_data()
-        .map(|bits| bits.to_string(size.max(1), &setting.show_type))
+        .map(|bits| bits.to_string(bitcount, &setting.show_type))
 }
 
 ///read the geometry back from the dom
@@ -550,6 +593,41 @@ fn measure() -> Metrics {
         canvas_left,
         names_top,
     }
+}
+
+/// Is the key event aimed at a text field (the source editor, a filter box, a
+/// number input in the settings dialog)?
+///
+/// The wave area listens on the window, so without this a `z` typed into a
+/// comment would also zoom the waveform.
+fn typing_in_text_field(event: &web_sys::KeyboardEvent) -> bool {
+    let Some(target) = event.target() else {
+        return false;
+    };
+    let Ok(element) = target.dyn_into::<web_sys::Element>() else {
+        return false;
+    };
+    let mut current = Some(element);
+    while let Some(element) = current {
+        let tag = element.tag_name().to_ascii_lowercase();
+        if tag == "input" || tag == "textarea" || tag == "select" {
+            return true;
+        }
+        if element.has_attribute("contenteditable") {
+            return true;
+        }
+        // monaco keeps its input in a hidden textarea inside `.monaco-editor`;
+        // this also covers the hover card and the tab strip focus
+        if element
+            .get_attribute("class")
+            .map(|class| class.contains("monaco-editor"))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        current = element.parent_element();
+    }
+    false
 }
 
 fn approximately(a: Metrics, b: Metrics) -> bool {

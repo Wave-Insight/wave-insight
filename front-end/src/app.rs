@@ -129,6 +129,10 @@ pub struct App {
     lsp: LspBridge,
     verilog_source: Vec<(String,String)>,
     signal_add: (String,Rc<Signal>),
+    /// Bumped for every signal the user adds, so the wave view can tell "the
+    /// same signal was added again" from "nothing happened" (and does not
+    /// resurrect a row the user deleted on the next re-render).
+    signal_add_seq: u32,
     /// Hierarchical path of the signal selected in the wave view.
     selected: Option<String>,
     picker: Option<Picker>,
@@ -198,6 +202,7 @@ impl Component for App {
             lsp,
             verilog_source: vec![],
             signal_add: ("".to_string(),Rc::new(Signal::new())),
+            signal_add_seq: 0,
             selected: None,
             picker: None,
             goto: None,
@@ -285,9 +290,15 @@ impl Component for App {
                 // a row from the design tree knows where it is declared
                 let declare = self.declare_target(&signal.value_key);
                 self.signal_add = (display, signal);
+                self.signal_add_seq = self.signal_add_seq.wrapping_add(1);
                 self.selected = Some(self.signal_add.1.value_key.clone());
+                // only open the declaration when the source pane can show it:
+                // a closed tab would otherwise turn a successful add into an
+                // "is not open" error message
                 if let Some((file, line, col)) = declare {
-                    self.goto_to(file, line, col);
+                    if self.verilog_source.iter().any(|(name, _)| name == &file) {
+                        self.goto_to(file, line, col);
+                    }
                 }
                 true
             }
@@ -508,6 +519,7 @@ impl Component for App {
                         </div>
                         <WaveShow
                             signaladd={(self.signal_add.0.clone(),Rc::clone(&self.signal_add.1))}
+                            added_seq={self.signal_add_seq}
                             waveform={self.waveform.clone()}
                             signal_value={legacy_values}
                             end_clock={self.end_clock}
@@ -599,7 +611,11 @@ impl App {
             };
             signal.drive = flat.drivers.iter().map(|driver| driver.span.to_string()).collect();
             signal.load = flat.loads.iter().map(|load| load.span.to_string()).collect();
-        }else if let Some(info) = self
+        }
+        // The dump is what gets drawn, so its width wins when the two disagree
+        // (a truncated vector would otherwise be formatted at the declared
+        // width, which the legacy formatters cannot do).
+        if let Some(info) = self
             .waveform
             .as_ref()
             .and_then(|waveform| waveform.signal_by_path(path))
@@ -613,6 +629,7 @@ impl App {
     fn add_path(&mut self, path: &str) {
         let signal = self.signal_for_path(path);
         self.signal_add = (path.to_string(), Rc::new(signal));
+        self.signal_add_seq = self.signal_add_seq.wrapping_add(1);
         self.selected = Some(path.to_string());
         self.status = Some(format!("added {path} to the waveform"));
     }

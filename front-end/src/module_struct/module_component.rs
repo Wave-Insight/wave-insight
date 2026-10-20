@@ -18,10 +18,6 @@ pub enum Msg {
 }
 
 pub struct ModuleComponent {
-    /// What this row was expanded from; a new tree (another dump, another
-    /// elaboration) reuses the component position, so the expansion state has to
-    /// be dropped with it.
-    module: Rc<Module>,
     show_submodule: bool,
 }
 
@@ -29,19 +25,10 @@ impl Component for ModuleComponent {
     type Message = Msg;
     type Properties = ModuleComponentProps;
 
-    fn create(ctx: &Context<Self>) -> Self {
+    fn create(_ctx: &Context<Self>) -> Self {
         Self {
-            module: Rc::clone(&ctx.props().module),
             show_submodule: false,
         }
-    }
-
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
-        if !Rc::ptr_eq(&self.module, &ctx.props().module) {
-            self.module = Rc::clone(&ctx.props().module);
-            self.show_submodule = false;
-        }
-        true
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {

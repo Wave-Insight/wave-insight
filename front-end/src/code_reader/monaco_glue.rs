@@ -136,6 +136,9 @@ struct PendingDocument {
     uri: String,
     language: String,
     text: String,
+    /// Replace the buffer with `text`; `false` keeps whatever the model holds
+    /// (an unsaved edit) and only attaches it.
+    replace: bool,
 }
 
 struct EditorSlot {
@@ -301,11 +304,25 @@ impl MonacoEditor {
     /// or another tab was activated) replaces the buffer contents; the queued
     /// request is replayed when monaco is still loading.
     pub fn show_document(&self, uri: &str, language: &str, text: &str) {
+        self.queue_document(uri, language, text, true);
+    }
+
+    /// Attach the model for `uri` without touching its contents.
+    ///
+    /// Used when the source pane switches back to a file: the model may hold an
+    /// edit the app's copy does not have, and switching tabs must not throw it
+    /// away. A model that does not exist yet is created from `text`.
+    pub fn attach_document(&self, uri: &str, language: &str, text: &str) {
+        self.queue_document(uri, language, text, false);
+    }
+
+    fn queue_document(&self, uri: &str, language: &str, text: &str, replace: bool) {
         let mut slot = self.slot.borrow_mut();
         slot.pending = Some(PendingDocument {
             uri: uri.to_owned(),
             language: language.to_owned(),
             text: text.to_owned(),
+            replace,
         });
         flush(&mut slot);
     }
@@ -675,9 +692,10 @@ fn flush(slot: &mut EditorSlot) {
     if let Some(document) = slot.pending.take() {
         if let Some(model) = ensure_model(&monaco, &document.uri, &document.language, &document.text)
         {
-            // A model that outlived its tab (or a re-read of the same file)
-            // is brought up to date before it is shown.
-            if model_text(&model).as_deref() != Some(document.text.as_str()) {
+            // A re-read of the same file is brought up to date before it is
+            // shown; merely switching tabs attaches the model as it is, so an
+            // unsaved edit survives.
+            if document.replace && model_text(&model).as_deref() != Some(document.text.as_str()) {
                 set_model_value(&model, &document.text);
             }
             if editor_model_uri(&handle).as_deref() != Some(document.uri.as_str()) {
