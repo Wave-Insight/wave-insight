@@ -219,6 +219,15 @@ propagation, so an unrelated dispatch simply never reaches it.
 `App` subscribes to **only `layout`**. Everything else is a leaf subscription,
 so a zoom no longer walks the sidebar or the editor.
 
+**Debug seam `window.__waveDebug.render_count`.** `App` owns a `Cell<u32>` that
+is bumped at the end of every `update` that returns `true`, and `rendered()`
+copies it into the page-level `__waveDebug` object next to the renderer's
+counters. It measures *shell* re-renders only: a leaf that re-renders on its own
+subscription does not bump it, and reading it never triggers a render. The
+splitter assertion is written against exactly this ("how many times the shell
+re-rendered"), so do not turn it into a per-component counter — that would make
+the assertion meaningless.
+
 ### 2.3 Derived vs stored
 
 Stored (source of truth, survives everything):
@@ -373,14 +382,15 @@ wave pane is short.
 ### 3.1 The rule
 
 1. The source pane occupies `--editor-h`; the wave pane takes the rest.
-2. With **no sources open**, the source pane collapses to the tab strip
-   (`--tabs-h`, 32 px) — the wave pane gets the 388 px back and shows a
-   "drop a .vcd/.fst or a .sv to start" hint where the empty editor was.
+2. With **no sources open**, the source pane collapses to the tab strip: the
+   pane is the tab strip and the editor content height is **0** (the wave pane
+   gets the 388 px back and shows a "drop a .vcd/.fst or a .sv to start" hint
+   where the empty editor was).
 3. As soon as one source opens, the pane expands to its remembered ratio
-   (`layout.editor_ratio`, default `0.5`) — automatic, no click.
-4. `.wave-splitter` (5 px, `cursor: row-resize`) drags the boundary. Clamp:
-   `editor_h ∈ [tabs_h, main_h − 4·row_h]` so the wave pane always shows at
-   least a few rows; double click restores `0.5`.
+   (`layout.editor_ratio`, default `0.5`) — automatic, no click. The expanded
+   editor content is **at least 120 px**, whatever the ratio says.
+4. `.wave-splitter` (5 px, `cursor: row-resize`) drags the boundary. Double
+   click restores the default ratio. The bounds are locked, see §3.4.
 5. The inspector (drivers/loads) is a fixed dock **between** the editor and the
    wave pane, not inside the collapsing region: it stays visible when the
    editor collapses, and hides itself when it has nothing to say
@@ -393,7 +403,7 @@ One stored field, two derived booleans:
 ```rust
 pub struct Layout {
     pub sidebar_w: f64,      // 280.0 default, clamped as today
-    pub editor_ratio: f32,   // 0.5 default
+    pub editor_ratio: f32,   // 0.5 default, clamped to [0.15, 0.75] on every write
     pub drawer_open: bool,
 }
 // derived, never stored:
@@ -437,6 +447,23 @@ on `mousemove` it writes the CSS variable directly
 reflow; on `mouseup` it dispatches **one** `Action::LayoutChanged`. No Yew
 render happens during the drag, which is the actual fix for the "heavy
 splitter", not a faster render path.
+
+### 3.4 Locked constants
+
+Do not invent other numbers; these are the contract the QA gate asserts.
+
+| Quantity | Value |
+|---|---|
+| collapsed editor | tab strip only, **content height 0** |
+| expanded editor content, minimum | **120 px** |
+| `layout.editor_ratio` | clamped to **[0.15, 0.75]** on every write |
+| wave pane minimum | **4 rows** = `4 * --row-h` |
+
+**Precedence.** The wave minimum wins over the ratio: if the ratio would push
+the wave pane below four rows, the *ratio is trimmed*, never the rows. The same
+rule applies while dragging — the drag stops at the 4-row floor and at the
+120 px editor floor, it does not "remember" an out-of-range value (so the next
+window resize cannot leave the panes inverted).
 
 ---
 
@@ -583,6 +610,8 @@ The task-10 wording, made checkable:
   `goto_token`, `splitter_start` → nothing;
 - each pane component has a `Subscription` field, and no `struct` field that
   duplicates a `State` field (the table in §2.2 is the checklist);
+- the layout constants of §3.4 hold, and `window.__waveDebug.render_count` does
+  not move during a splitter drag (it counts shell re-renders only);
 - `cargo test -p front-end --bins` covers `reduce` (row add/remove/reorder,
   document open/close, dump switch, jump, picker) — no DOM needed;
 - the 140-assertion browser matrix passes, with the rewires listed above.
