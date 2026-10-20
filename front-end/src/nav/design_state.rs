@@ -8,10 +8,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use wave_insight_lib::data_struct::{CodeLocation, Module, Signal};
-use wave_insight_lib::design::{
-    DesignDb, ElaboratedDesign, FlatSignal, SignalReference, Span, UsageKind,
-};
+use wave_insight_lib::design::{DesignDb, ElaboratedDesign, FlatSignal, Span, UsageKind};
+
+use super::tree::{ModuleRow, SidebarTree, SignalRow};
 
 /// One clickable source position shown in the inspector.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,12 +189,12 @@ impl DesignState {
             .collect()
     }
 
-    /// Build the legacy [`Module`] tree of the elaborated design.
+    /// Build the sidebar tree of the elaborated design.
     ///
-    /// The sidebar still renders `Module`/`Signal`, and the legacy tree keeps
-    /// the module/signal list working before a waveform is loaded. Paths become
-    /// `value_key`s, so the very same rows can be looked up in the dump.
-    pub fn module_tree(&self) -> Option<Module> {
+    /// The instance hierarchy becomes the module tree and every elaborated
+    /// signal becomes a row, so the same list works before a dump is loaded.
+    /// Paths are the row keys, so a row can be looked up in the dump later.
+    pub fn sidebar_tree(&self) -> Option<SidebarTree> {
         let design = self.design.as_ref()?;
         if design.instances().is_empty() {
             return None;
@@ -209,9 +208,7 @@ impl DesignState {
                 .push(signal);
         }
 
-        let mut root = build_module(design, &by_instance, design.root());
-        root.end_clock = 0;
-        Some(root)
+        Some(SidebarTree::new(build_row(design, &by_instance, design.root())))
     }
 
     /// Which module to elaborate.
@@ -264,60 +261,39 @@ impl Default for DesignState {
     }
 }
 
-fn build_module(
+fn build_row(
     design: &ElaboratedDesign,
     by_instance: &HashMap<&str, Vec<&FlatSignal>>,
     index: usize,
-) -> Module {
+) -> ModuleRow {
     let Some(instance) = design.instances().get(index) else {
-        return Module::new();
-    };
-    let mut module = Module::new();
-    for signal in by_instance.get(instance.path.as_str()).into_iter().flatten() {
-        module
-            .signal
-            .insert(signal.local_name.clone(), legacy_signal(signal));
-    }
-    for &child in &instance.children {
-        let Some(child_instance) = design.instances().get(child) else {
-            continue;
+        return ModuleRow {
+            name: String::new(),
+            path: String::new(),
+            signals: Vec::new(),
+            children: Vec::new(),
         };
-        module
-            .sub_module
-            .insert(child_instance.name.clone(), build_module(design, by_instance, child));
-    }
-    module
-}
-
-/// Convert one elaborated signal into the legacy [`Signal`] row the sidebar,
-/// the settings dialog and the wave view already understand.
-pub fn legacy_signal(signal: &FlatSignal) -> Signal {
-    let mut legacy = Signal::new();
-    legacy.size = signal.width.unwrap_or(1).max(1) as usize;
-    legacy.value_key = signal.path.clone();
-    legacy.location_define = CodeLocation {
-        file_name: signal.declaration.file.display().to_string(),
-        line: signal.declaration.start_line,
     };
-    legacy.drive = signal
-        .drivers
-        .iter()
-        .map(|driver: &SignalReference| driver.span.to_string())
+    let signals = by_instance
+        .get(instance.path.as_str())
+        .into_iter()
+        .flatten()
+        .map(|signal| SignalRow {
+            name: signal.local_name.clone(),
+            path: signal.path.clone(),
+            width: signal.width.unwrap_or(1).max(1) as usize,
+        })
         .collect();
-    legacy.load = signal.loads.iter().map(|load| load.span.to_string()).collect();
-    legacy.location_drive = signal
-        .drivers
+    let children = instance
+        .children
         .iter()
-        .map(|driver| location_of(&driver.span))
+        .map(|&child| build_row(design, by_instance, child))
         .collect();
-    legacy.location_load = signal.loads.iter().map(|load| location_of(&load.span)).collect();
-    legacy
-}
-
-fn location_of(span: &Span) -> CodeLocation {
-    CodeLocation {
-        file_name: span.file.display().to_string(),
-        line: span.start_line,
+    ModuleRow {
+        name: instance.name.clone(),
+        path: instance.path.clone(),
+        signals,
+        children,
     }
 }
 

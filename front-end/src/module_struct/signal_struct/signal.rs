@@ -1,20 +1,21 @@
-use std::rc::Rc;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
-use wave_insight_lib::data_struct::{Module, Signal};
 use super::SignalComponent;
+use crate::nav::SignalRow;
 
 pub enum Msg {
-    GetClick((String,Rc<Signal>)),
+    GetClick(String),
     SetFilter(String),
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalStructProps {
-    pub module: Rc<Module>,
+    /// Signals declared in the selected scope.
+    pub signals: Vec<SignalRow>,
+    /// A signal was clicked: its hierarchical path.
     #[prop_or_default]
-    pub signaladd: Callback<(String,Rc<Signal>)>,
+    pub signaladd: Callback<String>,
 }
 
 pub struct SignalStruct {
@@ -34,10 +35,10 @@ impl Component for SignalStruct {
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         let props = ctx.props();
         match msg {
-            Msg::GetClick(s) => {
-                props.signaladd.emit(s);
+            Msg::GetClick(path) => {
+                props.signaladd.emit(path);
                 true
-            },
+            }
             Msg::SetFilter(s) => {
                 self.filter = s;
                 true
@@ -46,18 +47,20 @@ impl Component for SignalStruct {
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        
+        let filter = self.filter.to_ascii_lowercase();
         html! {
             <div class="sig-panel">
                 <div class="sig-scroll">
                 {
-                    html! {
-                    {for ctx.props().module.signal.iter()
-                        .filter(|x| x.0.to_ascii_lowercase().contains(&self.filter.to_ascii_lowercase()))
-                        .map(|s| { html!{
-                        <SignalComponent name={s.0.to_string()} signal={Rc::new(s.1.clone())} onclick={ctx.link().callback(Msg::GetClick)}/>
-                    }})}
-                    }
+                    for ctx.props().signals.iter()
+                        .filter(|signal| filter.is_empty() || signal.name.to_ascii_lowercase().contains(&filter))
+                        .map(|signal| { html!{
+                        <SignalComponent
+                            name={signal.display_name()}
+                            width={signal.width}
+                            path={signal.path.clone()}
+                            onclick={ctx.link().callback(Msg::GetClick)}/>
+                    }})
                 }
                 </div>
                 <div class="filter-wrap">

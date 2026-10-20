@@ -4,28 +4,17 @@ version = "0.2.4"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+#
+# The websocket/http demo that used to live here (and serialised the legacy
+# `Module`/`ModuleValue` model over :2993) is gone: the browser reads files
+# itself, so it had no job left. What remains is the stdio transport of the
+# language server; the protocol core itself lives in `wave-insight-lib::lsp` so
+# the desktop, the wasm build and the editor share it.
 
 [dependencies]
 wave-insight-lib = { path = "../wave-insight-lib" }
 
-#stdio transport of the `lsp` binary; the protocol core itself lives in
-#`wave-insight-lib::lsp` so the desktop and the wasm build share it
+#stdio transport of the `lsp` binary
 lsp-server = "0.7"
 
-futures-channel = "0.3"
-#keep in sync with the pinned `tungstenite` below, a `*` here would jump to a
-#release where `Message::Text` takes `Utf8Bytes` instead of `String`
-tokio-tungstenite = "0.17"
-tokio = { version = "1.0.0", features = ["full", "io-util"] }
-futures-util = { version = "0.3", features = ["sink", "std"] }
-
 serde_json = "1.0"
-
-warp = "0.3.2"
-
-num= { version = "0.4.0", features = ["serde"] }
- 
-[dependencies.tungstenite]
-version = "0.17.2"
-default-features = false
- 

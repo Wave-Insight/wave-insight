@@ -1,101 +1,42 @@
 //! The rows of the wave view.
 //!
-//! A row keeps a *handle* to its values, never a copy: the browser path stores
-//! the backend's [`DecodedSignal`] and the canvas slices it per frame
+//! A row keeps a *handle* to its values, never a copy: the backend's
+//! [`DecodedSignal`] is sliced per frame by the canvas
 //! ([`DecodedSignal::window`]), so a redraw neither touches the dump nor clones
 //! a value. Decoding is done by the component in one batched call
 //! (`Waveform::decoded_changes_many`) for the rows that are on screen, once.
-//!
-//! The legacy transports (tauri/server) still push an expanded `ModuleValue`;
-//! those values are kept as they arrive ([`LegacySeries`]) and drawn with the
-//! legacy formatters, exactly like the old renderer did.
 
 use std::ops::{Index, IndexMut};
 use std::rc::Rc;
 use std::slice::{Iter, IterMut, SliceIndex};
 
-use wave_insight_lib::data_struct::{BitsData, BoolData, ModuleValue, Signal};
+use wave_insight_lib::data_struct::Signal;
 use wave_insight_lib::waveform::{DecodedSignal, SignalKind, WaveValue, Waveform};
 
 use crate::wave_show::geometry::{self, Time};
 use crate::wave_show::Settings;
 
-/// One value of a row, borrowed from whichever storage the row uses.
-#[derive(Clone, Copy, Debug)]
-pub enum RowValue<'a> {
-    /// Browser path value.
-    Backend(&'a WaveValue),
-    /// Legacy one bit value.
-    Bool(&'a BoolData),
-    /// Legacy bit vector value.
-    Bits(&'a BitsData),
-}
-
 /// What kind of waveform a row draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowKind {
-    /// No values (yet): a flat "no data" line.
+    /// No values (yet): a muted "no data" line.
     Empty,
-    /// One bit: drawn as a digital step with an x/z middle level.
+    /// One bit: a digital step, with `x`/`z` on the middle level.
     Bool,
-    /// A bus: drawn as a band with a value label.
+    /// A bus: a band with a value label when the segment is wide enough.
     Bits,
 }
 
 /// Values of one row.
 #[derive(Clone, Default)]
 pub enum RowValues {
-    /// No dump loaded, the signal is not in the dump, or the row was dropped
-    /// from the decode cache to stay inside the memory budget.
+    /// No dump, the signal is not in the dump, or the row was dropped from the
+    /// decode cache to stay inside the memory budget.
     #[default]
     Empty,
-    /// The browser path: a cached, decoded history owned by the backend. Cheap
-    /// to clone (one `Arc` bump) and cheap to slice.
+    /// A cached, decoded history owned by the backend. Cheap to clone (one
+    /// `Arc` bump) and cheap to slice.
     Backend(DecodedSignal),
-    /// Expanded values from a legacy transport.
-    Legacy(LegacySeries),
-}
-
-/// Values that arrive pre-expanded from the tauri/server transports.
-#[derive(Clone, Default)]
-pub struct LegacySeries {
-    /// One bit values, if this row is a single bit signal.
-    pub bools: Option<Rc<Vec<(i32, BoolData)>>>,
-    /// Bit vector values.
-    pub bits: Option<Rc<Vec<(i32, BitsData)>>>,
-    /// Width the values really have, when known (the declared width can be
-    /// wider than the dump, and the legacy formatters panic on the difference).
-    pub bits_width: Option<usize>,
-}
-
-impl LegacySeries {
-    /// Take whatever `ModuleValue` has for `key`.
-    ///
-    /// The legacy container stores one bit signals and buses in different maps,
-    /// and `get_bool` also answers for a bus (with the flattened chunks), so the
-    /// row has to say which shape it expects.
-    pub fn from_module_value(values: &ModuleValue, key: &str, is_bool: bool) -> Self {
-        if is_bool {
-            let bools = values.get_bool(key);
-            return if bools.is_empty() {
-                Self::default()
-            } else {
-                Self {
-                    bools: Some(Rc::new(bools)),
-                    ..Self::default()
-                }
-            };
-        }
-        let bits = values.get_bits(key);
-        if bits.is_empty() {
-            Self::default()
-        } else {
-            Self {
-                bits: Some(Rc::new(bits)),
-                ..Self::default()
-            }
-        }
-    }
 }
 
 impl RowValues {
@@ -104,7 +45,6 @@ impl RowValues {
         match self {
             RowValues::Empty => true,
             RowValues::Backend(decoded) => decoded.is_empty(),
-            RowValues::Legacy(legacy) => legacy.bools.is_none() && legacy.bits.is_none(),
         }
     }
 
@@ -117,41 +57,40 @@ impl RowValues {
                 Some(_) => RowKind::Bits,
                 None => RowKind::Empty,
             },
-            RowValues::Legacy(legacy) => {
-                if legacy.bools.is_some() {
-                    RowKind::Bool
-                } else if legacy.bits.is_some() {
-                    RowKind::Bits
-                } else {
-                    RowKind::Empty
-                }
-            }
         }
     }
 
     /// The value in effect at `time`.
-    pub fn value_at(&self, time: Time) -> Option<RowValue<'_>> {
+    pub fn value_at(&self, time: Time) -> Option<&WaveValue> {
         match self {
             RowValues::Empty => None,
-            RowValues::Backend(decoded) => decoded.value_at(time).map(RowValue::Backend),
-            RowValues::Legacy(LegacySeries { bools: Some(bools), .. }) => {
-                geometry::value_at_stamped(bools.as_slice(), time)
-                    .map(|(_, value)| RowValue::Bool(value))
-            }
-            RowValues::Legacy(LegacySeries { bits: Some(bits), .. }) => {
-                geometry::value_at_stamped(bits.as_slice(), time)
-                    .map(|(_, value)| RowValue::Bits(value))
-            }
-            RowValues::Legacy(_) => None,
+            RowValues::Backend(decoded) => decoded.value_at(time),
         }
+    }
+
+    /// Visit the changes of this row inside `start ..= end`, thinned down to one
+    /// per pixel of a `width` px surface. Nothing is allocated.
+    pub fn for_each_change<'a>(
+        &'a self,
+        start: Time,
+        end: Time,
+        view: &geometry::View,
+        width: f64,
+        mut visit: impl FnMut(f64, &'a WaveValue),
+    ) {
+        let RowValues::Backend(decoded) = self else {
+            return;
+        };
+        let window = decoded.window(start, Some(end));
+        geometry::for_each_pixel_change(window, view, width, |x, (_, value)| visit(x, value));
     }
 
     /// Bit count to format values with: the declared (or dump) width, clamped
     /// to what the values really hold.
     ///
     /// A dump can be narrower than the design (a truncated vector, a `$var`
-    /// that is narrower than the declared port) and the legacy formatters panic
-    /// when asked for more bits than the value has, so the renderer must clamp.
+    /// that is narrower than the declared port), and the formatter must not be
+    /// asked for more bits than the value has.
     pub fn format_width(&self, declared: usize) -> usize {
         let declared = declared.max(1);
         match self {
@@ -161,48 +100,6 @@ impl RowValues {
                 .and_then(|(_, value)| value.width())
                 .map(|width| declared.min(width.max(1)))
                 .unwrap_or(declared),
-            RowValues::Legacy(legacy) => legacy
-                .bits_width
-                .map(|width| declared.min(width.max(1)))
-                .unwrap_or(declared),
-        }
-    }
-
-    /// Visit the changes of this row inside `start ..= end`, thinned down to one
-    /// per pixel of a `width` px surface.
-    ///
-    /// Backend rows slice the cached history; legacy rows binary search their
-    /// expanded vectors. Neither allocates, and the values stay borrowed from
-    /// this row for the whole call.
-    pub fn for_each_change<'a>(
-        &'a self,
-        start: Time,
-        end: Time,
-        view: &geometry::View,
-        width: f64,
-        mut visit: impl FnMut(f64, RowValue<'a>),
-    ) {
-        match self {
-            RowValues::Empty => {}
-            RowValues::Backend(decoded) => {
-                let window = decoded.window(start, Some(end));
-                geometry::for_each_pixel_change(window, view, width, |x, (_, value)| {
-                    visit(x, RowValue::Backend(value));
-                });
-            }
-            RowValues::Legacy(LegacySeries { bools: Some(bools), .. }) => {
-                let window = geometry::slice_window_stamped(bools.as_slice(), start, end);
-                geometry::for_each_pixel_stamped(window, view, width, |x, (_, value)| {
-                    visit(x, RowValue::Bool(value));
-                });
-            }
-            RowValues::Legacy(LegacySeries { bits: Some(bits), .. }) => {
-                let window = geometry::slice_window_stamped(bits.as_slice(), start, end);
-                geometry::for_each_pixel_stamped(window, view, width, |x, (_, value)| {
-                    visit(x, RowValue::Bits(value));
-                });
-            }
-            RowValues::Legacy(_) => {}
         }
     }
 }
@@ -211,7 +108,7 @@ impl RowValues {
 pub struct SignalItem {
     /// Display name, including the `[n:0]` suffix for buses.
     pub name: String,
-    /// The signal as the design/legacy model describes it (`value_key` is the
+    /// The signal as the design description has it (`value_key` is the
     /// hierarchical path).
     pub signal: Rc<Signal>,
     /// Index in the opened waveform, resolved once so a draw never hashes a path.
@@ -335,24 +232,6 @@ impl SignalThings {
         }
     }
 
-    /// Install the values of a legacy transport for the rows that are loaded.
-    pub fn refresh_legacy(&mut self, values: Option<&ModuleValue>) {
-        for item in &mut self.item {
-            item.values = match values {
-                Some(values) => {
-                    let legacy =
-                        LegacySeries::from_module_value(values, &item.signal.value_key, item.is_bool);
-                    if legacy.bools.is_none() && legacy.bits.is_none() {
-                        RowValues::Empty
-                    } else {
-                        RowValues::Legacy(legacy)
-                    }
-                }
-                None => RowValues::Empty,
-            };
-        }
-    }
-
     /// Rows in `rows` that still need a decode: `(row, signal index)`.
     pub fn pending(&self, rows: std::ops::Range<usize>) -> Vec<(usize, usize)> {
         let mut pending = Vec::new();
@@ -391,14 +270,6 @@ impl SignalThings {
             item.values = RowValues::Empty;
         }
         unload
-    }
-
-    /// Drop every decoded value (a new dump was opened, or the file was closed).
-    #[allow(dead_code)]
-    pub fn clear_values(&mut self) {
-        for item in &mut self.item {
-            item.values = RowValues::Empty;
-        }
     }
 
     pub fn remove(&mut self, idx: &[usize]) {
@@ -516,8 +387,11 @@ impl<I: SliceIndex<[SignalItem]>> IndexMut<I> for SignalThings {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use wave_insight_lib::data_struct::CodeLocation;
+    use wave_insight_lib::waveform::{Bits, Change};
 
     fn signal(path: &str, size: usize) -> Rc<Signal> {
         Rc::new(Signal {
@@ -529,6 +403,14 @@ mod tests {
             location_drive: Vec::new(),
             location_load: Vec::new(),
         })
+    }
+
+    fn decoded(width: usize, changes: usize) -> DecodedSignal {
+        let value = WaveValue::Bits(Bits::all_unknown(width));
+        let changes: Arc<[Change]> = (0..changes)
+            .map(|index| (index as u64 * 10, value.clone()))
+            .collect();
+        DecodedSignal::from_changes(changes)
     }
 
     fn row(path: &str, index: Option<usize>, values: RowValues) -> SignalItem {
@@ -546,22 +428,13 @@ mod tests {
         }
     }
 
-    fn legacy_values() -> RowValues {
-        RowValues::Legacy(LegacySeries {
-            bools: Some(Rc::new(vec![
-                (0, BoolData::Zero),
-                (10, BoolData::One),
-            ])),
-            bits: None,
-            bits_width: Some(1),
-        })
-    }
-
     #[test]
     fn pending_lists_only_rows_that_need_a_decode() {
         let mut things = SignalThings::new();
         things.item.push(row("a", Some(7), RowValues::Empty));
-        things.item.push(row("b", Some(8), legacy_values()));
+        things
+            .item
+            .push(row("b", Some(8), RowValues::Backend(decoded(1, 3))));
         things.item.push(row("c", None, RowValues::Empty));
         things.item.push(row("d", Some(9), RowValues::Empty));
 
@@ -575,33 +448,41 @@ mod tests {
     #[test]
     fn drop_outside_frees_rows_that_left_the_viewport() {
         let mut things = SignalThings::new();
-        things.item.push(row("a", Some(1), legacy_values()));
-        things.item.push(row("b", Some(2), legacy_values()));
-        things.item.push(row("c", Some(3), legacy_values()));
+        things
+            .item
+            .push(row("a", Some(1), RowValues::Backend(decoded(1, 2))));
+        things
+            .item
+            .push(row("b", Some(2), RowValues::Backend(decoded(1, 2))));
+        things
+            .item
+            .push(row("c", Some(3), RowValues::Backend(decoded(1, 2))));
 
-        //keep row 1 only: the others go back to "no data"
+        //keep row 1 only: the others go back to "no data" and are unloaded
         let unload = things.drop_outside(1..2);
+        assert_eq!(unload, vec![1, 3]);
         assert!(!things[1].values.is_empty(), "row inside the window survives");
         assert!(things[0].values.is_empty(), "row before the window was dropped");
         assert!(things[2].values.is_empty(), "row after the window was dropped");
-        //legacy rows have no backend cache entry to unload
-        assert!(unload.is_empty());
     }
 
     #[test]
     fn format_width_clamps_to_what_the_values_hold() {
-        //the dump is narrower than the design: format with the dump's width or
-        //the legacy formatters would subtract and panic
-        let values = legacy_values();
-        assert_eq!(values.format_width(16), 1);
+        //the dump is narrower than the design: format with the dump's width
+        let values = RowValues::Backend(decoded(5, 1));
+        assert_eq!(values.format_width(16), 5);
         //a wider value than declared keeps the declared width
-        let wide = RowValues::Legacy(LegacySeries {
-            bools: None,
-            bits: Some(Rc::new(Vec::new())),
-            bits_width: Some(32),
-        });
-        assert_eq!(wide.format_width(8), 8);
+        assert_eq!(values.format_width(3), 3);
         //no values at all: the declared width, never zero
         assert_eq!(RowValues::Empty.format_width(0), 1);
+    }
+
+    #[test]
+    fn row_kind_follows_the_dump_width() {
+        assert_eq!(RowValues::Empty.kind(), RowKind::Empty);
+        assert_eq!(RowValues::Backend(decoded(1, 1)).kind(), RowKind::Bool);
+        assert_eq!(RowValues::Backend(decoded(8, 1)).kind(), RowKind::Bits);
+        //a vector with no changes has nothing to draw
+        assert_eq!(RowValues::Backend(decoded(1, 0)).kind(), RowKind::Empty);
     }
 }

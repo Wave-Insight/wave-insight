@@ -3,31 +3,25 @@
     windows_subsystem = "windows"
 )]
 
-use std::{fs, str::FromStr};
-use std::io::Read;
-use std::path::PathBuf;
-use std::sync::Mutex;
-use std::rc::Rc;
-use wave_insight_lib::waveform::Waveform;
-use wave_insight_lib::{
-    parser::verilog_parser::verilog_parser,
-    data_struct::Module,
-    data_struct::ModuleValue};
+//! Tauri shell.
+//!
+//! The backend does not parse anything: the file dialogs hand the raw bytes (or
+//! the source text) to the webview, which opens the dump with the very same
+//! `Waveform::open_bytes` path the browser build uses. That keeps one reader for
+//! both targets and means the desktop app inherits the lazy value decoding of
+//! the web build.
 
-struct State {
-    path: PathBuf,
-    module: Mutex<Module>,
-    module_value: Mutex<ModuleValue>,
-}
+use std::fs;
+use std::path::{Path, PathBuf};
 
-///one row of the directory listing the open-file dialog shows
+/// One row of the directory listing the open-file dialog shows.
 #[derive(serde::Serialize)]
 struct FileEntry {
     name: String,
     is_dir: bool,
 }
 
-///extensions the app can actually open
+/// Extensions the app can actually open.
 fn is_openable(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".vcd")
@@ -39,17 +33,31 @@ fn is_openable(name: &str) -> bool {
         || lower.ends_with(".vh")
 }
 
+/// Join the path components the dialog collected onto the working directory.
+fn resolve(parts: &[String]) -> std::io::Result<PathBuf> {
+    let mut path = std::env::current_dir()?;
+    for part in parts {
+        path.push(part);
+    }
+    Ok(path)
+}
+
 #[tauri::command]
-fn get_file_list(state: tauri::State<State>, name: Vec<String>) -> Vec<FileEntry> {
-    let mut dest_path = state.path.clone();
-    name.into_iter().for_each(|x| dest_path.push(&x));
+fn get_file_list(name: Vec<String>) -> Vec<FileEntry> {
+    let dest_path = match resolve(&name) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("can not resolve {name:?}: {error}");
+            return vec![];
+        }
+    };
 
     let paths = match fs::read_dir(&dest_path) {
         Ok(paths) => paths,
         Err(error) => {
             eprintln!("can not read {}: {error}", dest_path.display());
             return vec![];
-        },
+        }
     };
 
     let mut ret = paths
@@ -68,92 +76,50 @@ fn get_file_list(state: tauri::State<State>, name: Vec<String>) -> Vec<FileEntry
     ret
 }
 
-///load a waveform dump, whatever the format: vcd, fst and ghw all go through
-///the waveform backend now
-fn load_waveform(state: &tauri::State<State>, path: std::path::PathBuf) -> Module {
-    match Waveform::open_path(&path).and_then(|waveform| {
-        let module = waveform.legacy_module()?;
-        let values = waveform.legacy_module_value()?;
-        Ok((module, values))
-    }) {
-        Ok((module, values)) => {
-            *state.module.lock().unwrap() = module.clone();
-            *state.module_value.lock().unwrap() = values;
-            module
-        },
-        Err(error) => {
-            eprintln!("can not open {}: {}", path.display(), error.message());
-            Module::new()
-        },
-    }
+/// Read a dump and hand the bytes to the webview.
+#[tauri::command]
+fn choose_vcd(name: Vec<String>) -> Result<Vec<u8>, String> {
+    let path = resolve(&name).map_err(|error| format!("{error}"))?;
+    read_bytes(&path)
 }
 
+/// Read a dump by absolute path (drag and drop, launch argument).
 #[tauri::command]
-fn choose_vcd(state: tauri::State<State>, name: Vec<String>) -> Module {
-    let mut dest_path = state.path.clone();
-    name.into_iter().for_each(|x| dest_path.push(&x));
-    load_waveform(&state, dest_path)
+fn choose_vcd_absolute(path: String) -> Result<Vec<u8>, String> {
+    read_bytes(Path::new(&path))
 }
 
+/// Read a source file as text.
 #[tauri::command]
-fn choose_vcd_absolute(state: tauri::State<State>, path: String) -> Module {
-    match PathBuf::from_str(&path) {
-        Ok(dest_path) => load_waveform(&state, dest_path),
-        Err(error) => {
-            eprintln!("bad path `{path}`: {error}");
-            Module::new()
-        },
-    }
+fn choose_verilog(name: Vec<String>) -> Result<String, String> {
+    let path = resolve(&name).map_err(|error| format!("{error}"))?;
+    read_text(&path)
 }
 
+/// Read a source file by absolute path.
 #[tauri::command]
-fn choose_verilog(state: tauri::State<State>, name: Vec<String>) -> (String, Module) {
-    println!("verilog");
-    let mut dest_path = state.path.clone();
-    name.into_iter().for_each(|x| dest_path.push(&x));
-    let mut file = std::fs::File::open(dest_path).unwrap();
-    let mut contents = String::new();
-    file.read_to_string(&mut contents).unwrap();
-    let now_module = state.module.lock().unwrap().clone();
-    let module_raw = verilog_parser(&contents, Rc::new(now_module));
-    *state.module.lock().unwrap() = module_raw.clone();
-    (contents, module_raw)
+fn choose_verilog_absolute(path: String) -> Result<String, String> {
+    read_text(Path::new(&path))
 }
 
-#[tauri::command]
-fn choose_verilog_absolute(state: tauri::State<State>, path: String) -> (String, Module) {
-    println!("verilog drop");
-    let dest_path = PathBuf::from_str(&path).unwrap();//TODO:do not unwrap
-    let mut file = std::fs::File::open(dest_path).unwrap();
-    let mut contents = String::new();
-    file.read_to_string(&mut contents).unwrap();
-    let now_module = state.module.lock().unwrap().clone();
-    let module_raw = verilog_parser(&contents, Rc::new(now_module));
-    *state.module.lock().unwrap() = module_raw.clone();
-    (contents, module_raw)
+fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    fs::read(path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-#[tauri::command]
-fn get_value(state: tauri::State<State>, key: String) -> Option<(String, (Vec<i32>, Vec<(u8, u8)>))> {
-    println!("signal add: {key}");
-    state.module_value.lock().unwrap()
-        .value.get(&key)
-        .map(|x| (key, x.clone()))
+fn read_text(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    String::from_utf8(bytes).map_err(|_| format!("{}: not utf-8", path.display()))
 }
 
 fn main() {
     tauri::Builder::default()
-        .manage(State {
-            path: std::env::current_dir().unwrap(),
-            module: Module::new().into(),
-            module_value: ModuleValue::new().into(),
-        })
-        .invoke_handler(tauri::generate_handler![get_file_list,
-                choose_vcd,
-                choose_vcd_absolute,
-                choose_verilog,
-                choose_verilog_absolute,
-                get_value])
+        .invoke_handler(tauri::generate_handler![
+            get_file_list,
+            choose_vcd,
+            choose_vcd_absolute,
+            choose_verilog,
+            choose_verilog_absolute
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

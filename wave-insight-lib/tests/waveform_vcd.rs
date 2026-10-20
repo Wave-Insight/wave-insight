@@ -5,10 +5,9 @@
 //! values, non uniform time stamps and a value that does *not* change in the
 //! last time step.
 
-use wave_insight_lib::data_struct::{BoolData, Module, ShowType};
-use wave_insight_lib::parser::vcd_parser::vcd_parser;
+use wave_insight_lib::data_struct::ShowType;
 use wave_insight_lib::waveform::{
-    BitValue, SignalKind, TimeUnit, ValueQuery, WaveFormat, WaveValue, Waveform,
+    BitValue, SignalKind, TimeRange, TimeUnit, ValueQuery, WaveFormat, WaveValue, Waveform,
 };
 
 ///`top` contains `clk`, `data` and `nibble`, `top.sub` contains `flag` and
@@ -313,27 +312,34 @@ fn streaming_can_stop_early_and_filter_signals() {
 }
 
 #[test]
-fn values_can_be_rendered_with_the_old_renderers() {
+fn values_render_with_the_show_types() {
     let waveform = open();
 
-    //the `ShowType` renderers live on `BitsData`, so the new value hands over a
-    //`BitsData` that renders exactly like the old model did
+    //the formatter that used to live on `BitsData` now hangs off the value
     let nibble = waveform.signal_by_path("top.nibble").unwrap().index();
     let value = waveform.value_at(nibble, 10).unwrap().expect("value at 10");
-    let bits_data = value.to_bits_data().expect("bit vector");
-    assert_eq!(bits_data.to_string(4, &ShowType::Bin), "10xz");
-    assert_eq!(bits_data.to_string(4, &ShowType::Hex), "x");
+    assert_eq!(value.render(4, &ShowType::Bin).as_deref(), Some("10xz"));
+    assert_eq!(value.render(4, &ShowType::Hex).as_deref(), Some("x"));
 
-    //one bit values map onto `BoolData`, including `z`
+    //one bit values expose their single bit, including `z`
     let clk = waveform.signal_by_path("top.clk").unwrap().index();
-    let bool_at = |time| waveform.value_at(clk, time).unwrap().unwrap().to_bool_data();
-    assert_eq!(bool_at(0), Some(BoolData::Zero));
-    assert_eq!(bool_at(10), Some(BoolData::One));
-    assert_eq!(bool_at(20), Some(BoolData::Z));
+    let bit_at = |time| {
+        waveform
+            .value_at(clk, time)
+            .unwrap()
+            .unwrap()
+            .as_bits()
+            .and_then(|bits| bits.single_bit())
+    };
+    assert_eq!(bit_at(0), Some(BitValue::Zero));
+    assert_eq!(bit_at(10), Some(BitValue::One));
+    assert_eq!(bit_at(20), Some(BitValue::Z));
 
-    //a bus is not a single bit, so there is no bool form
+    //a bus has no single bit
     let data = waveform.signal_by_path("top.data").unwrap().index();
-    assert_eq!(waveform.value_at(data, 0).unwrap().unwrap().to_bool_data(), None);
+    let bus = waveform.value_at(data, 0).unwrap().unwrap();
+    assert_eq!(bus.as_bits().and_then(|bits| bits.single_bit()), None);
+    assert_eq!(bus.render(8, &ShowType::UInt).as_deref(), Some("0"));
 }
 
 #[test]
@@ -429,120 +435,25 @@ fn short_binary_literals_are_padded_to_the_declared_width() {
 }
 
 /* ------------------------------------------------------------------------- */
-/* legacy adapter                                                            */
+/* time range                                                                */
 /* ------------------------------------------------------------------------- */
 
 #[test]
-fn legacy_module_has_the_old_shape() {
+fn the_time_range_hint_matches_the_exact_range() {
     let waveform = open();
-    let module = waveform.legacy_module().expect("module should build");
-
-    assert_eq!(module.end_clock, 20);
-    let top = module.sub_module.get("top").expect("`top` sub module");
-    assert!(top.signal.contains_key("clk"));
-    assert!(top.signal.contains_key("data"));
-    assert!(top.signal.contains_key("nibble"));
-
-    let sub = top.sub_module.get("sub").expect("`top.sub` sub module");
-    assert!(sub.signal.contains_key("flag"));
-    let u_cpu = sub.sub_module.get("u_cpu").expect("`top.sub.u_cpu`");
-    assert!(u_cpu.signal.contains_key("pc"));
-
-    //the old model has no notion of hierarchy in the key, so `value_key` is
-    //the full path now
-    assert_eq!(top.signal["clk"].value_key, "top.clk");
-    assert_eq!(top.signal["data"].size, 8);
-    assert_eq!(u_cpu.signal["pc"].size, 16);
-    assert_eq!(top.signal["data"].value_key, "top.data");
-
-    //real/string/event variables are skipped by the adapter
-    assert_eq!(top.signal.len() + sub.signal.len() + u_cpu.signal.len(), 5);
-}
-
-#[test]
-fn legacy_adapter_still_serves_get_bool_and_get_bits() {
-    let waveform = open();
-    let (_, values) = waveform.to_legacy().expect("legacy conversion");
-
+    //the fixture runs from #0 to #20
     assert_eq!(
-        values.get_bool("top.clk"),
-        vec![(0, BoolData::Zero), (10, BoolData::One), (20, BoolData::Z)],
+        waveform.time_range_hint().unwrap(),
+        Some(TimeRange { start: 0, end: 20 })
     );
+    //the hint is memoized and does not read the body; the exact calls agree
     assert_eq!(
-        values.get_bool("top.sub.flag"),
-        vec![(0, BoolData::Zero), (10, BoolData::One), (20, BoolData::Zero)],
+        waveform.time_range_hint().unwrap(),
+        Some(TimeRange { start: 0, end: 20 })
     );
-
-    let data = values.get_bits("top.data");
-    assert_eq!(data.len(), 3);
-    assert_eq!(data[0].1.to_string(8, &ShowType::Bin), "00000000");
-    assert_eq!(data[1].1.to_string(8, &ShowType::Bin), "10101010");
-    assert_eq!(data[1].1.to_string(8, &ShowType::UInt), "170");
-    assert_eq!(data[2].1.to_string(8, &ShowType::Bin), "xxxxxxxx");
-
-    let nibble = values.get_bits("top.nibble");
-    assert_eq!(nibble[1].1.to_string(4, &ShowType::Bin), "10xz");
-    assert_eq!(nibble[2].1.to_string(4, &ShowType::Bin), "zx01");
-
-    let pc = values.get_bits("top.sub.u_cpu.pc");
-    assert_eq!(pc[1].1.to_string(16, &ShowType::Bin), "0000000000000101");
-    assert_eq!(pc[1].1.to_string(16, &ShowType::UInt), "5");
-}
-
-///The old and the new implementation must agree on the values, signal for
-///signal. The old parser keys values by VCD identifier code, the adapter keys
-///them by hierarchical path, so the two maps are compared through a key map.
-#[test]
-fn legacy_adapter_matches_the_old_vcd_parser() {
-    let old = {
-        let (module, values) = vcd_parser(VCD.to_string(), &mut Module::new());
-        (module, values)
-    };
-    let waveform = open();
-    let (module, values) = waveform.to_legacy().unwrap();
-
-    //same module tree
-    assert_eq!(old.0.end_clock, module.end_clock, "end clock of the root module");
-    let old_top = &old.0.sub_module["top"];
-    let new_top = &module.sub_module["top"];
-    assert_eq!(old_top.end_clock, new_top.end_clock);
-    let mut old_names: Vec<_> = old_top.signal.keys().cloned().collect();
-    let mut new_names: Vec<_> = new_top.signal.keys().cloned().collect();
-    old_names.sort_unstable();
-    new_names.sort_unstable();
-    assert_eq!(old_names, new_names);
-    assert!(old_top.sub_module.contains_key("sub"));
-    assert!(new_top.sub_module["sub"].sub_module.contains_key("u_cpu"));
-
-    //same values, modulo the key naming scheme
-    let key_pairs = [
-        ("!", "top.clk"),
-        ("#", "top.nibble"),
-        ("&", "top.sub.flag"),
-        ("'", "top.sub.u_cpu.pc"),
-    ];
-    for (old_key, new_key) in key_pairs {
-        assert_eq!(
-            old.1.get_bool(old_key),
-            values.get_bool(new_key),
-            "bool values of `{new_key}` differ from the old parser"
-        );
-        let old_bits = old.1.get_bits(old_key);
-        let new_bits = values.get_bits(new_key);
-        assert_eq!(old_bits.len(), new_bits.len(), "change count of `{new_key}`");
-        for ((old_time, old_value), (new_time, new_value)) in
-            old_bits.iter().zip(new_bits.iter())
-        {
-            assert_eq!(old_time, new_time, "time stamp of `{new_key}`");
-            //the bit width comes from the declaration, so print all of it
-            let width = waveform.signal_by_path(new_key).unwrap().width() as usize;
-            assert_eq!(
-                old_value.to_string(width, &ShowType::Bin),
-                new_value.to_string(width, &ShowType::Bin),
-                "value of `{new_key}` at {old_time}"
-            );
-        }
-    }
+    assert_eq!(waveform.start_time().unwrap(), Some(0));
+    assert_eq!(waveform.end_time().unwrap(), Some(20));
+    assert_eq!(waveform.time_range_hint().unwrap().unwrap().span(), 20);
 }
 
 /* ------------------------------------------------------------------------- */

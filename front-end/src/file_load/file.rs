@@ -1,25 +1,20 @@
-use wave_insight_lib::data_struct::Module;
+#[cfg(not(feature = "tauri"))]
 use wave_insight_lib::waveform::Waveform;
 use yew::prelude::*;
+#[cfg(not(feature = "tauri"))]
 use web_sys::{DragEvent, Event, HtmlInputElement};
+#[cfg(not(feature = "tauri"))]
 use gloo_file::File;
-
-#[cfg(feature = "backend")]
+#[cfg(feature = "tauri")]
 use crate::file_load::FileList;
-#[cfg(feature = "wasm")]
 use crate::nav::SharedWaveform;
 
+#[cfg(not(feature = "tauri"))]
 use gloo_file::callbacks::FileReader;
+#[cfg(not(feature = "tauri"))]
 use web_sys::console;
 
-use wasm_bindgen::prelude::*;
-
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "tauri"])]
-    async fn invoke(cmd: &str, args: JsValue) -> JsValue;
-}
-
+#[cfg(not(feature = "tauri"))]
 pub enum FileType {
     ///a waveform dump: vcd, fst or ghw, all handled by the waveform backend
     IsWaveform,
@@ -27,6 +22,7 @@ pub enum FileType {
 }
 
 ///waveforms are told apart by extension; everything else is source
+#[cfg(not(feature = "tauri"))]
 pub fn file_type_of(name: &str) -> FileType {
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw") {
@@ -38,43 +34,36 @@ pub fn file_type_of(name: &str) -> FileType {
 
 pub enum Msg {
     ///the bytes are read raw because fst is binary
-    #[cfg(feature = "wasm")]
+    #[cfg(not(feature = "tauri"))]
     Loaded(FileType,String,Vec<u8>),
-    #[cfg(feature = "wasm")]
+    #[cfg(not(feature = "tauri"))]
     Files(Vec<File>),
-    #[cfg(feature = "wasm")]
+    #[cfg(not(feature = "tauri"))]
     DragOver(DragEvent),
     /// Files were dropped on the drop zone; the browser has no file handle for
     /// a drop event, so they go through the same reader as the picker.
-    #[cfg(feature = "wasm")]
+    #[cfg(not(feature = "tauri"))]
     FileDrop(DragEvent),
-    #[cfg(feature = "backend")]
+    #[cfg(feature = "tauri")]
     Get,
-    #[cfg(feature = "backend")]
+    #[cfg(feature = "tauri")]
     ExitList,
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct FileLoadProps {
-    /// The file picker of the tauri/server transports; the browser reads the
-    /// dropped files itself.
-    #[cfg(feature = "backend")]
-    pub ongetmodule: Callback<Module>,
-    /// A dump was opened: its hierarchy (legacy module tree) and the handle the
-    /// wave view decodes values from.
-    #[cfg(feature = "wasm")]
-    pub ongetwaveform: Callback<(Module, SharedWaveform)>,
+    /// A dump was opened: the handle the wave view decodes values from.
+    pub ongetwaveform: Callback<SharedWaveform>,
     /// A source file was read; it goes to the design database, not to a parser.
     pub ongetverilog: Callback<(String, String)>,
     /// A file could not be used; the app shows it in the top bar.
-    #[cfg(feature = "wasm")]
     pub onerror: Callback<String>,
 }
 
 pub struct FileLoad {
-    #[cfg(feature = "wasm")]
+    #[cfg(not(feature = "tauri"))]
     task: Vec<FileReader>,
-    #[cfg(feature = "backend")]
+    #[cfg(feature = "tauri")]
     filelist_show: bool,
 }
 
@@ -84,21 +73,22 @@ impl Component for FileLoad {
 
     fn create(_ctx: &Context<Self>) -> Self {
         Self {
-            #[cfg(feature = "wasm")]
+            #[cfg(not(feature = "tauri"))]
             task: vec![],
-            #[cfg(feature = "backend")]
+            #[cfg(feature = "tauri")]
             filelist_show: false,
         }
     }
 
+    #[allow(unused_variables)]
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            #[cfg(feature = "wasm")]
+            #[cfg(not(feature = "tauri"))]
             Msg::Loaded(file_type, file_name, bytes) => {
                 match file_type {
                     FileType::IsWaveform => {
                         console::log_1(&format!("opening waveform {file_name}").into());
-                        self.open_waveform(ctx, file_name, bytes);
+                        open_waveform(ctx, file_name, bytes);
                     },
                     FileType::IsVerilog => {
                         // the design database parses it; no separate scan here
@@ -110,7 +100,7 @@ impl Component for FileLoad {
                 }
                 true
             }
-            #[cfg(feature = "wasm")]
+            #[cfg(not(feature = "tauri"))]
             Msg::Files(result) => {
                 console::log_1(&format!("input {} file",result.len()).into());
                 for file in result.into_iter() {
@@ -129,13 +119,13 @@ impl Component for FileLoad {
                 }
                 true
             }
-            #[cfg(feature = "wasm")]
+            #[cfg(not(feature = "tauri"))]
             Msg::DragOver(e) => {
                 // without this the browser refuses the drop
                 e.prevent_default();
                 true
             }
-            #[cfg(feature = "wasm")]
+            #[cfg(not(feature = "tauri"))]
             Msg::FileDrop(e) => {
                 e.prevent_default();
                 let files = e
@@ -146,12 +136,12 @@ impl Component for FileLoad {
                 ctx.link().send_message(Msg::Files(files));
                 true
             }
-            #[cfg(feature = "backend")]
+            #[cfg(feature = "tauri")]
             Msg::Get => {
                 self.filelist_show = true;
                 true
             }
-            #[cfg(feature = "backend")]
+            #[cfg(feature = "tauri")]
             Msg::ExitList => {
                 self.filelist_show = false;
                 true
@@ -160,15 +150,31 @@ impl Component for FileLoad {
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        // This gives us a component's "`Scope`" which allows us to send messages, etc to the component.
         let link = ctx.link();
-        #[cfg(feature = "wasm")]
+        #[cfg(not(feature = "tauri"))]
         let onchangefunc = link.callback(move |e: Event| {
-                        let input: HtmlInputElement = e.target_unchecked_into();
-                        Msg::Files(input.files().map(files_from).unwrap_or_default())
-                    });
-        #[cfg(feature = "wasm")]
-        html! {
+            let input: HtmlInputElement = e.target_unchecked_into();
+            Msg::Files(input.files().map(files_from).unwrap_or_default())
+        });
+        // the desktop build has no file input: it browses the disk through tauri
+        #[cfg(feature = "tauri")]
+        let picker = html! {
+            <div>
+                if self.filelist_show {
+                    <FileList
+                        onexit={link.callback(|_| Msg::ExitList)}
+                        ongetwaveform={ctx.props().ongetwaveform.clone()}
+                        ongetverilog={ctx.props().ongetverilog.clone()}
+                        onerror={ctx.props().onerror.clone()}
+                    />
+                }
+                <div class="file-strip">
+                    <button type="button" class="btn" onclick={link.callback(|_| Msg::Get)}>{"Open file…"}</button>
+                </div>
+            </div>
+        };
+        #[cfg(not(feature = "tauri"))]
+        let picker = html! {
             <div class="file-strip">
                 <label class="file-drop"
                     ondragover={link.callback(Msg::DragOver)}
@@ -178,51 +184,43 @@ impl Component for FileLoad {
                     <span class="file-drop-text">{"Load or drop .vcd / .fst / .ghw / .v files"}</span>
                 </label>
             </div>
-        }
-        #[cfg(feature = "backend")]
-        html! {
-            <div>
-                if self.filelist_show {
-                    <FileList
-                        onexit={link.callback(|_| Msg::ExitList)}
-                        ongetmodule={ctx.props().ongetmodule.clone()}
-                        ongetverilog={ctx.props().ongetverilog.clone()}
-                    />
-                }
-                <div class="file-strip">
-                    <button type="button" class="btn" onclick={link.callback(|_| Msg::Get)}>{"Open file…"}</button>
-                </div>
-            </div>
-        }
+        };
+        picker
     }
 }
 
-#[cfg(feature = "wasm")]
-impl FileLoad {
-    /// Open a dump: the header is parsed here, the values are decoded lazily per
-    /// signal by the wave view.
-    fn open_waveform(&mut self, ctx: &Context<Self>, file_name: String, bytes: Vec<u8>) {
-        let error = match Waveform::open_bytes(bytes) {
-            Ok(waveform) => match waveform.legacy_module() {
-                Ok(module) => {
-                    // `end_clock` lives on the root of the legay tree; the wave
-                    // view scales its time axis with it
-                    ctx.props()
-                        .ongetwaveform
-                        .emit((module, SharedWaveform::new(waveform)));
-                    return;
-                }
-                Err(error) => error.message(),
-            },
-            Err(error) => error.message(),
-        };
-        console::log_1(&format!("{file_name}: {error}").into());
-        ctx.props().onerror.emit(format!("{file_name}: {error}"));
+/// Open a dump: only the header is parsed here (plus the cheap time range scan),
+/// the values are decoded lazily per signal by the wave view.
+#[cfg(not(feature = "tauri"))]
+pub fn open_waveform(ctx: &Context<FileLoad>, file_name: String, bytes: Vec<u8>) {
+    let started = js_sys::Date::now();
+    let opened = Waveform::open_bytes(bytes);
+    let open_ms = js_sys::Date::now() - started;
+    match opened {
+        Ok(waveform) => {
+            let started = js_sys::Date::now();
+            let range = waveform.time_range_hint().ok().flatten();
+            let range_ms = js_sys::Date::now() - started;
+            console::log_1(
+                &format!(
+                    "waveform {file_name}: opened in {open_ms:.1} ms, trace range in {range_ms:.1} ms ({:?}, {} signals)",
+                    range,
+                    waveform.signal_count()
+                )
+                .into(),
+            );
+            ctx.props().ongetwaveform.emit(SharedWaveform::new(waveform));
+        }
+        Err(error) => {
+            let error = error.message();
+            console::log_1(&format!("{file_name}: {error}").into());
+            ctx.props().onerror.emit(format!("{file_name}: {error}"));
+        }
     }
 }
 
 /// Turn a browser [`FileList`] into the files `gloo_file` can read.
-#[cfg(feature = "wasm")]
+#[cfg(not(feature = "tauri"))]
 fn files_from(list: web_sys::FileList) -> Vec<File> {
     match js_sys::try_iter(&list) {
         Ok(Some(files)) => files

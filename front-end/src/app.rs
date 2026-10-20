@@ -1,18 +1,9 @@
 use std::rc::Rc;
 
-#[cfg(feature = "backend")]
-use std::cell::RefCell;
-
-use wave_insight_lib::data_struct::{
-    Module,
-    Signal};
-
-#[cfg(feature = "backend")]
-use wave_insight_lib::data_struct::ModuleValue;
+use wave_insight_lib::data_struct::Signal;
+use wave_insight_lib::waveform::TimeRange;
 
 use yew::prelude::*;
-#[cfg(feature = "server")]
-use web_sys::console;//TODO:for debug
 
 use crate::code_reader::CodeReader;
 use crate::lsp::LspBridge;
@@ -22,17 +13,13 @@ use crate::nav::{
     PathPicker,
     SharedDesign,
     SharedWaveform,
+    SidebarTree,
     SignalInspector,
     SourceClick};
 use crate::wave_show::WaveShow;
 use crate::module_struct::ModuleStruct;
 
 use crate::top_bar::TopBar;
-
-#[cfg(feature = "backend")]
-use web_sys::{MessageEvent, WebSocket};
-#[cfg(feature = "backend")]
-use wasm_bindgen::{prelude::Closure, JsCast};
 
 use crate::file_load::FileLoad;
 
@@ -52,20 +39,16 @@ pub enum Msg {
     FileDrop(Vec<String>),
 
     NavIconClick,
-    /// A signal was picked in the sidebar; the wave view adds it.
-    SignalAdd((String,Rc<Signal>)),
-    /// A dump was opened: its hierarchy and the handle values are read from.
-    #[cfg(feature = "wasm")]
-    GetWaveform((Module, SharedWaveform)),
-    /// The tauri/server transports hand over a module tree instead.
-    #[cfg(feature = "backend")]
-    GetModule(Module),
+    /// A signal row was clicked in the sidebar; its hierarchical path.
+    SidebarAdd(String),
+    /// A dump was opened: the handle values are decoded from, plus its time
+    /// range so the ruler and the fit-to-trace zoom can be drawn.
+    GetWaveform(SharedWaveform),
     /// One source file was read; it goes to the design database.
     GetVerilog((String, String)),
     /// A source tab was closed; the file leaves the source pane.
     CloseSource(usize),
     /// A file could not be opened, or the design could not be parsed.
-    #[cfg(feature = "wasm")]
     Error(String),
     /// A plain click on an identifier in the source editor.
     SourceClick(SourceClick),
@@ -78,14 +61,6 @@ pub enum Msg {
     /// Several signals cover the clicked position; the user chose one.
     PickPath(usize),
     CancelPick,
-    #[cfg(feature = "tauri")]
-    GetValueFromTauri(String),
-    #[cfg(feature = "tauri")]
-    AddValueFromTauri(Option<(String, (Vec<i32>, Vec<(u8, u8)>))>),
-    #[cfg(feature = "server")]
-    WsSend(String),
-    #[cfg(feature = "server")]
-    GetWebsocket(String),
 
     ///the sidebar splitter was grabbed
     SplitterDown(MouseEvent),
@@ -117,12 +92,11 @@ pub struct App {
     drawer_state: bool,
     /// The sidebar tree: the dump hierarchy once a waveform is open, the
     /// elaborated design otherwise.
-    module: Rc<Module>,
-    waveform_module: Option<Rc<Module>>,
-    design_module: Option<Rc<Module>>,
+    tree: Option<SidebarTree>,
     /// The opened dump.
     waveform: Option<SharedWaveform>,
-    end_clock: i32,
+    /// Start and end of the trace; the ruler and the fit zoom use it.
+    time_range: Option<TimeRange>,
     /// Parsed sources plus the elaborated design.
     design: SharedDesign,
     /// The language server client the source editor talks to.
@@ -141,12 +115,6 @@ pub struct App {
     goto_token: u32,
     /// One line of feedback for the top bar.
     status: Option<String>,
-    #[cfg(feature = "backend")]
-    signal_value: Rc<RefCell<ModuleValue>>,//do not re-render when change, so RefCell is ok
-    #[cfg(feature = "backend")]
-    signal_value_raw: ModuleValue,//TODO:not a good implement
-    #[cfg(feature = "server")]
-    websocket: Option<WebSocket>,
     sidebar_width: f64,
     ///(mouse x, sidebar width) while the splitter is dragged
     splitter_start: Option<(f64, f64)>,
@@ -165,6 +133,7 @@ impl Component for App {
         #[cfg(feature = "tauri")]
         spawn_local(async move {
             #[derive(Debug, Serialize, Deserialize)]
+            #[allow(non_snake_case)] // tauri's event envelope
             struct TauriEvent {
                 event: String,
                 windowLabel: String,
@@ -180,8 +149,6 @@ impl Component for App {
             closure.forget();
         });
 
-        #[cfg(feature = "server")]
-        let websocket = create_websocket(ctx);
         // The language server client runs the same code the desktop transport
         // pumps, but against its own parse of the same sources; navigation
         // falls back to `design` whenever it cannot answer.
@@ -193,11 +160,9 @@ impl Component for App {
         );
         Self {
             drawer_state: true,
-            module: Rc::new(Module::new()),
-            waveform_module: None,
-            design_module: None,
+            tree: None,
             waveform: None,
-            end_clock: 0,
+            time_range: None,
             design,
             lsp,
             verilog_source: vec![],
@@ -208,12 +173,6 @@ impl Component for App {
             goto: None,
             goto_token: 0,
             status: None,
-            #[cfg(feature = "backend")]
-            signal_value: Rc::new(RefCell::new(ModuleValue::new())),
-            #[cfg(feature = "backend")]
-            signal_value_raw: ModuleValue::new(),
-            #[cfg(feature = "server")]
-            websocket: Some(websocket),
             sidebar_width: SIDEBAR_DEFAULT,
             splitter_start: None,
         }
@@ -229,23 +188,37 @@ impl Component for App {
                     path: String,
                 }
                 path.into_iter().for_each(|p| {
-                    if p.strip_suffix(".vcd").is_some() {
+                    let lower = p.to_ascii_lowercase();
+                    if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw") {
                         let args = to_value(&GetFileListArgs { path: p }).unwrap();
-                        let link = ctx.link().callback(Msg::GetModule);
+                        let onwaveform = ctx.link().callback(Msg::GetWaveform);
+                        let onerror = ctx.link().callback(Msg::Error);
                         spawn_local(async move {
-                            let ret: Module = from_value(invoke("choose_vcd_absolute", args).await).unwrap();
-                            //console::log_1(&format!("{:?}", ret).into());
-                            link.emit(ret);
+                            //the command returns the file bytes; the webview
+                            //parses them exactly like a browser upload
+                            let bytes: Vec<u8> = from_value(invoke("choose_vcd_absolute", args).await)
+                                .unwrap_or_default();
+                            if bytes.is_empty() {
+                                onerror.emit("the dump could not be read".to_string());
+                                return;
+                            }
+                            match wave_insight_lib::waveform::Waveform::open_bytes(bytes) {
+                                Ok(waveform) => onwaveform.emit(SharedWaveform::new(waveform)),
+                                Err(error) => onerror.emit(error.message()),
+                            }
                         });
-                    }else if p.strip_suffix(".v").is_some() {
+                    } else if lower.ends_with(".v") || lower.ends_with(".sv") {
                         let args = to_value(&GetFileListArgs { path: p.clone() }).unwrap();
-                        let link = ctx.link().callback(Msg::GetModule);
-                        let link_verilog = ctx.link().callback(Msg::GetVerilog);
+                        let onverilog = ctx.link().callback(Msg::GetVerilog);
+                        let onerror = ctx.link().callback(Msg::Error);
                         spawn_local(async move {
-                            let ret: (String, Module) = from_value(invoke("choose_verilog_absolute", args).await).unwrap();
-                            //console::log_1(&format!("{:?}", ret).into());
-                            link.emit(ret.1);
-                            link_verilog.emit((p.clone(), ret.0));
+                            let text: String =
+                                from_value(invoke("choose_verilog_absolute", args).await).unwrap_or_default();
+                            if text.is_empty() {
+                                onerror.emit(format!("{p}: the source could not be read"));
+                                return;
+                            }
+                            onverilog.emit((p, text));
                         });
                     };
                 });
@@ -277,33 +250,11 @@ impl Component for App {
                 self.splitter_start = None;
                 true
             }
-            Msg::SignalAdd((name, signal)) => {
-                #[cfg(feature = "server")]
-                ctx.link().callback(Msg::WsSend).emit(format!("s:{}",signal.value_key));
-                #[cfg(feature = "tauri")]
-                ctx.link().callback(Msg::GetValueFromTauri).emit(signal.value_key.clone());
-                let display = if signal.value_key.contains('.') {
-                    signal.value_key.clone()
-                }else {
-                    name
-                };
-                // a row from the design tree knows where it is declared
-                let declare = self.declare_target(&signal.value_key);
-                self.signal_add = (display, signal);
-                self.signal_add_seq = self.signal_add_seq.wrapping_add(1);
-                self.selected = Some(self.signal_add.1.value_key.clone());
-                // only open the declaration when the source pane can show it:
-                // a closed tab would otherwise turn a successful add into an
-                // "is not open" error message
-                if let Some((file, line, col)) = declare {
-                    if self.verilog_source.iter().any(|(name, _)| name == &file) {
-                        self.goto_to(file, line, col);
-                    }
-                }
+            Msg::SidebarAdd(path) => {
+                self.add_path(&path);
                 true
             }
-            #[cfg(feature = "wasm")]
-            Msg::GetWaveform((module, waveform)) => {
+            Msg::GetWaveform(waveform) => {
                 // the dump knows which module it was made from; that is the best
                 // guess for the design top
                 let top_hint = waveform
@@ -314,17 +265,12 @@ impl Component for App {
                     .first()
                     .map(|scope| scope.name().to_string());
                 self.design.borrow_mut().set_top_hint(top_hint);
-                self.end_clock = module.end_clock;
-                self.waveform_module = Some(Rc::new(module));
+                // cheap: for VCD this scans the body text, it does not parse it
+                self.time_range = waveform.as_waveform().time_range_hint().ok().flatten();
                 self.waveform = Some(waveform);
-                self.refresh_module();
+                self.refresh_tree();
                 self.sync_lsp_top();
                 self.status = Some("waveform loaded".to_string());
-                true
-            }
-            #[cfg(feature = "backend")]
-            Msg::GetModule(m) => {
-                self.module = Rc::new(m);
                 true
             }
             Msg::GetVerilog((file, text)) => {
@@ -336,7 +282,7 @@ impl Component for App {
                 // every loaded source is an open LSP document, not only the
                 // visible tab, so a definition can point into any of them
                 self.lsp.open(&file, &text);
-                self.refresh_module();
+                self.refresh_tree();
                 self.sync_lsp_top();
                 self.status = Some(format!("parsed {file}"));
                 true
@@ -356,7 +302,6 @@ impl Component for App {
                 }
                 true
             }
-            #[cfg(feature = "wasm")]
             Msg::Error(message) => {
                 self.status = Some(message);
                 true
@@ -414,70 +359,12 @@ impl Component for App {
                 self.picker = None;
                 true
             }
-            #[cfg(feature = "tauri")]
-            Msg::GetValueFromTauri(key) => {
-                let args = to_value(&TauriArgs { key }).unwrap();
-                let link = ctx.link().callback(Msg::AddValueFromTauri);
-                spawn_local(async move {
-                    let ret = from_value(invoke("get_value", args).await).unwrap();
-                    //console::log_1(&format!("{:?}", ret).into());
-                    link.emit(ret);
-                });
-                false
-            }
-            #[cfg(feature = "tauri")]
-            Msg::AddValueFromTauri(x) => {
-                match x {
-                    Some((key, value)) => {
-                        self.signal_value.borrow_mut().value.insert(key, value);
-                    },
-                    None => {},
-                };
-                false
-            }
-            #[cfg(feature = "server")]
-            Msg::WsSend(e) => {
-                match &mut self.websocket {
-                    Some(ws) => {
-                       if ws.send_with_str(&e).is_ok() {};
-                    },
-                    None => {},
-                }
-                true
-            }
-            #[cfg(feature = "server")]
-            Msg::GetWebsocket(m) => {
-                if let Some(module_string) = m.strip_prefix("module:") {
-                    let module: Module = serde_json::from_str(module_string).unwrap();//TODO:do not unwrap
-                    self.module = Rc::new(module);
-                }else if let Some(signal_string) = m.strip_prefix("sig:") {
-                    if let Some((key, value)) = signal_string.split_once(29u8 as char) {
-                        let value_parse: (Vec<i32>, Vec<(u8, u8)>) = serde_json::from_str(value).unwrap();//TODO:do not unwrap
-                        self.signal_value_raw.value.insert(key.to_string(), value_parse);
-                        self.signal_value = Rc::new(RefCell::new(self.signal_value_raw.clone()));
-                        //TODO:value update here will cause an adition signal add on wave show
-                    }
-                }
-                true
-            }
         }
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
         let design_version = self.design.borrow().version();
-
-        // the tauri/server transports still feed a pre-expanded value tree
-        let legacy_values = {
-            #[cfg(feature = "backend")]
-            {
-                Some(Rc::clone(&self.signal_value))
-            }
-            #[cfg(not(feature = "backend"))]
-            {
-                None
-            }
-        };
 
         html! {
             <div class="app" style={format!("--sidebar-w:{:.0}px", self.sidebar_width)}>
@@ -488,7 +375,8 @@ impl Component for App {
                         html!{
                         <aside class="sidebar">
                             {self.file_button(ctx)}
-                            <ModuleStruct module={Rc::clone(&self.module)} signaladd={link.callback(Msg::SignalAdd)}/>
+                            <ModuleStruct tree={self.tree.clone()}
+                                signaladd={link.callback(|(_name, path): (String, String)| Msg::SidebarAdd(path))}/>
                         </aside>
                         }
                     }else {
@@ -521,8 +409,7 @@ impl Component for App {
                             signaladd={(self.signal_add.0.clone(),Rc::clone(&self.signal_add.1))}
                             added_seq={self.signal_add_seq}
                             waveform={self.waveform.clone()}
-                            signal_value={legacy_values}
-                            end_clock={self.end_clock}
+                            time_range={self.time_range}
                             onselect={link.callback(Msg::WaveSelect)}
                             onjump={link.callback(Msg::WaveJump)} />
                     </main>
@@ -555,13 +442,13 @@ impl Component for App {
 
 impl App {
     /// Rebuild the sidebar tree: the dump hierarchy wins, the design is the
-    /// fallback so the module list is usable before a VCD is loaded.
-    fn refresh_module(&mut self) {
-        self.design_module = self.design.borrow().module_tree().map(Rc::new);
-        self.module = match (&self.waveform_module, &self.design_module) {
-            (Some(waveform), _) => Rc::clone(waveform),
-            (None, Some(design)) => Rc::clone(design),
-            (None, None) => Rc::new(Module::new()),
+    /// fallback so the module list is usable before a dump is loaded.
+    fn refresh_tree(&mut self) {
+        self.tree = match &self.waveform {
+            Some(waveform) => Some(SidebarTree::from_hierarchy(
+                waveform.as_waveform().hierarchy(),
+            )),
+            None => self.design.borrow().sidebar_tree(),
         };
     }
 
@@ -625,13 +512,21 @@ impl App {
         signal
     }
 
-    /// Add one hierarchical path to the wave view.
+    /// Add one hierarchical path to the wave view and, when the design knows
+    /// it and its file is open, show where it is declared.
     fn add_path(&mut self, path: &str) {
         let signal = self.signal_for_path(path);
         self.signal_add = (path.to_string(), Rc::new(signal));
         self.signal_add_seq = self.signal_add_seq.wrapping_add(1);
         self.selected = Some(path.to_string());
         self.status = Some(format!("added {path} to the waveform"));
+        // only jump when the source pane can show the file: a closed tab would
+        // otherwise turn a successful add into an "is not open" message
+        if let Some((file, line, col)) = self.declare_target(path) {
+            if self.verilog_source.iter().any(|(name, _)| name == &file) {
+                self.goto_to(file, line, col);
+            }
+        }
     }
 
     /// Every signal path a click at `click` may refer to.
@@ -664,7 +559,6 @@ impl App {
         found
     }
 
-    #[cfg(feature = "wasm")]
     fn file_button(&self, ctx: &Context<Self>) -> Html {
         html!{
             <FileLoad
@@ -673,47 +567,5 @@ impl App {
                 onerror={ctx.link().callback(Msg::Error)} />
         }
     }
-    #[cfg(feature = "tauri")]
-    fn file_button(&self, ctx: &Context<Self>) -> Html {
-        html!{
-            <FileLoad
-                ongetmodule={ctx.link().callback(Msg::GetModule)}
-                ongetverilog={ctx.link().callback(Msg::GetVerilog)} />
-        }
-    }
-    #[cfg(feature = "server")]
-    fn file_button(&self, ctx: &Context<Self>) -> Html {
-        html!{
-            <button onclick={ctx.link().callback(|_| Msg::WsSend("file".to_string()))}>{"ws"}</button>
-        }
-    }
     
-}
-
-#[cfg(feature = "server")]
-fn create_websocket(ctx: &Context<App>) -> WebSocket {
-    let callback: Callback<String> = ctx.link().callback(Msg::GetWebsocket);
-
-    let window = web_sys::window().expect("should have a window in this context");
-    let addr = window.location().hostname().unwrap();
-
-    let ws = WebSocket::new(&format!("ws://{}:2993",addr)).unwrap();//TODO:when not connect
-
-    let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
-        if let Ok(txt) = e.data().dyn_into::<js_sys::JsString>() {
-            console::log_1(&format!("message event, received Text: {:?}", txt).into());
-            callback.emit(txt.as_string().unwrap())
-        } else {
-            console::log_1(&format!("message event, received Unknown: {:?}", e.data()).into());
-        }
-    }) as Box<dyn FnMut(MessageEvent)>);
-    ws.set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
-    onmessage_callback.forget();
-    ws
-}
-
-#[cfg(feature = "tauri")]
-#[derive(Serialize, Deserialize)]
-struct TauriArgs {
-    key: String,
 }

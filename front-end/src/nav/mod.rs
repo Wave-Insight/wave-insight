@@ -14,10 +14,12 @@
 pub use design_state::{DesignState, SignalDetails, SourceRow};
 pub use inspector::SignalInspector;
 pub use picker::PathPicker;
+pub use tree::{SidebarTree, SignalRow};
 
 mod design_state;
 mod inspector;
 mod picker;
+mod tree;
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;

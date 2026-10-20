@@ -1,24 +1,28 @@
-use std::rc::Rc;
-
-use wave_insight_lib::data_struct::Module;
 use yew::prelude::*;
+
+use crate::nav::SidebarTree;
+
+pub enum Msg {
+    Click,
+}
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct ModuleComponentProps {
-    pub space: String,
-    pub name: String,
-    pub module: Rc<Module>,
+    /// The whole tree; children are looked up by path when the row expands.
+    pub tree: SidebarTree,
+    /// The scope this row renders.
+    pub path: String,
+    /// Nesting depth, for the indent.
+    pub depth: usize,
+    /// Currently selected scope path.
     #[prop_or_default]
-    pub onclick: Callback<Rc<Module>>,
-}
-
-pub enum Msg {
-    ClickThis,
-    ClickModule(Rc<Module>),
+    pub selected: String,
+    #[prop_or_default]
+    pub onselect: Callback<String>,
 }
 
 pub struct ModuleComponent {
-    show_submodule: bool,
+    show_sub: bool,
 }
 
 impl Component for ModuleComponent {
@@ -26,57 +30,61 @@ impl Component for ModuleComponent {
     type Properties = ModuleComponentProps;
 
     fn create(_ctx: &Context<Self>) -> Self {
-        Self {
-            show_submodule: false,
-        }
+        Self { show_sub: false }
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::ClickThis => {
-                self.show_submodule = !self.show_submodule;
-                ctx.props().onclick.emit(ctx.props().module.clone());
-                true
-            }
-            Msg::ClickModule(m) => {
-                ctx.props().onclick.emit(m);
+            Msg::Click => {
+                //clicking a module row selects it and expands it
+                self.show_sub = true;
+                ctx.props().onselect.emit(ctx.props().path.clone());
                 true
             }
         }
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        // read the props, not a copy taken in `create`: the row is reused when
-        // the app hands over another tree
         let props = ctx.props();
-        let empty = props.module.sub_module.is_empty();
-        let caret = if empty {
+        let Some(module) = props.tree.find(&props.path) else {
+            return html! {};
+        };
+        let has_children = !module.children.is_empty();
+        let caret = if !has_children {
             ""
-        }else if self.show_submodule {
+        } else if self.show_sub {
             "▾"
-        }else {
+        } else {
             "▸"
         };
+        let space: String = (0..props.depth * 2).map(|_| " ").collect();
+        let chosen = if props.selected == module.path {
+            "tree-row chosen"
+        } else {
+            "tree-row"
+        };
+        let tree = props.tree.clone();
+        let selected = props.selected.clone();
+        let onselect = props.onselect.clone();
         html! {
             <div>
-                <div class="tree-row" onclick={ctx.link().callback(|_| Msg::ClickThis)}>
-                    <span class={if self.show_submodule {"tree-caret open"} else {"tree-caret"}}>{caret}</span>
-                    <span class="tree-name">{props.space.clone()+&props.name}</span>
+                <div class={chosen} onclick={ctx.link().callback(|_| Msg::Click)}>
+                    <span class={if self.show_sub {"tree-caret open"} else {"tree-caret"}}>{caret}</span>
+                    <span class="tree-name">{space + &module.name}</span>
                 </div>
-                {if self.show_submodule {html!{
-                    for (props.module.sub_module).iter().map(|x| {
-                        let space = props.space.clone() + "  ";
+                if self.show_sub {
+                    { for module.children.iter().map(|child| {
+                        let child_path = child.path.clone();
                         html! {
-                            <div>
-                                <ModuleComponent
-                                    space={space.clone()}
-                                    name={x.0.clone()}
-                                    module={Rc::new(x.1.clone())}
-                                    onclick={ctx.link().callback(Msg::ClickModule)} />
-                            </div>
+                            <ModuleComponent
+                                tree={tree.clone()}
+                                path={child_path}
+                                depth={props.depth + 1}
+                                selected={selected.clone()}
+                                onselect={onselect.clone()} />
                         }
-                    })
-                }} else {html!{}}}
+                    }) }
+                }
             </div>
         }
     }

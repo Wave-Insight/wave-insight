@@ -1,9 +1,10 @@
-use wave_insight_lib::data_struct::Module;
 use yew::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::{to_value, from_value};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
+
+use crate::nav::SharedWaveform;
 
 #[wasm_bindgen]
 extern "C" {
@@ -15,7 +16,7 @@ extern "C" {
 
 ///one row of the directory listing, produced by the `get_file_list` command
 #[derive(Clone, Debug, PartialEq, Deserialize)]
-struct FileEntry {
+pub struct FileEntry {
     name: String,
     is_dir: bool,
 }
@@ -53,8 +54,11 @@ pub enum Msg {
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct FileListProps {
     pub onexit: Callback<()>,
-    pub ongetmodule: Callback<Module>,
+    /// A dump was opened; the webview parsed the bytes the command returned.
+    pub ongetwaveform: Callback<SharedWaveform>,
     pub ongetverilog: Callback<(String, String)>,
+    /// The file could not be read or parsed.
+    pub onerror: Callback<String>,
 }
 
 pub struct FileList {
@@ -130,28 +134,40 @@ impl Component for FileList {
                 };
                 match kind_of(&name) {
                     Kind::Waveform => {
-                        let link = ctx.props().ongetmodule.clone();
+                        let ongetwaveform = ctx.props().ongetwaveform.clone();
+                        let onerror = ctx.props().onerror.clone();
                         let exit = ctx.props().onexit.clone();
+                        let file = name.clone();
                         spawn_local(async move {
-                            if let Ok(module) = from_value::<Module>(invoke("choose_vcd", args).await) {
-                                link.emit(module);
-                                exit.emit(());
+                            //the command returns the bytes; the webview parses
+                            //them with the same path the browser uses
+                            let bytes: Vec<u8> = from_value(invoke("choose_vcd", args).await)
+                                .unwrap_or_default();
+                            if bytes.is_empty() {
+                                onerror.emit(format!("{file}: the dump could not be read"));
+                                return;
+                            }
+                            match wave_insight_lib::waveform::Waveform::open_bytes(bytes) {
+                                Ok(waveform) => {
+                                    ongetwaveform.emit(SharedWaveform::new(waveform));
+                                    exit.emit(());
+                                }
+                                Err(error) => onerror.emit(format!("{file}: {}", error.message())),
                             }
                         });
                     },
                     Kind::Source => {
-                        let link_module = ctx.props().ongetmodule.clone();
                         let link_verilog = ctx.props().ongetverilog.clone();
+                        let onerror = ctx.props().onerror.clone();
                         let exit = ctx.props().onexit.clone();
                         let file = name.clone();
                         spawn_local(async move {
-                            match from_value::<(String, Module)>(invoke("choose_verilog", args).await) {
-                                Ok((text, module)) => {
-                                    link_module.emit(module);
+                            match from_value::<String>(invoke("choose_verilog", args).await) {
+                                Ok(text) => {
                                     link_verilog.emit((file, text));
                                     exit.emit(());
                                 },
-                                Err(_) => (),
+                                Err(_) => onerror.emit(format!("{file}: the source could not be read")),
                             }
                         });
                     },

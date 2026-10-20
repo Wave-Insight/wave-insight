@@ -1,13 +1,13 @@
+//! The few value types the viewer shares between the backend and the UI.
+//!
+//! Waveform *values* live in [`crate::waveform`]; what is left here is the
+//! description of a signal row ([`Signal`], [`CodeLocation`]) and the display
+//! preference ([`ShowType`]).
+
 pub use code_location::CodeLocation;
-pub use module::Module;
+pub use show_type::ShowType;
 pub use signal::Signal;
-pub use module_value::ModuleValue;
-pub use signal_data::BitsData;
-pub use signal_data::BoolData;
-pub use signal_data::ShowType;
 
 mod code_location;
-mod module;
+mod show_type;
 mod signal;
-mod module_value;
-mod signal_data;

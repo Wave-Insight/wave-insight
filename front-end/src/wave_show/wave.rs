@@ -3,7 +3,8 @@ use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wave_insight_lib::data_struct::{ModuleValue, Signal};
+use wave_insight_lib::data_struct::Signal;
+use wave_insight_lib::waveform::TimeRange;
 use yew::prelude::*;
 
 use crate::nav::SharedWaveform;
@@ -14,7 +15,7 @@ use super::geometry::{self, content_height, visible_rows, View, ROW_HEIGHT};
 use super::settings::Settings;
 use super::signal::SignalName;
 use super::time::{build_axis, Time};
-use super::util::signal_things::{SignalItem, SignalThings};
+use super::util::signal_things::{RowValues, SignalItem, SignalThings};
 
 /// Decoded histories kept in memory before rows outside the viewport are
 /// dropped again. The backend charges ~40 bytes per decoded change.
@@ -32,11 +33,11 @@ pub struct WaveShowProps {
     /// The opened dump; values are decoded from it on demand.
     #[prop_or_default]
     pub waveform: Option<SharedWaveform>,
-    /// Pre-expanded values for the transports that still send them (tauri /
-    /// server); unused in the browser.
+    /// Start and end of the trace, from
+    /// [`wave_insight_lib::waveform::Waveform::time_range_hint`]. The ruler and
+    /// the fit-to-trace zoom use it; `None` means "unknown" (GHW).
     #[prop_or_default]
-    pub signal_value: Option<Rc<RefCell<ModuleValue>>>,
-    pub end_clock: i32,
+    pub time_range: Option<TimeRange>,
     /// Bumped by the app for every add; the row is pushed once per bump, so a
     /// row the user deleted is not re-added by the next unrelated re-render.
     #[prop_or_default]
@@ -101,8 +102,6 @@ pub struct WaveShow {
     signal_things: SignalThings,
     /// The dump the rows are decoded from.
     waveform: Option<SharedWaveform>,
-    /// The legacy container, for the transports that still send one.
-    legacy: Option<Rc<RefCell<ModuleValue>>>,
     /// Value of [`WaveShowProps::added_seq`] that was already turned into a row.
     added_seq: u32,
 
@@ -151,11 +150,9 @@ impl Component for WaveShow {
     type Properties = WaveShowProps;
 
     fn create(ctx: &Context<Self>) -> Self {
-        let legacy = ctx.props().signal_value.clone();
         let mut this = Self {
             signal_things: SignalThings::new(),
             waveform: ctx.props().waveform.clone(),
-            legacy,
             added_seq: ctx.props().added_seq,
 
             view: View::default(),
@@ -186,9 +183,6 @@ impl Component for WaveShow {
             keyup: None,
             onresize: None,
         };
-        if let Some(legacy) = this.legacy.as_ref() {
-            this.signal_things.refresh_legacy(Some(&legacy.borrow()));
-        }
         this.attach_listeners(ctx);
         this
     }
@@ -265,10 +259,8 @@ impl Component for WaveShow {
                 } else if idx == 70 {
                     //f
                     let metrics = self.measure();
-                    self.view = View::new(
-                        0.0,
-                        View::fit_size(ctx.props().end_clock as i64, metrics.surface_w),
-                    );
+                    let end = self.trace_end(ctx.props().time_range);
+                    self.view = View::new(0.0, View::fit_size(end, metrics.surface_w));
                     self.fitted = true;
                 }
                 true
@@ -405,18 +397,6 @@ impl Component for WaveShow {
             );
             redraw = true;
         }
-        // the legacy transports mutate the container behind its `RefCell`, so a
-        // new value arrives without the handle changing. Compare the handle by
-        // identity: `Rc<RefCell<ModuleValue>>` would otherwise deep compare the
-        // whole trace on every render.
-        if !same_legacy(&self.legacy, &ctx.props().signal_value) {
-            self.legacy = ctx.props().signal_value.clone();
-            redraw = true;
-        }
-        if let Some(legacy) = self.legacy.as_ref() {
-            self.signal_things.refresh_legacy(Some(&legacy.borrow()));
-            redraw = true;
-        }
         redraw
     }
 
@@ -426,7 +406,7 @@ impl Component for WaveShow {
             ctx.link().send_message(Msg::Resize);
         }
         *self.used.borrow_mut() = measured;
-        self.redraw(ctx.props().end_clock);
+        self.redraw(ctx.props().time_range);
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
@@ -517,6 +497,22 @@ impl WaveShow {
         self.key_press.borrow().get(code).copied().unwrap_or(false)
     }
 
+    /// End of the trace for the fit zoom: the cheap range when the dump knows
+    /// one, otherwise the newest decoded history (GHW has no cheap range).
+    fn trace_end(&self, time_range: Option<TimeRange>) -> i64 {
+        if let Some(range) = time_range {
+            return range.end as i64;
+        }
+        self.signal_things
+            .iter()
+            .filter_map(|item| match &item.values {
+                RowValues::Backend(decoded) => decoded.span().map(|(_, end)| end as i64),
+                RowValues::Empty => None,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Row index under a client y coordinate (including the scroll offset).
     fn row_at(&self, client_y: f64) -> usize {
         let metrics = self.measure();
@@ -534,11 +530,6 @@ impl WaveShow {
     /// body, so asking for the visible rows one by one would re-read the dump
     /// once per row. Rows that are already decoded are not touched.
     fn decode_pending(&mut self, fetch: std::ops::Range<usize>) {
-        if self.legacy.is_some() {
-            //the legacy transports push their values, nothing to decode
-            self.last_decoded = 0;
-            return;
-        }
         let Some(waveform) = self.waveform.as_ref().map(|waveform| waveform.as_waveform()) else {
             self.last_decoded = 0;
             return;
@@ -582,16 +573,11 @@ impl WaveShow {
     }
 
     /// Paint the wave canvas from the current state.
-    fn redraw(&mut self, end_clock: i32) {
+    fn redraw(&mut self, time_range: Option<TimeRange>) {
         let redraw_started = js_sys::Date::now();
         let metrics = self.measure();
         if !metrics.is_usable() {
             return;
-        }
-        if !self.fitted {
-            //first real measurement: show the whole trace
-            self.view = View::new(0.0, View::fit_size(end_clock as i64, metrics.surface_w));
-            self.fitted = true;
         }
         let Some(canvas) = surface_element() else {
             return;
@@ -602,6 +588,15 @@ impl WaveShow {
         self.decode_pending(fetch);
         let decode_ms = js_sys::Date::now() - decode_started;
         self.trim_cache(draw.clone());
+
+        if !self.fitted {
+            //first real measurement (and the first decoded rows): show the whole
+            //trace. GHW has no cheap time range, so fall back to the span of the
+            //histories we have.
+            let end = self.trace_end(time_range);
+            self.view = View::new(0.0, View::fit_size(end, metrics.surface_w));
+            self.fitted = true;
+        }
 
         let axis = build_axis(self.view.x_axis, self.view.size, metrics.surface_w);
         let visible: Vec<(usize, &SignalItem)> = (draw.start..draw.end)
@@ -722,18 +717,6 @@ impl WaveShow {
 
 fn document() -> Option<web_sys::Document> {
     web_sys::window().and_then(|window| window.document())
-}
-
-/// Are both legacy handles the same container? (`None` is "no legacy transport").
-fn same_legacy(
-    left: &Option<Rc<RefCell<ModuleValue>>>,
-    right: &Option<Rc<RefCell<ModuleValue>>>,
-) -> bool {
-    match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => Rc::ptr_eq(left, right),
-        _ => false,
-    }
 }
 
 /// The canvas element the wave body is painted into.

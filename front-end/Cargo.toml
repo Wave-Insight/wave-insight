@@ -52,7 +52,8 @@ features = [
 
 [features]
 default = ["wasm"]
+#browser build: files arrive through the file input / drag and drop
 wasm = []
-backend = []
-server = ["backend"]
-tauri = ["backend"]
+#desktop build: tauri provides the file dialog and the launch arguments, the
+#dump is still parsed by the wasm build (the backend only returns the bytes)
+tauri = []

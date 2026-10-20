@@ -1,9 +1,8 @@
 //! Waveform backend: read VCD, FST and GHW through one API.
 //!
-//! This module is the replacement for the hand written VCD parser in
-//! [`crate::parser`] (**that parser is legacy**: it only understands VCD, it
-//! eagerly expands the whole dump, and it has no idea about real/string/event
-//! values. Do not add features to it; port callers to this module instead).
+//! This is the only waveform reader in the crate: the hand written VCD parser
+//! and the `Module`/`ModuleValue` model it fed are gone (see R3 in
+//! `docs/rebuild-plan.md`).
 //!
 //! # What you get
 //!
@@ -16,16 +15,35 @@
 //!   type and payload kind. Hierarchy resolution only touches the file header.
 //! * [`WaveValue`] - owned values that keep `x`/`z`/`h`/`u`/`w`/`l`/`-` apart
 //!   and can also be a real, a string or an event.
+//! * [`Waveform::time_range_hint`] - the trace's start/end without reading the
+//!   body (see [Time range](self#time-range)).
 //! * Value queries, three tiers (see [Choosing a value query](self#choosing-a-value-query)):
 //!   * [`Waveform::decoded_changes`] / [`DecodedSignal`] - cached per signal
 //!     history, the per frame path for a renderer,
 //!   * [`Waveform::value_at`] - one time stamp, `O(log n)`, no history,
 //!   * [`Waveform::changes_in_window`] / [`Waveform::stream_changes`] - streamed
 //!     window, nothing kept, re-reads the body on every call.
-//! * [`Waveform::legacy_module`] / [`Waveform::legacy_module_value`] /
-//!   [`Waveform::to_legacy`] - an adapter that still produces the old
-//!   [`Module`] + [`ModuleValue`] pair so the current front end keeps working
-//!   unchanged. It expands everything (see below), so treat it as a bridge.
+//!
+//! # Time range
+//!
+//! Opening a dump must not read its body, but the wave view needs a time axis to
+//! draw the first frame. [`Waveform::time_range_hint`] answers that cheaply and
+//! is memoized:
+//!
+//! * **VCD** - the body text is scanned for its first and last `#<number>` line
+//!   (`$date`/`$version`/`$comment` blocks are skipped because they may contain
+//!   anything). No value is decoded, no per-signal allocation happens.
+//! * **FST** - the header already carries the time table, so the body handle is
+//!   opened (hierarchy + time table only, no signal data) and kept for later.
+//! * **GHW** - `None`: wellen only knows the time range after reading the whole
+//!   body. Callers fall back to [`Waveform::end_time`], which is exact and
+//!   expensive.
+//!
+//! The hint is *best effort*: a truncated VCD reports the last time stamp it
+//! actually contains, and a header that never closes a command block reports
+//! `None` instead of a garbage number. [`Waveform::start_time`] and
+//! [`Waveform::end_time`] are the exact answers; they read the body for
+//! VCD/GHW and are cheap for FST.
 //!
 //! # Choosing a value query
 //!
@@ -52,17 +70,15 @@
 //!
 //! # Memory behaviour
 //!
-//! [`ModuleValue`] stores, per signal, a `Vec<i32>` of time stamps plus one
-//! `(u8, u8)` pair per *eight* bits of every change, and it allocates a separate
-//! `Vec` for each change. The payload looks small (2 bytes per 8 bits), but
-//! every single change also pays a 24 byte `Vec` header and an allocator block:
-//! a 1-bit clock with 100 000 toggles ends up at several MiB although its actual
-//! payload is 200 KiB. On top of that the old [`crate::parser::vcd_parser`]
-//! materialises the whole dump during load, so the cost is paid before the UI
-//! can draw a first frame, and it is paid for *every* signal whether it is
+//! The deleted `ModuleValue` model stored, per signal, a `Vec<i32>` of time
+//! stamps plus one `(u8, u8)` pair per *eight* bits of every change, and it
+//! allocated a separate `Vec` for each change: a 1-bit clock with 100 000
+//! toggles ended up at several MiB although its actual payload is 200 KiB. On
+//! top of that it materialised the whole dump during load, before the UI could
+//! draw a first frame, and it did that for *every* signal whether it was
 //! displayed or not.
 //!
-//! The new backend does *not* do that:
+//! This backend does *not* do that:
 //!
 //! 1. Opening a file reads the header only. Hierarchy, widths and time scale
 //!    are resolved once; values are not touched.
@@ -83,86 +99,18 @@
 //!    again; [`Waveform::cache_stats`] reports what is held. A signal that is
 //!    too big to hold should be drawn with [`Waveform::changes_in_window`]
 //!    instead.
-//! 5. [`Waveform::legacy_module_value`] materialises **everything** by design:
-//!    it is the compatibility path for the current UI and is only suitable for
-//!    small dumps. For VCD the body also has to be parsed into wellen's in
-//!    memory representation first, which is what makes it the slowest path.
-//!
-//! # Migrating the front end
-//!
-//! The old flow is `vcd_parser(text, &mut Module::new()) -> (Module,
-//! ModuleValue)`, then the UI walks `Module::sub_module` / `Module::signal` and
-//! calls `ModuleValue::get_bool(&signal.value_key)` /
-//! `get_bits(&signal.value_key)`, where `value_key` is the VCD identifier code
-//! (`!`, `"`, ...).
-//!
-//! The new flow, step by step:
-//!
-//! 1. Open once when a file is selected:
-//!    ```no_run
-//!    # use wave_insight_lib::waveform::{Waveform, WaveValue};
-//!    # fn open() -> Result<(), Box<dyn std::error::Error>> {
-//!    let waveform = Waveform::open_path("dump.fst")?;
-//!    for signal in waveform.signals() {
-//!        println!("{} ({:?}, {} bit, {:?})", signal.path(), signal.kind(), signal.width(), signal.index_range());
-//!    }
-//!    # Ok(())
-//!    # }
-//!    ```
-//! 2. Replace the tree of [`Module`]s with [`HierarchyView::root`] and walk it
-//!    with [`ScopeNode::children`] / [`ScopeNode::signals`]; the signal data is
-//!    [`HierarchyView::signal`]. Every row of the wave view then holds a
-//!    `signal.index()` instead of a `value_key` string.
-//! 3. Draw from the lazy path - one call per visible window, only for the
-//!    signals that are on screen:
-//!    ```no_run
-//!    # use wave_insight_lib::waveform::{Waveform, WaveValue, ValueQuery};
-//!    # fn draw(waveform: &Waveform, signal: usize) -> Result<(), Box<dyn std::error::Error>> {
-//!    for (time, value) in waveform.changes_in_window(signal, 1_000, Some(2_000))? {
-//!        let text = value.to_bit_string().unwrap_or_default();
-//!        println!("{time}: {text}");
-//!    }
-//!    // or fully streaming, without a `Vec` in between:
-//!    waveform.stream_changes(&ValueQuery::for_signal(signal), |signal, time, value| {
-//!        let _ = (signal, time, value);
-//!        true // `false` stops early
-//!    })?;
-//!    # Ok(())
-//!    # }
-//!    ```
-//!    A change list alone cannot draw a window: the signal may not change
-//!    inside it. Use [`Waveform::value_at`] to get the value in effect at the
-//!    window start, then paint from there.
-//! 4. The cursor/table view wants the value at the cursor time:
-//!    `waveform.value_at(signal.index(), cursor_time)?` ->
-//!    `Option<WaveValue>` (values render with [`Bits::bit_string`] or
-//!    convert with [`Bits::as_u64`]). While the UI still uses the old
-//!    `BitsData`/`BoolData` renderers, [`WaveValue::to_bits_data`] and
-//!    [`WaveValue::to_bool_data`] hand the value over unchanged
-//!    (`to_bits_data().to_string(width, &ShowType::Hex)` keeps working).
-//! 5. Delete the `GetValue`/`WsSend` round trips and the `ModuleValue` inside
-//!    the `Rc<RefCell<_>>`: value data no longer travels as a whole-trace blob,
-//!    it is queried from `&Waveform` (which is `Send + Sync`, so it can live in
-//!    a `tauri::State`).
-//!
-//! While the UI is not migrated, step 1 plus
-//! `let (module, values) = waveform.to_legacy()?;` is a drop-in replacement:
-//! the tree keeps its shape, `end_clock` is set on the root module only (like
-//! the old parser did) and `get_bool`/`get_bits` keep working. Two things
-//! change: `value_key` is now the full hierarchical path (the VCD identifier
-//! code is not preserved by wellen), and time stamps are clamped to `i32`
-//! because [`ModuleValue`] stores `i32`.
+//! 5. [`Waveform::end_time`] is the only call that materialises the whole body
+//!    on purpose (VCD/GHW); the UI never needs it, [`Waveform::time_range_hint`]
+//!    is what the ruler uses.
 //!
 //! # Limitations
 //!
 //! * GHW can be opened and queried eagerly, but wellen cannot stream GHW;
 //!   [`Waveform::stream_changes`] falls back to materialising the requested
-//!   signals for GHW (correct, but slow and memory hungry).
-//! * The legacy adapter skips [`SignalKind::Real`], [`SignalKind::String`] and
-//!   [`SignalKind::Event`] variables: the old model has no representation for
-//!   them.
-//! * wellen may elide a change whose value repeats the previous one; the old
-//!   parser recorded all of them. Do not rely on "one change per VCD line".
+//!   signals for GHW (correct, but slow and memory hungry). GHW also has no
+//!   cheap time range.
+//! * wellen may elide a change whose value repeats the previous one; a dump is
+//!   not guaranteed to have one change per VCD line.
 //! * `wellen`/`fst-reader` contain `assert!`/`todo!()` on input they consider
 //!   impossible, so a hand crafted or half written file can reach one.
 //!   [`Waveform`] catches those panics and reports [`WaveformError::Corrupt`]
@@ -174,9 +122,10 @@ mod decoded;
 mod error;
 mod format;
 mod hierarchy;
-mod legacy;
 mod query;
+mod render;
 mod source;
+mod timescan;
 mod value;
 
 use std::collections::HashMap;
@@ -185,8 +134,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use wellen::{LoadOptions, Signal, SignalRef, SignalSource, Time};
-
-use crate::data_struct::{Module, ModuleValue};
 
 pub use decoded::{Change, DecodedSignal};
 pub use error::{Result, WaveformError};
@@ -212,13 +159,29 @@ fn load_options() -> LoadOptions {
     }
 }
 
+/// First and last time stamp of a trace, in wave units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeRange {
+    /// Time of the first change.
+    pub start: Time,
+    /// Time of the last change.
+    pub end: Time,
+}
+
+impl TimeRange {
+    /// Number of time units between the first and the last change.
+    pub fn span(&self) -> Time {
+        self.end.saturating_sub(self.start)
+    }
+}
+
 /// An opened waveform file.
 ///
 /// Cheap to open (header only), `Send + Sync`, and all value queries take
 /// `&self`, so it can be shared behind `&` or a mutex/`tauri::State`.
 ///
-/// See the [module documentation](self) for the memory model and the migration
-/// path away from the legacy [`Module`]/[`ModuleValue`] model.
+/// See the [module documentation](self) for the memory model and for what
+/// [`Waveform::time_range_hint`] costs per format.
 pub struct Waveform {
     source: WaveformSource,
     format: WaveFormat,
@@ -229,6 +192,8 @@ pub struct Waveform {
     /// Random access cache. `None` until an eager query needs the body; the
     /// header was already parsed when the file was opened.
     body: Mutex<Option<EagerBody>>,
+    /// Cached answer of [`Waveform::time_range_hint`]: `None` = not asked yet.
+    time_hint: Mutex<Option<Option<TimeRange>>>,
 }
 
 impl fmt::Debug for Waveform {
@@ -293,6 +258,7 @@ impl Waveform {
             version,
             timescale,
             body: Mutex::new(None),
+            time_hint: Mutex::new(None),
         })
     }
 
@@ -356,18 +322,67 @@ impl Waveform {
         self.hierarchy.signal_by_path(path)
     }
 
-    /// Last time stamp that has any change in the file.
+    /// The trace's start and end without reading the body, when that is cheap.
     ///
-    /// Needs the time table, which for VCD means scanning the body once.
+    /// This is what a viewer needs to draw its first frame: the ruler and the
+    /// fit-to-trace zoom. It is memoized, and its cost depends on the format:
+    ///
+    /// * **VCD**: the body text is scanned for its first and last `#<number>`
+    ///   line. `$date`/`$version`/`$comment` blocks are skipped (they are free
+    ///   text and may contain anything), nothing is decoded and nothing is
+    ///   allocated per signal. A 16 MB / 500k change dump takes a few
+    ///   milliseconds.
+    /// * **FST**: the header carries the time table, so the body handle is
+    ///   opened (hierarchy + time table, no signal data) and kept; later value
+    ///   queries reuse it.
+    /// * **GHW**: `None`. wellen only knows the range after reading the body;
+    ///   fall back to [`Waveform::end_time`] and accept the cost.
+    ///
+    /// The answer is a hint: a truncated VCD reports the last time stamp it
+    /// contains, and a header with an unterminated `$command` block reports
+    /// `None` rather than a number from its free text. [`Waveform::end_time`]
+    /// is exact.
+    pub fn time_range_hint(&self) -> Result<Option<TimeRange>> {
+        let mut slot = self
+            .time_hint
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = *slot {
+            return Ok(cached);
+        }
+        let hint = match self.format {
+            WaveFormat::Vcd => {
+                let mut reader = self.source.reader()?;
+                timescan::scan_vcd_time_range(&mut reader)?
+            }
+            WaveFormat::Fst => {
+                //the FST header contains the time table; opening the body
+                //handle reads no signal data and is kept for later queries
+                let mut guard = self.lock_body();
+                let body = self.ensure_body(&mut guard)?;
+                let start = body.time_table.first().copied();
+                let end = body.time_table.last().copied();
+                start.zip(end).map(|(start, end)| TimeRange { start, end })
+            }
+            WaveFormat::Ghw => None,
+        };
+        *slot = Some(hint);
+        Ok(hint)
+    }
+
+    /// Last time stamp that has any change in the file. **Exact, but reads the
+    /// body** for VCD/GHW (cheap for FST, whose time table is in the header).
+    ///
+    /// The viewer uses [`Waveform::time_range_hint`] instead; this is for
+    /// exports and for tests that need the authoritative answer.
     pub fn end_time(&self) -> Result<Option<Time>> {
         let mut guard = self.lock_body();
         let body = self.ensure_body(&mut guard)?;
         Ok(body.time_table.last().copied())
     }
 
-    /// First time stamp that has any change in the file.
-    ///
-    /// Needs the time table, which for VCD means scanning the body once.
+    /// First time stamp that has any change in the file. Same cost as
+    /// [`Waveform::end_time`].
     pub fn start_time(&self) -> Result<Option<Time>> {
         let mut guard = self.lock_body();
         let body = self.ensure_body(&mut guard)?;
@@ -655,35 +670,6 @@ impl Waveform {
         Ok(changes)
     }
 
-    /// Build the legacy [`Module`] tree of the whole design.
-    ///
-    /// Only the hierarchy is converted; `value_key` is set to the full
-    /// hierarchical path and `size` to the declared bit width. `end_clock`
-    /// needs the time table, so this reads the body (for VCD: the whole file).
-    pub fn legacy_module(&self) -> Result<Module> {
-        let end_clock = self.end_time()?.map(time_to_i32).unwrap_or(0);
-        Ok(legacy::build_module(&self.hierarchy, end_clock))
-    }
-
-    /// Build the legacy [`ModuleValue`] for the whole trace.
-    ///
-    /// **This materialises every change of every bit vector signal** in the old
-    /// `(u8, u8)` layout, which is what used to make big dumps explode. It
-    /// exists so the current UI keeps working; prefer
-    /// [`Waveform::changes_in_window`] + [`Waveform::value_at`] for new code.
-    ///
-    /// Keys are [`SignalInfo::path`] values (the old VCD identifier codes are
-    /// not available through wellen). Real, string and event variables are
-    /// skipped because the old model cannot represent them.
-    pub fn legacy_module_value(&self) -> Result<ModuleValue> {
-        legacy::build_module_value(self)
-    }
-
-    /// [`Waveform::legacy_module`] plus [`Waveform::legacy_module_value`].
-    pub fn to_legacy(&self) -> Result<(Module, ModuleValue)> {
-        Ok((self.legacy_module()?, self.legacy_module_value()?))
-    }
-
     /// GHW fallback: materialise the requested signals one at a time.
     fn stream_changes_materialised<F>(&self, query: &ValueQuery, mut visit: F) -> Result<()>
     where
@@ -746,11 +732,6 @@ impl Waveform {
             .as_mut()
             .ok_or_else(|| WaveformError::Backend("waveform body could not be loaded".to_string()))
     }
-}
-
-/// Old `Module::end_clock` and `ModuleValue` time stamps are `i32`.
-pub(crate) fn time_to_i32(time: Time) -> i32 {
-    time.min(i32::MAX as u64) as i32
 }
 
 /// What [`Waveform::cache_stats`] found in the per signal cache.

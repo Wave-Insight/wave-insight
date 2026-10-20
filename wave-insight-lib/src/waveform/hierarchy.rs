@@ -81,8 +81,8 @@ impl SignalInfo {
 
     /// Full dotted path, e.g. `top.u_cpu.pc`.
     ///
-    /// This is also the key the legacy [`crate::data_struct::ModuleValue`]
-    /// adapter uses, replacing the VCD identifier code.
+    /// This is the key the wave view uses to match a row against the dump (the
+    /// VCD identifier code is not preserved by wellen).
     pub fn path(&self) -> &str {
         &self.path
     }

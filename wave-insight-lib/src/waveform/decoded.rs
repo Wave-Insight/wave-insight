@@ -51,6 +51,22 @@ impl DecodedSignal {
         Self { changes }
     }
 
+    /// Build a handle from changes the caller already decoded.
+    ///
+    /// The backend hands out handles for signals it decoded itself
+    /// ([`super::Waveform::decoded_changes`]); this lets a client wrap its own
+    /// history (synthetic data, a cached export, a filtered view) in the same
+    /// type, so the drawing code does not need a second representation. Times
+    /// must be sorted; a debug assertion checks it.
+    pub fn from_changes(changes: impl Into<Arc<[Change]>>) -> Self {
+        let changes = changes.into();
+        debug_assert!(
+            changes.windows(2).all(|pair| pair[0].0 <= pair[1].0),
+            "a decoded history must be sorted by time"
+        );
+        Self { changes }
+    }
+
     /// The whole history, in chronological order.
     pub fn changes(&self) -> &[Change] {
         &self.changes

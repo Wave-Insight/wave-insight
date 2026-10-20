@@ -1,8 +1,5 @@
 pub use file::FileLoad;
-
-#[cfg(feature = "backend")]
-pub use file::FileType;
-#[cfg(feature = "backend")]
+#[cfg(feature = "tauri")]
 pub use filelist::FileList;
 #[cfg(feature = "tauri")]
 pub use filelist::invoke;
@@ -10,5 +7,5 @@ pub use filelist::invoke;
 pub use filelist::listen;
 
 mod file;
-#[cfg(feature = "backend")]
+#[cfg(feature = "tauri")]
 mod filelist;

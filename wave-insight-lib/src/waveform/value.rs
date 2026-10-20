@@ -11,7 +11,6 @@
 //! documentation of [`crate::waveform`].
 
 use super::hierarchy::SignalKind;
-use crate::data_struct::{BitsData, BoolData};
 
 /// A single bit of a two/four/nine state value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -176,36 +175,36 @@ impl Bits {
         !self.bits.iter().all(|b| b.is_known())
     }
 
-    /// Convert into the old [`BitsData`] so the existing [`ShowType`] renderers
-    /// (hex/oct/uint/sint/ascii) can be reused during the UI migration.
+    /// The single bit of a one bit vector, `None` for wider vectors.
+    ///
+    /// This is what the wave view draws a digital step from.
+    pub fn single_bit(&self) -> Option<BitValue> {
+        if self.bits.len() == 1 {
+            Some(self.bits[0])
+        } else {
+            None
+        }
+    }
+
+    /// Render with one of the viewer's [`ShowType`]s (hex, oct, decimal, ...).
+    ///
+    /// `bitcount` is the number of bits the *display* has room for; it is
+    /// clamped to this vector's width, so a dump that is narrower than the
+    /// design cannot underflow the formatter (it used to panic with "attempt to
+    /// subtract with overflow") and a wider display does not show padding zeros.
     ///
     /// [`ShowType`]: crate::data_struct::ShowType
-    pub fn to_bits_data(&self) -> BitsData {
-        BitsData::new(self.to_legacy_chunk())
+    pub fn render(&self, bitcount: usize, show: &crate::data_struct::ShowType) -> String {
+        let bitcount = bitcount.min(self.bits.len());
+        super::render::render_chunk(&self.to_chunk(), bitcount, show)
     }
 
-    /// Interpret this as a single bit for the wave view.
+    /// Encode into the `(xz, num)` byte layout the formatter works on: big
+    /// endian bytes, one pair per group of eight bits.
     ///
-    /// `None` if the vector is not exactly one bit wide. `h`/`l` count as
-    /// `1`/`0`, everything else unknown becomes [`BoolData::X`].
-    pub fn to_bool_data(&self) -> Option<BoolData> {
-        if self.bits.len() != 1 {
-            return None;
-        }
-        Some(match self.bits[0] {
-            BitValue::Zero | BitValue::L => BoolData::Zero,
-            BitValue::One | BitValue::H => BoolData::One,
-            BitValue::Z => BoolData::Z,
-            BitValue::X | BitValue::U | BitValue::W | BitValue::Dash => BoolData::X,
-        })
-    }
-
-    /// Encode into the old `ModuleValue` layout: big endian bytes, one
-    /// `(xz, num)` pair per group of eight bits.
-    ///
-    /// The first `value.len() * 8 - width` bits are padding, which is exactly
-    /// what `BitsData::to_string(bitcount, ..)` expects (it drops them).
-    pub(crate) fn to_legacy_chunk(&self) -> Vec<(u8, u8)> {
+    /// The leading `chunk.len() * 8 - width` bits are padding, which is exactly
+    /// what the formatter drops when `bitcount` is smaller.
+    pub(crate) fn to_chunk(&self) -> Vec<(u8, u8)> {
         let width = self.bits.len();
         let n_bytes = width.div_ceil(8);
         let mut out = vec![(0u8, 0u8); n_bytes];
@@ -217,6 +216,27 @@ impl Bits {
             out[byte].1 |= num << shift;
         }
         out
+    }
+
+    /// The inverse of [`Bits::to_chunk`], for tests: the low `width` bits of a
+    /// packed byte layout.
+    #[cfg(test)]
+    pub(crate) fn from_chunk(chunk: &[(u8, u8)], width: usize) -> Self {
+        let mut bits = Vec::with_capacity(chunk.len() * 8);
+        for (xz, num) in chunk {
+            for idx in (0..8).rev() {
+                let x = xz & (1 << idx) != 0;
+                let n = num & (1 << idx) != 0;
+                bits.push(match (x, n) {
+                    (false, false) => BitValue::Zero,
+                    (false, true) => BitValue::One,
+                    (true, false) => BitValue::X,
+                    (true, true) => BitValue::Z,
+                });
+            }
+        }
+        let width = width.min(bits.len());
+        Bits::new_msb_first(bits[bits.len() - width..].to_vec())
     }
 }
 
@@ -274,30 +294,19 @@ impl WaveValue {
         self.as_bits().and_then(|bits| bits.as_u64())
     }
 
-    /// Convert into the old [`BitsData`] renderer type (for bit vectors).
-    pub fn to_bits_data(&self) -> Option<BitsData> {
-        self.as_bits().map(Bits::to_bits_data)
-    }
-
-    /// Convert into the old [`BoolData`] type (only for one bit values).
-    pub fn to_bool_data(&self) -> Option<BoolData> {
-        self.as_bits().and_then(Bits::to_bool_data)
+    /// Render this value with one of the viewer's [`ShowType`]s.
+    ///
+    /// `None` for real, string and event values: they are not bit vectors.
+    /// `bitcount` is clamped to the value's width (see [`Bits::render`]).
+    ///
+    /// [`ShowType`]: crate::data_struct::ShowType
+    pub fn render(&self, bitcount: usize, show: &crate::data_struct::ShowType) -> Option<String> {
+        self.as_bits().map(|bits| bits.render(bitcount, show))
     }
 
     /// `true` if this is an event.
     pub fn is_event(&self) -> bool {
         matches!(self, WaveValue::Event)
-    }
-
-    /// Convert into the old `ModuleValue` chunk, if possible.
-    ///
-    /// Real, string and event values have no representation in the old model
-    /// and yield `None`; the legacy adapter skips them.
-    pub(crate) fn to_legacy_chunk(&self) -> Option<Vec<(u8, u8)>> {
-        match self {
-            WaveValue::Bits(bits) => Some(bits.to_legacy_chunk()),
-            _ => None,
-        }
     }
 
     /// Copy a value out of `wellen`'s decoder.
@@ -345,20 +354,64 @@ mod tests {
     }
 
     #[test]
-    fn legacy_chunk_keeps_the_bit_order() {
-        //0b1010_1100 as a four state vector, msb first
+    fn chunk_keeps_the_bit_order() {
+        //0b1010 as a four state vector, msb first
         let bits =
             Bits::new_msb_first(vec![BitValue::One, BitValue::Zero, BitValue::One, BitValue::Zero]);
-        assert_eq!(bits.to_legacy_chunk(), vec![(0, 0b1010)]);
-        assert_eq!(bits.to_bits_data().to_string(4, &crate::data_struct::ShowType::Bin), "1010");
+        assert_eq!(bits.to_chunk(), vec![(0, 0b1010)]);
+        assert_eq!(bits.render(4, &crate::data_struct::ShowType::Bin), "1010");
 
         //nine bits: two bytes with the padding in the first one
         let mut msb_first = vec![BitValue::One];
         msb_first.extend(std::iter::repeat(BitValue::Zero).take(8));
         let nine = Bits::new_msb_first(msb_first);
-        assert_eq!(nine.to_legacy_chunk(), vec![(0, 0b0000_0001), (0, 0)]);
+        assert_eq!(nine.to_chunk(), vec![(0, 0b0000_0001), (0, 0)]);
         assert_eq!(nine.as_u64(), Some(0x100));
         assert_eq!(nine.get(8), Some(BitValue::One));
         assert_eq!(nine.get(0), Some(BitValue::Zero));
+    }
+
+    /// The packed layout and the bit vector must round trip, because the
+    /// formatter works on the packed layout. (The packing is four state, so this
+    /// only holds for 0/1/x/z values; `h`/`l`/`u`/`w`/`-` are lossy by design.)
+    #[test]
+    fn from_chunk_is_the_inverse_of_to_chunk() {
+        for width in 1..=20usize {
+            let bits: Vec<BitValue> = (0..width)
+                .map(|index| match index % 4 {
+                    0 => BitValue::Zero,
+                    1 => BitValue::One,
+                    2 => BitValue::X,
+                    _ => BitValue::Z,
+                })
+                .collect();
+            let bits = Bits::new_msb_first(bits);
+            let round = Bits::from_chunk(&bits.to_chunk(), width);
+            assert_eq!(round.bit_string(), bits.bit_string(), "width {width}");
+        }
+    }
+
+    /// `Bits::render` is the `ShowType` formatter; it must agree with the old
+    /// `BitsData::to_string(bitcount, showtype)` for every value the viewer
+    /// draws. These are the old expectations, expressed as bit vectors.
+    #[test]
+    fn render_matches_the_old_formatter() {
+        use crate::data_struct::ShowType;
+        let two = Bits::from_chunk(&[(0, 1), (0, 23)], 10);
+        assert_eq!(two.render(10, &ShowType::Bin), "0100010111");
+        assert_eq!(two.render(10, &ShowType::Oct), "0427");
+        assert_eq!(two.render(10, &ShowType::Hex), "117");
+        assert_eq!(two.render(10, &ShowType::UInt), "279");
+        assert_eq!(two.render(10, &ShowType::SInt), "279");
+
+        let z = Bits::from_chunk(&[(1, 1), (0, 123)], 10);
+        assert_eq!(z.render(10, &ShowType::Bin), "0z01111011");
+        assert_eq!(z.render(10, &ShowType::Hex), "z7b");
+        assert_eq!(z.render(10, &ShowType::UInt), "X");
+
+        //a value narrower than the display width is clamped, not a panic
+        let narrow = Bits::from_chunk(&[(0, 0x18)], 5);
+        assert_eq!(narrow.render(32, &ShowType::Hex), "18");
+        assert_eq!(narrow.render(32, &ShowType::Bin), "11000");
     }
 }

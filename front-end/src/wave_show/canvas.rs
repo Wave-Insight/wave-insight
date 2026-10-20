@@ -9,11 +9,10 @@
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-use wave_insight_lib::data_struct::{BitsData, BoolData};
-use wave_insight_lib::waveform::WaveValue;
+use wave_insight_lib::waveform::{BitValue, WaveValue};
 
 use crate::wave_show::geometry::{ROW_HEIGHT, Time, View};
-use crate::wave_show::util::signal_things::{RowKind, RowValue, SignalItem};
+use crate::wave_show::util::signal_things::{RowKind, SignalItem};
 use crate::wave_show::Settings;
 
 /// Palette, mirrored from `:root` in `styles.css`.
@@ -208,23 +207,15 @@ fn draw_no_data(context: &CanvasRenderingContext2d, top: f64, width: f64) {
     context.stroke();
 }
 
-fn bool_level(value: RowValue<'_>, top: f64) -> f64 {
+fn bool_level(value: &WaveValue, top: f64) -> f64 {
     let high = top + ROW_PAD;
     let low = top + ROW_HEIGHT - ROW_PAD;
     let mid = top + ROW_HEIGHT / 2.0;
-    match value {
-        RowValue::Backend(value) => match value.to_bool_data() {
-            Some(BoolData::Zero) => low,
-            Some(BoolData::One) => high,
-            //`x` and `z` sit on the middle line, like the old svg renderer
-            _ => mid,
-        },
-        RowValue::Bool(flag) => match flag {
-            BoolData::Zero => low,
-            BoolData::One => high,
-            _ => mid,
-        },
-        RowValue::Bits(_) => mid,
+    match value.as_bits().and_then(|bits| bits.single_bit()) {
+        Some(BitValue::Zero) | Some(BitValue::L) => low,
+        Some(BitValue::One) | Some(BitValue::H) => high,
+        //`x`/`z`/`u`/`w`/`-` sit on the middle line, like the old svg renderer
+        _ => mid,
     }
 }
 
@@ -329,10 +320,20 @@ fn draw_bus_row(
     context.stroke();
 }
 
+/// The label of one value: bit vectors follow the row's `ShowType`, reals and
+/// strings are printed as they are, events have no text.
+fn value_text(value: &WaveValue, width: usize, setting: &Settings) -> Option<String> {
+    match value {
+        WaveValue::Real(number) => Some(format!("{number}")),
+        WaveValue::String(text) => Some(text.clone()),
+        _ => value.render(width, &setting.show_type),
+    }
+}
+
 /// Draw the value of one bus segment if the text fits between `from` and `to`.
 fn label_segment(
     context: &CanvasRenderingContext2d,
-    value: RowValue<'_>,
+    value: &WaveValue,
     setting: &Settings,
     format_width: usize,
     from: f64,
@@ -340,8 +341,7 @@ fn label_segment(
     upper: f64,
     lower: f64,
 ) {
-    let text = format_row_value(value, setting, format_width);
-    let Some(text) = text else {
+    let Some(text) = value_text(value, format_width, setting) else {
         return;
     };
     let segment = to - from;
@@ -386,7 +386,7 @@ fn draw_cursor_value(
     let Some(value) = item.values.value_at(cursor) else {
         return;
     };
-    let Some(text) = format_row_value(value, &item.setting, item.format_width()) else {
+    let Some(text) = value_text(value, item.format_width(), &item.setting) else {
         return;
     };
     context.set_font(FONT);
@@ -445,46 +445,6 @@ fn color_string(setting: &Settings) -> String {
         "rgb({},{},{})",
         setting.color.0, setting.color.1, setting.color.2
     )
-}
-
-/// Format one value the way the row's [`Settings::show_type`] asks for.
-///
-/// The bit count is clamped to what the value really holds: a dump can be
-/// narrower than the design (a truncated vector), and the legacy formatters
-/// panic when asked for more bits than they have.
-fn format_row_value(value: RowValue<'_>, setting: &Settings, width: usize) -> Option<String> {
-    match value {
-        RowValue::Backend(value) => format_wave_value(value, setting, width),
-        RowValue::Bool(flag) => Some(bool_text(flag)),
-        RowValue::Bits(data) => Some(format_bits_data(data, setting, width)),
-    }
-}
-
-fn bool_text(flag: &BoolData) -> String {
-    match flag {
-        BoolData::Zero => "0",
-        BoolData::One => "1",
-        BoolData::X => "x",
-        BoolData::Z => "z",
-    }
-    .to_string()
-}
-
-fn format_wave_value(value: &WaveValue, setting: &Settings, width: usize) -> Option<String> {
-    if let Some(flag) = value.to_bool_data() {
-        return Some(bool_text(&flag));
-    }
-    let actual = value.as_bits().map(|bits| bits.width()).unwrap_or(width);
-    let bitcount = width.max(1).min(actual.max(1));
-    value
-        .to_bits_data()
-        .map(|bits| bits.to_string(bitcount, &setting.show_type))
-}
-
-fn format_bits_data(data: &BitsData, setting: &Settings, width: usize) -> String {
-    //the legacy transports do not report the real width, so `width` is all we
-    //have here; the backend path above clamps against the value itself
-    data.to_string(width.max(1), &setting.show_type)
 }
 
 /// Numbers from one redraw, for the QA harness and for profiling.

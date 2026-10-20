@@ -2,13 +2,22 @@
 
 [Click to try the web demo](https://wave-insight.github.io/wave-insight/)
 
-A web based wave viewer
+A wave viewer and debugger for Verilog/SystemVerilog: it reads VCD, FST and GHW
+dumps, shows the hierarchy and the waveforms, and links signals to their
+declarations, drivers and loads in the source.
 
 ## Platform
 
-* `wasm version`: you can click [here](https://wave-insight.github.io/wave-insight/) to have a try. It's only a website so you don't need to download anything or install anything. Normally, web browser only gives 4GB of memory for wasm, so it may crash when you try to load a big vcd file
-* `tauri version`: a local app for windows, linux and mac os. You can download at [release page](https://github.com/Wave-Insight/wave-insight/releases). For windows user, you can download `wave_insight_tauri.exe` to run. For linux user, you can download `wave_insight_tauri_ubuntu`, and then you need to run `chmod a+x wave_insight_tauri_ubuntu` and `./wave_insight_tauri_ubuntu` to run this app. For mac user, same to linux user except for the app is `wave_insight_tauri_mac`. You can drag `.vcd` or `.v` file on the app to load
-* `server version`: still on developing. For those who like simulate on a remote server. The vcd parser and verilog parser will running on the server. All the communications between server and your web browser are only: which file you want to read, verilog source code, which signal you want to see, and the signal value.
+There are two builds, and both parse everything in the application itself — no
+server and no second copy of the reader:
+
+* `wasm version`: you can click [here](https://wave-insight.github.io/wave-insight/) to have a try. It's only a website so you don't need to download anything or install anything. A browser normally gives wasm 4GB of memory, so a very large dump can still exhaust it; a dump is opened lazily (only the header and a cheap scan of the time stamps, values are decoded per signal as you look at them), so the size that fits is much larger than it used to be.
+* `tauri version`: a local app for windows, linux and mac os. You can download at [release page](https://github.com/Wave-Insight/wave-insight/releases). For windows user, you can download `wave_insight_tauri.exe` to run. For linux user, you can download `wave_insight_tauri_ubuntu`, and then you need to run `chmod a+x wave_insight_tauri_ubuntu` and `./wave_insight_tauri_ubuntu` to run this app. For mac user, same to linux user except for the app is `wave_insight_tauri_mac`. You can drag `.vcd`, `.fst`, `.ghw` or `.v`/`.sv` files on the app to load. The tauri backend only opens the file dialog and returns the bytes; the dump is parsed by the webview with the same code the browser build uses.
+
+The old `server version` (a websocket that streamed a serialised waveform model
+to a web page) has been removed: the browser reads files itself, so it had no
+job left. What remains in the `back-end` crate is the stdio transport of the
+language server (`cargo run -p back-end --bin lsp`).
 
 ## Build
 
@@ -60,26 +69,13 @@ cargo install tauri
 cargo tauri build
 ```
 
-### server version
-
-still a minimal demo, it serves `front-end/dist` on `127.0.0.1:2992` and answers signal
-requests over a websocket on port `2993`
-
-```bash
-rustup target add wasm32-unknown-unknown
-cargo install trunk
-cd front-end
-trunk build --no-default-features --release --features backend
-cd ..
-cd back-end
-cargo run --release -- <vcd file> <listen address>
-```
-
-both arguments are optional and default to `test.vcd` and `0.0.0.0:2993`
-
 ## Usage
 
-load `.vcd` and `.verilog` file
+Load a `.vcd`, `.fst` or `.ghw` dump and any `.v`/`.sv` sources it came from.
+Click a signal in the sidebar (or an identifier in the source) to add it to the
+wave view; scroll to move through the signals, `ctrl`+wheel to zoom, drag to
+zoom into a range, left/right click to place the two cursors, `z`/`f` to zoom
+out and fit.
 
 ## Todos
 

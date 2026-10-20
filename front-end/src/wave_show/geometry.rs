@@ -135,7 +135,7 @@ impl View {
     }
 }
 
-/// Old `ModuleValue`/cursor time stamps are `i32`; clamp instead of wrapping.
+/// Cursors and `Settings` are `i32`; clamp instead of wrapping.
 pub fn clamp_i32(value: f64) -> i32 {
     if !value.is_finite() {
         return 0;
@@ -182,11 +182,10 @@ pub fn content_height(rows: usize) -> f64 {
     rows as f64 * ROW_HEIGHT
 }
 
-/// Anything the renderer can draw: a `(time, value)` pair.
+/// Anything the renderer can draw: a time stamped item.
 ///
-/// Implemented for the backend's [`Change`] and for the legacy transports'
-/// `(i32, BoolData)` / `(i32, BitsData)` pairs, so the slicing and decimation
-/// below only exist once.
+/// Implemented for the backend's [`Change`]; the slicing and decimation below
+/// only exist once.
 pub trait Stamped {
     /// Time stamp in wave units.
     fn stamp(&self) -> Time;
@@ -198,19 +197,11 @@ impl Stamped for Change {
     }
 }
 
-impl Stamped for (i32, wave_insight_lib::data_struct::BoolData) {
-    fn stamp(&self) -> Time {
-        clamp_time(self.0 as f64)
-    }
-}
-
-impl Stamped for (i32, wave_insight_lib::data_struct::BitsData) {
-    fn stamp(&self) -> Time {
-        clamp_time(self.0 as f64)
-    }
-}
-
 /// [`slice_window`] for anything time stamped.
+///
+/// The row model slices through the backend's `DecodedSignal`, so this is only
+/// used by the unit tests today; it keeps the window semantics in one place.
+#[allow(dead_code)]
 pub fn slice_window_stamped<T: Stamped>(items: &[T], start: Time, end: Time) -> &[T] {
     let from = items.partition_point(|item| item.stamp() < start);
     let to = items.partition_point(|item| item.stamp() <= end);
@@ -221,7 +212,9 @@ pub fn slice_window_stamped<T: Stamped>(items: &[T], start: Time, end: Time) -> 
     }
 }
 
-/// [`value_at`] for anything time stamped.
+/// [`value_at`] for anything time stamped. Same note as
+/// [`slice_window_stamped`].
+#[allow(dead_code)]
 pub fn value_at_stamped<T: Stamped>(items: &[T], time: Time) -> Option<&T> {
     let position = items.partition_point(|item| item.stamp() <= time);
     if position == 0 {
@@ -481,33 +474,5 @@ mod tests {
         assert_eq!(clamp_time(f64::NAN), 0);
         assert_eq!(clamp_time(f64::INFINITY), u64::MAX);
         assert_eq!(clamp_time(42.9), 42);
-    }
-
-    #[test]
-    fn legacy_pairs_are_sliced_like_backend_changes() {
-        use wave_insight_lib::data_struct::BoolData;
-        let legacy: Vec<(i32, BoolData)> = vec![
-            (0, BoolData::Zero),
-            (10, BoolData::One),
-            (20, BoolData::Zero),
-        ];
-        //the same inclusive window semantics as the backend rows
-        assert_eq!(slice_window_stamped(&legacy, 0, 20).len(), 3);
-        assert_eq!(slice_window_stamped(&legacy, 10, 10).len(), 1);
-        assert!(slice_window_stamped(&legacy, 11, 19).is_empty());
-        assert_eq!(value_at_stamped(&legacy, 15).unwrap().1, BoolData::One);
-        //nothing is in effect before the first change of an empty history
-        let empty: Vec<(i32, BoolData)> = Vec::new();
-        assert!(value_at_stamped(&empty, 0).is_none());
-
-        //negative legacy time stamps are clamped, they cannot index a window
-        let negative: Vec<(i32, BoolData)> = vec![(-5, BoolData::One)];
-        assert_eq!(negative[0].stamp(), 0);
-
-        //and the decimation works on them too
-        let view = View::new(0.0, 10.0);
-        let mut drawn = Vec::new();
-        for_each_pixel_stamped(&legacy, &view, 1000.0, |_, item| drawn.push(item.0));
-        assert_eq!(drawn, vec![0, 10, 20]);
     }
 }

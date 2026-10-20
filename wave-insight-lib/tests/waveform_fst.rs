@@ -16,9 +16,9 @@
 //! (the reader path is the same wellen code for both formats, but the fixture
 //! has no unknown bits).
 
-use wave_insight_lib::data_struct::{BoolData, ShowType};
+use wave_insight_lib::data_struct::ShowType;
 use wave_insight_lib::waveform::{
-    SignalKind, TimeUnit, ValueQuery, WaveFormat, WaveValue, Waveform,
+    BitValue, SignalKind, TimeRange, TimeUnit, ValueQuery, WaveFormat, WaveValue, Waveform,
 };
 
 const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/io_mode_wave.fst");
@@ -264,40 +264,85 @@ fn bytes_and_path_sources_agree() {
 }
 
 #[test]
-fn legacy_adapter_works_on_fst() {
+fn the_time_range_comes_from_the_header() {
     let waveform = open();
-    let (module, values) = waveform.to_legacy().expect("legacy conversion");
+    //FST carries the time table in its header, so this is cheap and exact
+    assert_eq!(
+        waveform.time_range_hint().unwrap(),
+        Some(TimeRange {
+            start: 0,
+            end: 13_800_000
+        })
+    );
+    //and it agrees with the exact accessors
+    assert_eq!(waveform.start_time().unwrap(), Some(0));
+    assert_eq!(waveform.end_time().unwrap(), Some(13_800_000));
+    assert_eq!(waveform.time_range_hint().unwrap().unwrap().span(), 13_800_000);
+}
 
-    assert_eq!(module.end_clock, 13_800_000);
-    let top = module.sub_module.get("TOP").expect("`TOP` module");
-    assert!(top.sub_module.contains_key("SpiMasterCtrlContinuous"));
+#[test]
+fn values_render_with_the_show_types() {
+    let waveform = open();
 
-    let clk = &top.signal["clk"];
-    assert_eq!(clk.size, 1);
-    assert_eq!(clk.value_key, "TOP.clk");
+    //one bit values: the single bit, and the exact old `BoolData::Zero/One/Z`
+    //mapping the renderer used
+    let clk = waveform.signal_by_path("TOP.clk").unwrap().index();
+    let clk_changes = waveform.all_changes(clk).unwrap();
+    assert_eq!(clk_changes.len(), 243);
+    let bit_at = |time| {
+        waveform
+            .value_at(clk, time)
+            .unwrap()
+            .unwrap()
+            .as_bits()
+            .and_then(|bits| bits.single_bit())
+    };
+    assert_eq!(bit_at(0), Some(BitValue::Zero));
+    assert_eq!(bit_at(1_700_000), Some(BitValue::One));
 
-    let clk_values = values.get_bool("TOP.clk");
-    assert_eq!(clk_values.len(), 243);
-    assert_eq!(clk_values[0], (0, BoolData::Zero));
-    assert_eq!(clk_values[1], (1_700_000, BoolData::One));
+    //an eight bit value, in hex
+    let ss = waveform.signal_by_path("TOP.io_spi_ss").unwrap().index();
+    let ss_changes = waveform.all_changes(ss).unwrap();
+    assert_eq!(ss_changes.len(), 3);
+    assert_eq!(
+        ss_changes[0].1.render(8, &ShowType::Hex).as_deref(),
+        Some("ff")
+    );
+    assert_eq!(
+        ss_changes[1].1.render(8, &ShowType::Hex).as_deref(),
+        Some("fe")
+    );
+    assert_eq!(
+        ss_changes[2].1.render(8, &ShowType::Hex).as_deref(),
+        Some("ff")
+    );
 
-    let ss = values.get_bits("TOP.io_spi_ss");
-    assert_eq!(ss.len(), 3);
-    assert_eq!(ss[0].1.to_string(8, &ShowType::Hex), "ff");
-    assert_eq!(ss[1].1.to_string(8, &ShowType::Hex), "fe");
-    assert_eq!(ss[2].1.to_string(8, &ShowType::Hex), "ff");
+    //a width that is not a multiple of eight: the display has to drop the
+    //padding bits in the first byte
+    let args = waveform.signal_by_path("TOP.io_cmd_payload_args").unwrap().index();
+    let args_changes = waveform.all_changes(args).unwrap();
+    assert_eq!(
+        args_changes[0].1.render(9, &ShowType::Bin).as_deref(),
+        Some("110111001")
+    );
+    assert_eq!(
+        args_changes[0].1.render(9, &ShowType::Hex).as_deref(),
+        Some("1b9")
+    );
+    assert_eq!(
+        args_changes[0].1.render(9, &ShowType::UInt).as_deref(),
+        Some("441")
+    );
+    assert_eq!(
+        args_changes[1].1.render(9, &ShowType::UInt).as_deref(),
+        Some("1")
+    );
 
-    //a width that is not a multiple of eight: the old layout has to keep the
-    //padding bits in the first byte and the display has to drop them
-    let args = values.get_bits("TOP.io_cmd_payload_args");
-    assert_eq!(args[0].1.to_string(9, &ShowType::Bin), "110111001");
-    assert_eq!(args[0].1.to_string(9, &ShowType::Hex), "1b9");
-    assert_eq!(args[0].1.to_string(9, &ShowType::UInt), "441");
-    assert_eq!(args[1].1.to_string(9, &ShowType::UInt), "1");
-
-    //an unknown key behaves like the old model: empty, no panic
-    assert!(values.get_bool("TOP.does_not_exist").is_empty());
-    assert!(values.get_bits("TOP.does_not_exist").is_empty());
+    //a display width wider than the dump is clamped, not a panic
+    assert_eq!(
+        args_changes[0].1.render(64, &ShowType::Hex).as_deref(),
+        Some("1b9")
+    );
 }
 
 #[test]
