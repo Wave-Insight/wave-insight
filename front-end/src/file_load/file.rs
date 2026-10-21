@@ -7,7 +7,7 @@ use web_sys::{DragEvent, Event, HtmlInputElement};
 use gloo_file::File;
 #[cfg(feature = "tauri")]
 use crate::file_load::FileList;
-use crate::nav::SharedWaveform;
+use crate::state::types::DumpHandle;
 
 #[cfg(not(feature = "tauri"))]
 use gloo_file::callbacks::FileReader;
@@ -68,7 +68,7 @@ pub enum Msg {
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct FileLoadProps {
     /// A dump was opened: the handle the wave view decodes values from.
-    pub ongetwaveform: Callback<SharedWaveform>,
+    pub ongetwaveform: Callback<DumpHandle>,
     /// A source file was read; it goes to the design database, not to a parser.
     pub ongetverilog: Callback<(String, String)>,
     /// A file could not be used; the app shows it in the top bar.
@@ -238,7 +238,7 @@ pub fn open_waveform(ctx: &Context<FileLoad>, file_name: String, bytes: Vec<u8>)
                 )
                 .into(),
             );
-            ctx.props().ongetwaveform.emit(SharedWaveform::new(waveform));
+            ctx.props().ongetwaveform.emit(DumpHandle::new(waveform));
         }
         Err(error) => {
             // the library message says *what* is wrong ("unknown waveform

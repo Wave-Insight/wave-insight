@@ -6,7 +6,7 @@ use wasm_bindgen::JsCast;
 use wave_insight_lib::waveform::TimeRange;
 use yew::prelude::*;
 
-use crate::nav::SharedWaveform;
+use crate::state::DumpHandle;
 use std::cell::Cell;
 
 use crate::state::{self, select, Cursors, RowsSlice, Store, Subscription, View, Viewport};
@@ -33,10 +33,9 @@ const NAME_OVERSCAN: usize = 4;
 pub struct WaveShowProps {
     /// The app store: the rows (order, settings, selection) are subscribed from
     /// here, and every row change is dispatched back as an action (R2 step 2 B1).
+    /// The opened dump lives in the store too (R2 step 3), so the pane takes no
+    /// waveform prop any more.
     pub store: Store,
-    /// The opened dump; values are decoded from it on demand.
-    #[prop_or_default]
-    pub waveform: Option<SharedWaveform>,
 
     /// The selected signal, for the driver/load panel.
     #[prop_or_default]
@@ -58,6 +57,8 @@ pub enum Msg {
     Viewport(Viewport),
     /// The opened dump's time range changed.
     TimeRange(Option<TimeRange>),
+    /// The opened dump changed (the store owns the handle).
+    Dump(Option<DumpHandle>),
     Wheel(WheelEvent),
     /// the row list was scrolled
     Scroll,
@@ -122,7 +123,7 @@ pub struct WaveShow {
     store: Store,
     signal_things: SignalThings,
     /// The dump the rows are decoded from.
-    waveform: Option<SharedWaveform>,
+    waveform: Option<DumpHandle>,
     /// The rows the store owns, as the last snapshot the pane saw.
     rows: RowsSlice,
     /// The committed cursors, mirrored here for drawing.
@@ -143,6 +144,7 @@ pub struct WaveShow {
     _rows_sub: Subscription,
     _viewport_sub: Subscription,
     _dump_sub: Subscription,
+    _waveform_sub: Subscription,
     /// The pane's own re-render count, published for the tier-A QA gate.
     pane_render_count: Cell<u32>,
 
@@ -201,10 +203,13 @@ impl Component for WaveShow {
         let viewport_sub =
             store.subscribe(select::viewport, ctx.link().callback(Msg::Viewport));
         let dump_sub = store.subscribe(select::time_range, ctx.link().callback(Msg::TimeRange));
+        // the dump handle is store state now: no prop, one subscription
+        let waveform_sub =
+            store.subscribe(select::dump_waveform, ctx.link().callback(Msg::Dump));
         let mut this = Self {
             store: store.clone(),
             signal_things: SignalThings::new(),
-            waveform: ctx.props().waveform.clone(),
+            waveform: store.select(select::dump_waveform),
             rows: store.select(select::rows),
             cursors: store.select(select::cursors),
             cursor_preview: None,
@@ -215,6 +220,7 @@ impl Component for WaveShow {
             _rows_sub: rows_sub,
             _viewport_sub: viewport_sub,
             _dump_sub: dump_sub,
+            _waveform_sub: waveform_sub,
             pane_render_count: Cell::new(0),
 
             view: View::default(),
@@ -258,23 +264,10 @@ impl Component for WaveShow {
         changed
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
-        let mut redraw = false;
-        // a new dump means every row has to be resolved and decoded again
-        if self.waveform != ctx.props().waveform {
-            self.waveform = ctx.props().waveform.clone();
-            self.fitted = false;
-            self.fit_committed = false;
-            self.signal_things
-                .refresh(self.waveform.as_ref().map(|waveform| waveform.as_waveform()));
-            self.scroll_top = scroll_top_from_dom();
-            redraw = true;
-        }
-        // the rows themselves arrive through the store subscription (`Msg::Rows`)
-        if redraw {
-            self.sync_rows();
-        }
-        redraw
+    fn changed(&mut self, _ctx: &Context<Self>) -> bool {
+        // every slice the pane reads (rows, viewport, dump, time range) arrives
+        // through its own subscription; a prop change alone never redraws
+        false
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
@@ -428,6 +421,22 @@ impl WaveShow {
                 self.time_range = time_range;
                 // the ruler and the fit zoom read it
                 true
+            }
+            Msg::Dump(waveform) => {
+                // a new dump means every row has to be resolved and decoded
+                // again; the handle itself lives in the store now
+                if self.waveform != waveform {
+                    self.waveform = waveform;
+                    self.fitted = false;
+                    self.fit_committed = false;
+                    self.signal_things
+                        .refresh(self.waveform.as_ref().map(|waveform| waveform.waveform()));
+                    self.scroll_top = scroll_top_from_dom();
+                    self.sync_rows();
+                    true
+                } else {
+                    false
+                }
             }
             Msg::Wheel(e) => {
                 let metrics = self.measure();
@@ -798,7 +807,7 @@ impl WaveShow {
     /// Map the store's rows onto the render model, keeping decoded values for
     /// rows that survived and unloading the ones that are gone.
     fn sync_rows(&mut self) {
-        let waveform = self.waveform.as_ref().map(|waveform| waveform.as_waveform());
+        let waveform = self.waveform.as_ref().map(|waveform| waveform.waveform());
         let unload = self.signal_things.sync(&self.rows.items, waveform);
         if let Some(waveform) = waveform {
             for index in unload {
@@ -845,7 +854,7 @@ impl WaveShow {
     /// body, so asking for the visible rows one by one would re-read the dump
     /// once per row. Rows that are already decoded are not touched.
     fn decode_pending(&mut self, fetch: std::ops::Range<usize>) {
-        let Some(waveform) = self.waveform.as_ref().map(|waveform| waveform.as_waveform()) else {
+        let Some(waveform) = self.waveform.as_ref().map(|waveform| waveform.waveform()) else {
             self.last_decoded = 0;
             return;
         };
@@ -874,7 +883,7 @@ impl WaveShow {
     /// Rows that are comfortably outside the viewport drop their handle and the
     /// backend cache entry; scrolling back re-decodes them in one batch.
     fn trim_cache(&mut self, draw: std::ops::Range<usize>) {
-        let Some(waveform) = self.waveform.as_ref().map(|waveform| waveform.as_waveform()) else {
+        let Some(waveform) = self.waveform.as_ref().map(|waveform| waveform.waveform()) else {
             return;
         };
         if waveform.cache_stats().decoded_bytes() <= CACHE_BUDGET_BYTES {
@@ -946,7 +955,7 @@ impl WaveShow {
         let decoded_bytes = self
             .waveform
             .as_ref()
-            .map(|waveform| waveform.as_waveform().cache_stats().decoded_bytes())
+            .map(|waveform| waveform.waveform().cache_stats().decoded_bytes())
             .unwrap_or(0);
         canvas::publish_debug(&canvas::DebugInfo {
             redraw_ms: js_sys::Date::now() - redraw_started,

@@ -12,11 +12,10 @@ use crate::nav::{
     Goto,
     PathPicker,
     SharedDesign,
-    SharedWaveform,
     SidebarTree,
     SignalInspector,
     SourceClick};
-use crate::state::{self, Action, Cursors, Layout, RowsSlice, Status, Store, Subscription};
+use crate::state::{self, Action, Cursors, DumpHandle, Layout, RowsSlice, Status, Store, Subscription};
 use crate::wave_show::WaveShow;
 use crate::module_struct::ModuleStruct;
 
@@ -54,7 +53,7 @@ pub enum Msg {
     SidebarAdd(String),
     /// A dump was opened: the handle values are decoded from, plus its time
     /// range so the ruler and the fit-to-trace zoom can be drawn.
-    GetWaveform(SharedWaveform),
+    GetWaveform(DumpHandle),
     /// One source file was read; it goes to the design database.
     GetVerilog((String, String)),
     /// A source tab was closed; the file leaves the source pane.
@@ -80,7 +79,29 @@ pub enum Msg {
     ///the mouse moved while dragging the splitter
     SplitterMove(MouseEvent),
     SplitterUp,
+    /// the editor/wave splitter was grabbed
+    WaveSplitterDown(MouseEvent),
+    /// the mouse moved while dragging that splitter
+    WaveSplitterMove(MouseEvent),
+    WaveSplitterUp,
 }
+
+// The locked layout constants (docs/state-store.md §3.4). The QA gate asserts
+// exactly these numbers.
+/// Height of the tab strip: the collapsed editor is exactly this tall.
+const TAB_STRIP: f64 = 32.0;
+/// Expanded editor content, minimum.
+const EDITOR_CONTENT_MIN: f64 = 120.0;
+/// Height of one wave row (kept in sync with `--row-h`).
+const ROW_HEIGHT: f64 = 30.0;
+/// Rows the wave pane must keep, whatever the ratio says.
+const WAVE_MIN_ROWS: f64 = 4.0;
+/// The time ruler above the rows: it is part of the wave pane too.
+const TIMEBAR: f64 = 30.0;
+/// Height of `.wave-splitter` (kept in sync with `--wave-splitter-h`).
+const WAVE_SPLITTER: f64 = 5.0;
+/// Upper bound of the inspector dock's height (`max-height` in styles.css).
+const INSPECTOR_MAX: f64 = 190.0;
 
 /// The widest the sidebar may get for the current window.
 fn sidebar_max() -> f64 {
@@ -120,8 +141,6 @@ pub struct App {
     /// The sidebar tree: the dump hierarchy once a waveform is open, the
     /// elaborated design otherwise.
     tree: Option<SidebarTree>,
-    /// The opened dump.
-    waveform: Option<SharedWaveform>,
     /// Parsed sources plus the elaborated design.
     design: SharedDesign,
     /// The language server client the source editor talks to.
@@ -142,6 +161,11 @@ pub struct App {
     /// Width written straight to the DOM while the splitter is being dragged;
     /// committed to the store on mouseup.
     sidebar_preview: Option<f64>,
+    ///(mouse y, editor height) while the editor/wave splitter is dragged
+    wave_splitter_start: Option<(f64, f64)>,
+    /// Height written straight to the DOM while that splitter is dragged;
+    /// committed to the store as a ratio on mouseup.
+    editor_preview: Option<f64>,
 }
 
 impl Component for App {
@@ -214,7 +238,6 @@ impl Component for App {
             main_h: 0.0,
             resize_listener: None,
             tree: None,
-            waveform: None,
             design,
             lsp,
             _cursors_sub: cursors_sub,
@@ -226,6 +249,8 @@ impl Component for App {
             goto_token: 0,
             splitter_start: None,
             sidebar_preview: None,
+            wave_splitter_start: None,
+            editor_preview: None,
         };
         this.attach_window_listeners(ctx);
         this
@@ -269,11 +294,14 @@ impl Component for App {
         // while the splitter is dragged the preview is authoritative (it was
         // written straight to the DOM); otherwise the store's layout is
         let sidebar_w = self.sidebar_preview.unwrap_or(self.layout.sidebar_w);
-        let empty = self.waveform.is_none() && self.verilog_source.is_empty() && self.tree.is_none();
-        // R2 step 2: with no sources the editor collapses to the tab strip and
+        let empty = self.dump().is_none() && self.verilog_source.is_empty() && self.tree.is_none();
+        // R2 step 2/4: with no sources the editor collapses to the tab strip and
         // the wave pane takes the rest (design doc §3.1, constants §3.4)
         let collapsed = self.verilog_source.is_empty();
-        let editor_h = self.editor_height(collapsed);
+        let inspector_visible = self.inspector_visible();
+        let editor_h = self
+            .editor_preview
+            .unwrap_or_else(|| self.editor_height(collapsed, inspector_visible));
 
         html! {
             <div class="app" ref={self.root.clone()} style={format!("--sidebar-w:{sidebar_w:.0}px; --editor-h:{editor_h:.0}px")}>
@@ -327,15 +355,29 @@ impl Component for App {
                                 lsp={self.lsp.clone()}
                                 onclose={link.callback(Msg::CloseSource)}
                                 onwordclick={link.callback(Msg::SourceClick)} />
-                            <SignalInspector
-                                design={self.design.clone()}
-                                version={design_version}
-                                path={self.selected.clone()}
-                                ongoto={link.callback(Msg::Goto)} />
                         </div>
+                        {
+                            // R2 step 4: the inspector is its own dock between the
+                            // editor and the wave pane, outside the collapsing part
+                            if inspector_visible {
+                                html!{
+                                    <div class="inspector">
+                                        <SignalInspector
+                                            design={self.design.clone()}
+                                            version={design_version}
+                                            path={self.selected.clone()}
+                                            ongoto={link.callback(Msg::Goto)} />
+                                    </div>
+                                }
+                            }else {
+                                html!{}
+                            }
+                        }
+                        <div class={if self.wave_splitter_start.is_some() {"wave-splitter dragging"} else {"wave-splitter"}}
+                            title="Drag to resize, double click to reset"
+                            onmousedown={link.callback(Msg::WaveSplitterDown)} />
                         <WaveShow
                             store={self.store.clone()}
-                            waveform={self.waveform.clone()}
                             onselect={link.callback(Msg::WaveSelect)}
                             onjump={link.callback(Msg::WaveJump)}
                             onlocate={link.callback(Msg::Locate)} />
@@ -359,6 +401,14 @@ impl Component for App {
                             //releasing the button outside the window never fires mouseup
                             onmouseout={link.callback(|_| Msg::SplitterUp)} />
                     }
+                }else if self.wave_splitter_start.is_some() {
+                    html!{
+                        <div class="splitter-shield row"
+                            onmousemove={link.callback(Msg::WaveSplitterMove)}
+                            onmouseup={link.callback(|_| Msg::WaveSplitterUp)}
+                            //releasing the button outside the window never fires mouseup
+                            onmouseout={link.callback(|_| Msg::WaveSplitterUp)} />
+                    }
                 }else {
                     html!{}
                 }}
@@ -381,21 +431,35 @@ impl App {
     ///
     /// * collapsed: the tab strip only, no editor content;
     /// * expanded: `ratio * main`, never below 120 px of content, and the wave
-    ///   pane keeps at least four rows — the row minimum wins over the ratio.
-    fn editor_height(&self, collapsed: bool) -> f64 {
-        const TAB_STRIP: f64 = 32.0;
-        const EDITOR_CONTENT_MIN: f64 = 120.0;
-        const WAVE_MIN: f64 = 4.0 * 30.0;
+    ///   pane keeps at least four rows — the row minimum wins over the ratio, so
+    ///   the ratio is trimmed here and never the rows.
+    fn editor_height(&self, collapsed: bool, inspector_visible: bool) -> f64 {
         if collapsed {
             return TAB_STRIP;
         }
-        let min = TAB_STRIP + EDITOR_CONTENT_MIN;
         if self.main_h <= 1.0 {
             // nothing measured yet: a sane expanded height for the first paint
-            return 2.0 * min;
+            return 2.0 * (TAB_STRIP + EDITOR_CONTENT_MIN);
         }
-        let max = (self.main_h - WAVE_MIN).max(min);
+        let (min, max) = self.editor_bounds(inspector_visible);
         (self.main_h * f64::from(self.layout.editor_ratio)).clamp(min, max)
+    }
+
+    /// The editor heights the splitter may not leave: the expanded content is at
+    /// least 120 px, and the wave pane keeps its four rows plus the ruler and the
+    /// dock (the row minimum wins, so the ratio is trimmed).
+    fn editor_bounds(&self, inspector_visible: bool) -> (f64, f64) {
+        let min = TAB_STRIP + EDITOR_CONTENT_MIN;
+        let inspector = if inspector_visible { INSPECTOR_MAX } else { 0.0 };
+        let wave = WAVE_MIN_ROWS * ROW_HEIGHT + TIMEBAR;
+        let max = (self.main_h - wave - WAVE_SPLITTER - inspector).max(min);
+        (min, max)
+    }
+
+    /// The inspector dock is visible when it has something to say: a loaded
+    /// design, or a selected signal (design doc §3.1, `inspector_visible`).
+    fn inspector_visible(&self) -> bool {
+        !self.design.borrow().is_empty() || self.selected.is_some()
     }
 
     /// `window.addEventListener("resize")`, kept out of `window.onresize` so the
@@ -441,7 +505,7 @@ impl App {
                                 return;
                             }
                             match wave_insight_lib::waveform::Waveform::open_bytes(bytes) {
-                                Ok(waveform) => onwaveform.emit(SharedWaveform::new(waveform)),
+                                Ok(waveform) => onwaveform.emit(DumpHandle::new(waveform)),
                                 Err(error) => onerror.emit(error.message()),
                             }
                         });
@@ -519,7 +583,8 @@ impl App {
                     // to the DOM and return `false`, so a 60 Hz drag never diffs
                     // a single node. The store is told once, on mouseup.
                     self.sidebar_preview = Some(width);
-                    self.write_sidebar_variable(width);
+                    let editor_h = self.current_editor_height();
+                    self.write_pane_variables(width, editor_h);
                 }
                 false
             }
@@ -537,6 +602,48 @@ impl App {
                     None => true,
                 }
             }
+            Msg::WaveSplitterDown(e) => {
+                e.prevent_default();
+                if e.detail() == 2 {
+                    // double click restores the default editor ratio
+                    self.wave_splitter_start = None;
+                    self.editor_preview = None;
+                    self.store
+                        .dispatch(Action::SetEditorRatio(Layout::default().editor_ratio));
+                    false
+                } else {
+                    let current = self.current_editor_height();
+                    self.wave_splitter_start = Some((e.y() as f64, current));
+                    // the dragged class and the shield are part of the render
+                    true
+                }
+            }
+            Msg::WaveSplitterMove(e) => {
+                if let Some((start_y, start_height)) = self.wave_splitter_start {
+                    let (low, high) = self.editor_bounds(self.inspector_visible());
+                    let height = (start_height + (e.y() as f64 - start_y)).clamp(low, high);
+                    // Tier A: the drag follows the pointer through one CSS
+                    // variable; the store is told once, as a ratio, on mouseup.
+                    self.editor_preview = Some(height);
+                    self.write_pane_variables(self.layout.sidebar_w, height);
+                }
+                false
+            }
+            Msg::WaveSplitterUp => {
+                let preview = self.editor_preview.take();
+                self.wave_splitter_start = None;
+                match preview {
+                    Some(height) => {
+                        // the store keeps the *ratio*; the pixel height stays
+                        // derived from the measured pane (design doc 3.2)
+                        let ratio = (height / self.main_h.max(1.0)).clamp(0.0, 1.0) as f32;
+                        self.store.dispatch(Action::SetEditorRatio(ratio));
+                        false
+                    }
+                    // a click without a drag still has to remove the shield
+                    None => true,
+                }
+            }
             Msg::SidebarAdd(path) => {
                 // the sidebar is the explicit "add and show me where it is"
                 // gesture, unlike a click in the source
@@ -547,20 +654,19 @@ impl App {
                 // the dump knows which module it was made from; that is the best
                 // guess for the design top
                 let top_hint = waveform
-                    .as_waveform()
+                    .waveform()
                     .hierarchy()
                     .root()
                     .children()
                     .first()
                     .map(|scope| scope.name().to_string());
                 self.design.borrow_mut().set_top_hint(top_hint);
-                // cheap: for VCD this scans the body text, it does not parse it
-                let time_range = waveform.as_waveform().time_range_hint().ok().flatten();
-                // the ruler and the fit zoom read it from the store now
-                self.store.dispatch(Action::DumpOpened { time_range });
-                self.waveform = Some(waveform);
+                // the store owns the handle and derives the time range from it
+                // (that is what the ruler and the fit zoom read)
+                self.store
+                    .dispatch(Action::DumpOpened { waveform: waveform.clone() });
                 // the inlay hints can only show values once a dump is open
-                crate::lsp::inlay::set_waveform(self.waveform.clone());
+                crate::lsp::inlay::set_waveform(Some(waveform));
                 self.refresh_tree();
                 self.sync_lsp_top();
                 self.note(Status::info("waveform loaded"));
@@ -664,17 +770,28 @@ impl App {
         self.store.dispatch(Action::Status(status));
     }
 
-    /// Write the sidebar width straight to the DOM while the splitter is
-    /// dragged: no Yew render, no virtual DOM diff (design doc §4.1). The value
-    /// is committed to the store on mouseup.
-    fn write_sidebar_variable(&self, width: f64) {
+    /// The editor height the shell currently shows: the live drag preview while
+    /// the editor/wave splitter moves, the derived height otherwise.
+    fn current_editor_height(&self) -> f64 {
+        self.editor_preview.unwrap_or_else(|| {
+            self.editor_height(self.verilog_source.is_empty(), self.inspector_visible())
+        })
+    }
+
+    /// Write the two pane variables straight to the DOM while a splitter is
+    /// dragged: no Yew render, no virtual DOM diff (design doc §4.1). The values
+    /// are committed to the store on mouseup.
+    fn write_pane_variables(&self, sidebar_w: f64, editor_h: f64) {
         let Some(app) = self.root.cast::<web_sys::Element>() else {
             return;
         };
-        // the inline style of the app div is exactly this one variable, so
-        // rewriting the attribute is equivalent to setProperty() on it and needs
-        // no extra web-sys feature
-        let _ = app.set_attribute("style", &format!("--sidebar-w:{width:.0}px"));
+        // the inline style of the app div is exactly these two variables, so
+        // rewriting the attribute is equivalent to setProperty() on them and
+        // needs no extra web-sys feature
+        let _ = app.set_attribute(
+            "style",
+            &format!("--sidebar-w:{sidebar_w:.0}px; --editor-h:{editor_h:.0}px"),
+        );
     }
 
     /// Publish the shell re-render counter for the QA gate.
@@ -710,12 +827,17 @@ impl App {
     /// Rebuild the sidebar tree: the dump hierarchy wins, the design is the
     /// fallback so the module list is usable before a dump is loaded.
     fn refresh_tree(&mut self) {
-        self.tree = match &self.waveform {
+        self.tree = match self.dump() {
             Some(waveform) => Some(SidebarTree::from_hierarchy(
-                waveform.as_waveform().hierarchy(),
+                waveform.waveform().hierarchy(),
             )),
             None => self.design.borrow().sidebar_tree(),
         };
+    }
+
+    /// The opened dump, read from the store (the store owns the only handle).
+    fn dump(&self) -> Option<DumpHandle> {
+        self.store.select(state::select::dump_waveform)
     }
 
     /// Tell the language server which module to elaborate, so its hover,
@@ -769,12 +891,11 @@ impl App {
         // The dump is what gets drawn, so its width wins when the two disagree
         // (a truncated vector would otherwise be formatted at the declared
         // width, which the legacy formatters cannot do).
-        if let Some(info) = self
-            .waveform
-            .as_ref()
-            .and_then(|waveform| waveform.signal_by_path(path))
+        if let Some(width) = self
+            .dump()
+            .and_then(|waveform| waveform.waveform().signal_by_path(path).map(|info| info.width()))
         {
-            signal.size = info.width().max(1) as usize;
+            signal.size = width.max(1) as usize;
         }
         signal
     }
@@ -793,8 +914,8 @@ impl App {
     /// editor where it is, which is the Verdi behaviour the user asked for.
     fn add_path(&mut self, path: &str, show_declaration: bool) {
         let mut dump_candidates = Vec::new();
-        if let Some(waveform) = &self.waveform {
-            dump_candidates = match_dump_candidates(waveform.as_waveform(), path);
+        if let Some(waveform) = self.dump() {
+            dump_candidates = match_dump_candidates(waveform.waveform(), path);
             match dump_candidates.len() {
                 0 => {
                     // the dump is the source of values: adding a row that cannot
@@ -970,9 +1091,9 @@ impl App {
             }
         };
         if found.is_empty() {
-            if let Some(waveform) = &self.waveform {
+            if let Some(waveform) = self.dump() {
                 found = waveform
-                    .as_waveform()
+                    .waveform()
                     .signals()
                     .iter()
                     .filter(|info| info.name() == click.word)

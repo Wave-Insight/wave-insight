@@ -32,8 +32,8 @@ use wave_insight_lib::data_struct::ShowType;
 use wave_insight_lib::waveform::Waveform;
 
 use crate::code_reader::monaco_glue::model_uri;
-use crate::nav::{value_text, SharedDesign, SharedWaveform};
-use crate::state::{select, Store};
+use crate::nav::{value_text, SharedDesign};
+use crate::state::{select, DumpHandle, Store};
 
 use super::bridge::file_of_uri;
 
@@ -47,7 +47,7 @@ const MAX_LINES: u32 = 400;
 struct Context {
     design: SharedDesign,
     store: Store,
-    waveform: Option<SharedWaveform>,
+    waveform: Option<DumpHandle>,
     /// Cursor 1, in wave time units; `None` means no hints at all.
     cursor: Option<i64>,
     emitter: Emitter,
@@ -74,7 +74,7 @@ pub fn init(design: SharedDesign, store: Store) {
 }
 
 /// The opened dump changed (fired on `GetWaveform`).
-pub fn set_waveform(waveform: Option<SharedWaveform>) {
+pub fn set_waveform(waveform: Option<DumpHandle>) {
     CONTEXT.with(|context| {
         if let Some(context) = context.borrow_mut().as_mut() {
             context.waveform = waveform;
@@ -189,7 +189,7 @@ fn fill_hints(
             }
             if let Some(hint) = hint_at(
                 &design,
-                waveform.as_waveform(),
+                waveform.waveform(),
                 &formats,
                 &file,
                 line,
@@ -332,7 +332,7 @@ fn publish_debug(
 
 /// Clone the parts the provider needs out of the thread local: no borrow is
 /// held while JS or the design database is used.
-fn borrow_parts() -> Option<(Option<i64>, SharedDesign, Option<SharedWaveform>, Store)> {
+fn borrow_parts() -> Option<(Option<i64>, SharedDesign, Option<DumpHandle>, Store)> {
     CONTEXT.with(|context| {
         let context = context.borrow();
         let context = context.as_ref()?;

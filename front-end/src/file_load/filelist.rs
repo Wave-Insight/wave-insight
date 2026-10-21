@@ -4,7 +4,7 @@ use serde_wasm_bindgen::{to_value, from_value};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
-use crate::nav::SharedWaveform;
+use crate::state::types::DumpHandle;
 
 #[wasm_bindgen]
 extern "C" {
@@ -55,7 +55,7 @@ pub enum Msg {
 pub struct FileListProps {
     pub onexit: Callback<()>,
     /// A dump was opened; the webview parsed the bytes the command returned.
-    pub ongetwaveform: Callback<SharedWaveform>,
+    pub ongetwaveform: Callback<DumpHandle>,
     pub ongetverilog: Callback<(String, String)>,
     /// The file could not be read or parsed.
     pub onerror: Callback<String>,
@@ -149,7 +149,7 @@ impl Component for FileList {
                             }
                             match wave_insight_lib::waveform::Waveform::open_bytes(bytes) {
                                 Ok(waveform) => {
-                                    ongetwaveform.emit(SharedWaveform::new(waveform));
+                                    ongetwaveform.emit(DumpHandle::new(waveform));
                                     exit.emit(());
                                 }
                                 Err(error) => onerror.emit(format!("{file}: {}", error.message())),

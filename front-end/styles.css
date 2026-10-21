@@ -44,8 +44,12 @@
   --names-w: 220px;
   /* one signal row, kept in sync with ROW_HEIGHT in wave_show/geometry.rs */
   --row-h: 30px;
+  /* height of the tab strip, the collapsed editor is exactly this tall */
+  --tabs-h: 32px;
   /* height of the time ruler above the rows, kept in sync with .timebar */
   --timebar-h: 30px;
+  /* the horizontal divider between the editor and the wave pane */
+  --wave-splitter-h: 5px;
   /* the scrollbar the wave body reserves on the right (see ::-webkit-scrollbar) */
   --scrollbar-w: 10px;
 }
@@ -506,7 +510,7 @@ button:active { background: var(--bg-4); }
   flex: 0 0 var(--editor-h, 50%);
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  min-height: var(--tabs-h);
   background: var(--bg-1);
   border-bottom: 1px solid var(--line);
   overflow: hidden;
@@ -515,6 +519,55 @@ button:active { background: var(--bg-4); }
 .code-pane.collapsed .code-host,
 .code-pane.collapsed .panel {
   display: none;
+}
+
+/* R2 step 4: the driver/load panel is its own dock between the editor and the
+   wave pane, not part of the collapsing editor. It takes only the height its
+   content needs (up to 190 px) and the splitter/wave pane get the rest. */
+.inspector {
+  flex: 0 0 auto;
+  max-height: 190px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.inspector .panel {
+  flex: 1 1 auto;
+  border-bottom: none;
+}
+
+/* R2 step 4: draggable divider between the editor (+ inspector dock) and the
+   wave pane. Tier A: the drag writes --editor-h straight to the DOM. */
+.wave-splitter {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 var(--wave-splitter-h);
+  height: var(--wave-splitter-h);
+  cursor: row-resize;
+  background: transparent;
+}
+
+.wave-splitter:hover,
+.wave-splitter.dragging {
+  background: var(--accent-line);
+}
+
+/* a wider invisible grab area, the visual line stays 5px */
+.wave-splitter::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: 0;
+  right: 0;
+}
+
+.splitter-shield.row {
+  cursor: row-resize;
 }
 
 .tabs {

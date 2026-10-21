@@ -11,7 +11,7 @@
 
 use super::action::{Action, Effect};
 use super::state::State;
-use super::types::{clamp_ratio, clamp_sidebar, Row};
+use super::types::{clamp_ratio, clamp_sidebar, Dump, Row};
 
 pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
     match action {
@@ -91,8 +91,11 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 state.set_rows(items);
             }
         }
-        Action::DumpOpened { time_range } => {
-            state.dump.time_range = time_range;
+        Action::DumpOpened { waveform } => {
+            // the range is derived from the handle, never hand-written into the
+            // store: the reducer is the one place that may compute it
+            let time_range = waveform.waveform().time_range_hint().ok().flatten();
+            state.dump = Dump { waveform: Some(waveform), time_range };
         }
         Action::ViewCommitted(view) => {
             state.viewport.view = view;
@@ -172,8 +175,7 @@ fn choose(items: &mut [Row], index: usize, ctrl: bool, shift: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::types::{Layout, Settings, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN};
-    use wave_insight_lib::waveform::TimeRange;
+    use crate::state::types::{DumpHandle, Layout, Settings, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN};
 
     fn state() -> State {
         State::default()
@@ -369,17 +371,29 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_dump_stores_its_time_range() {
+    fn opening_a_dump_stores_the_handle_and_derives_the_range() {
+        // A real FST fixture: the range is derived from the handle by the
+        // reducer (that is what `trace_end` and the fit zoom read), so this also
+        // covers the `time_range_hint` path.
+        let waveform = wave_insight_lib::waveform::Waveform::open_bytes(
+            include_bytes!("../../../wave-insight-lib/tests/data/io_mode_wave.fst").to_vec(),
+        )
+        .expect("the fst fixture opens");
+        let expected = waveform.time_range_hint().ok().flatten();
+        let handle = DumpHandle::new(waveform);
         let mut state = state();
+        assert_eq!(state.dump.waveform, None);
         assert_eq!(state.dump.time_range, None);
-        reduce(
-            &mut state,
-            Action::DumpOpened { time_range: Some(TimeRange { start: 0, end: 99 }) },
-        );
-        // the range is what `trace_end`/the fit zoom read
-        assert_eq!(state.dump.time_range, Some(TimeRange { start: 0, end: 99 }));
-        reduce(&mut state, Action::DumpOpened { time_range: None });
-        assert_eq!(state.dump.time_range, None);
+        reduce(&mut state, Action::DumpOpened { waveform: handle.clone() });
+        assert_eq!(state.dump.time_range, expected);
+        // the handle is the identity: same file, same handle
+        assert_eq!(state.dump.waveform, Some(handle));
+        // another handle for another file is *not* equal (pointer identity)
+        let other = wave_insight_lib::waveform::Waveform::open_bytes(
+            include_bytes!("../../../wave-insight-lib/tests/data/io_mode_wave.fst").to_vec(),
+        )
+        .expect("the fst fixture opens");
+        assert_ne!(state.dump.waveform, Some(DumpHandle::new(other)));
     }
 
     #[test]

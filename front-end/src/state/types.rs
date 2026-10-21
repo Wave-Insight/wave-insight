@@ -10,6 +10,53 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use wave_insight_lib::data_struct::ShowType;
+use wave_insight_lib::waveform::{TimeRange, Waveform};
+
+/// Identity-comparing handle on the opened dump.
+///
+/// `Waveform` caches decoded data behind a mutex and has no `PartialEq`, so the
+/// store keeps it behind this `Rc` wrapper: two handles are equal when they point
+/// at the same file, never by deep comparison (design doc §2.4).
+#[derive(Clone)]
+pub struct DumpHandle(Rc<Waveform>);
+
+impl DumpHandle {
+    pub fn new(waveform: Waveform) -> Self {
+        Self(Rc::new(waveform))
+    }
+
+    pub fn waveform(&self) -> &Waveform {
+        &self.0
+    }
+}
+
+impl PartialEq for DumpHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for DumpHandle {}
+
+impl std::fmt::Debug for DumpHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DumpHandle")
+            .field("format", &self.0.file_format())
+            .field("signals", &self.0.signal_count())
+            .finish()
+    }
+}
+
+/// The opened dump, as the store holds it.
+///
+/// The handle is the source of truth (`State.dump`); the time range is derived
+/// from it by the reducer so the ruler and the fit zoom stay cheap reads.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Dump {
+    pub waveform: Option<DumpHandle>,
+    pub time_range: Option<TimeRange>,
+}
 
 /// Width of the sidebar when nothing else was chosen.
 pub const SIDEBAR_DEFAULT: f64 = 280.0;

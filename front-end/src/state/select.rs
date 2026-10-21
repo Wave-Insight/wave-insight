@@ -7,7 +7,7 @@
 use super::state::State;
 use wave_insight_lib::waveform::TimeRange;
 
-use super::types::{Cursors, Layout, RowsSlice, Status, View, Viewport};
+use super::types::{Cursors, DumpHandle, Layout, RowsSlice, Status, View, Viewport};
 
 /// The two CSS variables and the drawer flag. Subscribed by `App` only.
 pub fn layout(state: &State) -> Layout {
@@ -62,4 +62,10 @@ pub fn cursors(state: &State) -> Cursors {
 /// The opened dump's time range (ruler + fit-to-trace).
 pub fn time_range(state: &State) -> Option<TimeRange> {
     state.dump.time_range
+}
+
+/// The opened dump itself. Subscribed by the wave pane (decoding) and mirrored
+/// into the inlay-hint context; the handle compares by identity.
+pub fn dump_waveform(state: &State) -> Option<DumpHandle> {
+    state.dump.waveform.clone()
 }

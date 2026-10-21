@@ -9,9 +9,7 @@
 //! multi-selection are owned by the reducer. The pane dispatches them and then
 //! renders from the resulting snapshot; it never mutates its own copy.
 
-use wave_insight_lib::waveform::TimeRange;
-
-use super::types::{Cursors, Layout, Settings, Status, View};
+use super::types::{Cursors, DumpHandle, Layout, Settings, Status, View};
 
 // `Layout`, `SetEditorRatio` and `ClearStatus` are the rest of the surface the
 // later R2 steps use; keeping the enum stable makes those steps additive.
@@ -49,8 +47,8 @@ pub enum Action {
     /// A presentation setting was changed for the given rows.
     RowSettingChanged { indices: Vec<usize>, setting: Settings },
 
-    /// A dump was opened (or closed); the ruler and the fit zoom use its range.
-    DumpOpened { time_range: Option<TimeRange> },
+    /// A dump was opened; the store owns the handle and derives the time range.
+    DumpOpened { waveform: DumpHandle },
     /// The zoom/pan was committed (one dispatch per gesture, never per move).
     ViewCommitted(View),
     /// The cursors were set or cleared by a click.

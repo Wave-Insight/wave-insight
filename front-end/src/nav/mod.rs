@@ -8,8 +8,9 @@
 //! [`SignalInspector`] and [`PathPicker`] only render those answers.
 //!
 //! Everything the components exchange is cheap to clone and compare: the
-//! database is behind a [`SharedDesign`] identity handle and the opened dump
-//! behind a [`SharedWaveform`], so a re-render never deep compares a design.
+//! database is behind a [`SharedDesign`] identity handle, and the opened dump
+//! lives in the store as a [`crate::state::DumpHandle`] (identity comparing), so
+//! a re-render never deep compares a design or a waveform.
 
 pub use design_state::{DesignState, SignalDetails, SourceRow};
 pub use inspector::SignalInspector;
@@ -25,7 +26,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
 
 use wave_insight_lib::data_struct::ShowType;
-use wave_insight_lib::waveform::{SignalInfo, WaveValue, Waveform};
+use wave_insight_lib::waveform::{WaveValue, Waveform};
 
 /// A request to bring one source position into view.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,42 +95,6 @@ impl std::fmt::Debug for SharedDesign {
 impl Default for SharedDesign {
     fn default() -> Self {
         Self::new(DesignState::new())
-    }
-}
-
-/// Shared handle on the opened waveform file.
-///
-/// [`Waveform`] has no `PartialEq` (it caches decoded data behind a mutex), so
-/// the handle compares by pointer: it only changes when another file is opened.
-#[derive(Clone)]
-pub struct SharedWaveform(Rc<Waveform>);
-
-impl SharedWaveform {
-    pub fn new(waveform: Waveform) -> Self {
-        Self(Rc::new(waveform))
-    }
-
-    pub fn as_waveform(&self) -> &Waveform {
-        &self.0
-    }
-
-    pub fn signal_by_path(&self, path: &str) -> Option<&SignalInfo> {
-        self.0.signal_by_path(path)
-    }
-}
-
-impl PartialEq for SharedWaveform {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl std::fmt::Debug for SharedWaveform {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SharedWaveform")
-            .field("format", &self.0.file_format())
-            .field("signals", &self.0.signal_count())
-            .finish()
     }
 }
 
