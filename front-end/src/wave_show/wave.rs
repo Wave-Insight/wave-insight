@@ -288,7 +288,14 @@ impl Component for WaveShow {
 
     fn changed(&mut self, _ctx: &Context<Self>) -> bool {
         // every slice the pane reads (rows, viewport, dump, time range) arrives
-        // through its own subscription; a prop change alone never redraws
+        // through its own subscription, so a prop change alone never re-renders.
+        // The pane's *size*, however, changes when the source pane grows (the
+        // editor expands as soon as the first file is opened) and that arrives
+        // as neither a prop nor a slice this component subscribes to. Repainting
+        // here keeps the canvas backing store in step with its css size; without
+        // it the whole trace is drawn squashed until something else forces a
+        // redraw.
+        self.redraw();
         false
     }
 
@@ -627,6 +634,16 @@ impl WaveShow {
                 e.prevent_default();
                 let metrics = self.measure();
                 let x = e.x() as f64;
+                // within a few pixels of the label column's edge the press drags
+                // the column width instead of starting a row reorder or a
+                // selection. Doing it here keeps the hit test on the body, which
+                // already owns the mouse, instead of on a divider the canvas
+                // overlay can swallow.
+                if (x - metrics.surface_left).abs() <= 5.0 {
+                    self.names_drag = Some((x, self.names_w));
+                    self.names_preview.set(self.names_w);
+                    return false;
+                }
                 if x < metrics.surface_left {
                     //the name column: start a reorder drag
                     self.name_choose_valid = true;
@@ -656,6 +673,28 @@ impl WaveShow {
                 false
             }
             Msg::MouseMove(e) => {
+                if let Some((start_x, start_w)) = self.names_drag {
+                    // tier A: the css variable moves, the component does not render
+                    let width = (start_w + (e.x() as f64 - start_x)).clamp(200.0, 640.0);
+                    self.names_preview.set(width);
+                    if let Some(element) = web_sys::window()
+                        .and_then(|window| window.document())
+                        .and_then(|document| document.get_element_by_id("wave-pane"))
+                    {
+                        if let Ok(style) = js_sys::Reflect::get(&element, &JsValue::from_str("style")) {
+                            if let Ok(set_property) =
+                                js_sys::Reflect::get(&style, &JsValue::from_str("setProperty"))
+                                    .and_then(|function| function.dyn_into::<js_sys::Function>())
+                            {
+                                let args = js_sys::Array::new();
+                                args.push(&JsValue::from_str("--names-w"));
+                                args.push(&JsValue::from_str(&format!("{width:.0}px")));
+                                let _ = set_property.apply(&style, &args);
+                            }
+                        }
+                    }
+                    return false;
+                }
                 if let Some(which) = self.cursor_drag {
                     let metrics = self.measure();
                     let x = e.x() as f64 - metrics.surface_left;
@@ -681,6 +720,10 @@ impl WaveShow {
             }
             Msg::MouseUp(e) => {
                 e.prevent_default();
+                if self.names_drag.take().is_some() {
+                    self.names_w = self.names_preview.get();
+                    return true;
+                }
                 if let Some(which) = self.cursor_drag.take() {
                     let preview = self.cursor_preview.take().unwrap_or(self.cursors);
                     self.snap_edges.clear();
@@ -847,10 +890,26 @@ impl WaveShow {
 
     /// The time a click at `x` (surface pixels) places a cursor at: the raw
     /// time, snapped onto a visible value edge when one is a few pixels away.
+    /// time, snapped onto a visible value edge when one is a few pixels away.
+    ///
+    /// The distance is measured in **pixels from the click**, not by converting
+    /// the click to a time and back: that round trip truncates to whole ticks,
+    /// which made the tolerance a little wider on one side of an edge than on
+    /// the other (the user noticed the asymmetry before I did).
     fn snapped_time(&self, x: f64) -> i32 {
-        let raw = self.view.time_at(x).max(0) as Time;
-        let snapped = geometry::snap_to_edges(raw, &self.snap_edges, &self.view, geometry::SNAP_PX);
-        snapped.min(i32::MAX as u64) as i32
+        let mut best: Option<(f64, Time)> = None;
+        for &edge in &self.snap_edges {
+            let distance = (self.view.x_of(edge) - x).abs();
+            if distance <= geometry::SNAP_PX
+                && best.map_or(true, |(best_distance, _)| distance < best_distance)
+            {
+                best = Some((distance, edge));
+            }
+        }
+        match best {
+            Some((_, edge)) => edge.min(i32::MAX as u64) as i32,
+            None => self.view.time_at(x).max(0),
+        }
     }
 
     /// The cursor whose line is under `x` (surface pixels), if any.
