@@ -46,7 +46,7 @@ const BUS_LINE: f64 = 1.2;
 /// meet in a point on the row's middle line instead of a vertical edge; that is
 /// the usual "bus band" look (and what the user asked for: no straight up and
 /// down edges on multi bit signals).
-const BUS_SLANT: f64 = 6.0;
+const BUS_SLANT: f64 = 4.0;
 /// Vertical padding inside a 30 px row.
 const ROW_PAD: f64 = 6.0;
 
@@ -320,7 +320,7 @@ fn draw_bus_row(
                 // transition edge
                 return;
             }
-            band.trace(context, segment_start, x);
+            band.trace(context, segment_start, x, segment_start <= 0.0, false);
             stats.bands += 1;
             label_segment(
                 context,
@@ -336,7 +336,7 @@ fn draw_bus_row(
             segment_start = x;
         });
     if let Some(value) = current {
-        band.trace(context, segment_start, width);
+        band.trace(context, segment_start, width, segment_start <= 0.0, true);
         stats.bands += 1;
         label_segment(
             context,
@@ -367,21 +367,35 @@ impl Band {
     /// A normal segment is a hexagon (`>` like ends). A segment too short for
     /// two diagonals degrades to a diamond so neighbouring values still join
     /// without a vertical edge.
-    fn trace(&self, context: &CanvasRenderingContext2d, from: f64, to: f64) {
+    ///
+    /// `open_start` / `open_end` mean the segment is cut off by the view edge:
+    /// the transition happened outside the window, so that end is a plain
+    /// vertical edge instead of a diagonal. Every other viewer does this; a
+    /// hexagon at the border would claim a transition nobody can see.
+    fn trace(
+        &self,
+        context: &CanvasRenderingContext2d,
+        from: f64,
+        to: f64,
+        open_start: bool,
+        open_end: bool,
+    ) {
         let length = to - from;
         if !(length > 0.0) {
             return;
         }
-        let slant = BUS_SLANT.min(length / 2.0);
+        let full_slant = BUS_SLANT.min(length / 2.0);
+        let start_slant = if open_start { 0.0 } else { full_slant };
+        let end_slant = if open_end { 0.0 } else { full_slant };
         context.move_to(from, self.mid);
-        context.line_to(from + slant, self.upper);
-        if length > 2.0 * slant {
-            context.line_to(to - slant, self.upper);
+        context.line_to(from + start_slant, self.upper);
+        if length > start_slant + end_slant {
+            context.line_to(to - end_slant, self.upper);
         }
         context.line_to(to, self.mid);
-        context.line_to(to - slant, self.lower);
-        if length > 2.0 * slant {
-            context.line_to(from + slant, self.lower);
+        context.line_to(to - end_slant, self.lower);
+        if length > start_slant + end_slant {
+            context.line_to(from + start_slant, self.lower);
         }
         context.line_to(from, self.mid);
     }

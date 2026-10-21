@@ -150,6 +150,7 @@ pub struct WaveShow {
     _viewport_sub: Subscription,
     _dump_sub: Subscription,
     _waveform_sub: Subscription,
+    _layout_sub: Subscription,
     /// The pane's own re-render count, published for the tier-A QA gate.
     pane_render_count: Cell<u32>,
 
@@ -217,6 +218,12 @@ impl Component for WaveShow {
         // the dump handle is store state now: no prop, one subscription
         let waveform_sub =
             store.subscribe(select::dump_waveform, ctx.link().callback(Msg::Dump));
+        // The pane's height depends on the editor ratio: when the source pane
+        // expands (for example a dump was loaded before any source), the wave
+        // pane shrinks without any props changing, so without this subscription
+        // the canvas keeps its old backing store size and the drawing is drawn
+        // squashed until something else forces a redraw.
+        let layout_sub = store.subscribe(select::layout, ctx.link().callback(|_| Msg::Resize));
         let mut this = Self {
             store: store.clone(),
             signal_things: SignalThings::new(),
@@ -232,6 +239,7 @@ impl Component for WaveShow {
             _viewport_sub: viewport_sub,
             _dump_sub: dump_sub,
             _waveform_sub: waveform_sub,
+            _layout_sub: layout_sub,
             pane_render_count: Cell::new(0),
 
             view: View::default(),
@@ -314,9 +322,24 @@ impl Component for WaveShow {
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
         if let Some(window) = web_sys::window() {
-            window.set_onkeydown(None);
-            window.set_onkeyup(None);
-            window.set_onresize(None);
+            if let Some(keydown) = self.keydown.as_ref() {
+                let _ = window.remove_event_listener_with_callback(
+                    "keydown",
+                    keydown.as_ref().unchecked_ref(),
+                );
+            }
+            if let Some(keyup) = self.keyup.as_ref() {
+                let _ = window.remove_event_listener_with_callback(
+                    "keyup",
+                    keyup.as_ref().unchecked_ref(),
+                );
+            }
+            if let Some(onresize) = self.onresize.as_ref() {
+                let _ = window.remove_event_listener_with_callback(
+                    "resize",
+                    onresize.as_ref().unchecked_ref(),
+                );
+            }
         }
         self.keydown = None;
         self.keyup = None;
@@ -1100,7 +1123,14 @@ impl WaveShow {
                 on_key.emit(code);
             }
         }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
-        window.set_onkeydown(Some(keydown.as_ref().unchecked_ref()));
+        //`addEventListener`, not the `onkeydown` property: monaco installs its own
+        //window handlers when the editor takes focus, and a property handler is
+        //simply replaced (which is why Delete stopped working once the source
+        //pane existed)
+        let _ = window.add_event_listener_with_callback(
+            "keydown",
+            keydown.as_ref().unchecked_ref(),
+        );
 
         let key_press = Rc::clone(&self.key_press);
         let keyup = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
@@ -1108,13 +1138,13 @@ impl WaveShow {
                 *slot = false;
             }
         }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
-        window.set_onkeyup(Some(keyup.as_ref().unchecked_ref()));
+        let _ = window.add_event_listener_with_callback("keyup", keyup.as_ref().unchecked_ref());
 
         let on_resize = ctx.link().callback(|_: ()| Msg::Resize);
         let onresize = Closure::wrap(Box::new(move |_: JsValue| {
             on_resize.emit(());
         }) as Box<dyn FnMut(JsValue)>);
-        window.set_onresize(Some(onresize.as_ref().unchecked_ref()));
+        let _ = window.add_event_listener_with_callback("resize", onresize.as_ref().unchecked_ref());
 
         self.keydown = Some(keydown);
         self.keyup = Some(keyup);

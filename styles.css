@@ -8,10 +8,14 @@
   width: 6px;
   z-index: 5;
   cursor: col-resize;
-  background: transparent;
+  /* visible enough to find: the drag target must not be invisible */
+  background: var(--line);
 }
 
 .wave-names-splitter:hover,
 .wave-names-splitter:active {
   background: var(--accent-line);
 }
+
+/* the drag target must be findable, not invisible until hover */
+.wave-names-splitter { background: var(--line); }
