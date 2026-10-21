@@ -394,8 +394,11 @@ wave pane is short.
    gets the 388 px back and shows a "drop a .vcd/.fst or a .sv to start" hint
    where the empty editor was).
 3. As soon as one source opens, the pane expands to its remembered ratio
-   (`layout.editor_ratio`, default `0.5`) — automatic, no click. The expanded
-   editor content is **at least 120 px**, whatever the ratio says.
+   (`layout.editor_ratio`, default `0.42`) — automatic, no click. The expanded
+   editor content is **at least 120 px**, whatever the ratio says. The ratio is
+   applied to the space the inspector dock leaves, not to the whole pane: the
+   dock lives in the same column, so counting it as editor share pushed the wave
+   pane down to its four-row minimum as soon as the sources opened.
 4. `.wave-splitter` (5 px, `cursor: row-resize`) drags the boundary. Double
    click restores the default ratio. The bounds are locked, see §3.4.
 5. The inspector (drivers/loads) is a fixed dock **between** the editor and the
@@ -410,7 +413,7 @@ One stored field, two derived booleans:
 ```rust
 pub struct Layout {
     pub sidebar_w: f64,      // 280.0 default, clamped as today
-    pub editor_ratio: f32,   // 0.5 default, clamped to [0.15, 0.75] on every write
+    pub editor_ratio: f32,   // 0.42 default, clamped to [0.15, 0.75] on every write
     pub drawer_open: bool,
 }
 // derived, never stored:
@@ -423,11 +426,15 @@ existing window `resize` listener; `height` of `.main-pane`) and renders exactly
 one inline style from `layout`:
 
 ```rust
-// App::view — the shell owns the two variables every pane is laid out from
+// App::view — the shell owns the two variables every pane is laid out from.
+// The inspector docks in the same column, so it is subtracted before the ratio
+// is applied; the four-row wave minimum still wins over the ratio.
+let dock = if inspector_visible { INSPECTOR_MAX } else { 0.0 };
+let share = (main_h - dock).max(TABSTRIP_PX + EDITOR_CONTENT_MIN);
 <div class="app" style={format!(
     "--sidebar-w:{:.0}px; --editor-h:{}px",
     layout.sidebar_w,
-    if collapsed { TABSTRIP_PX } else { (main_h * layout.editor_ratio as f64).max(TABSTRIP_PX) },
+    if collapsed { TABSTRIP_PX } else { (share * layout.editor_ratio as f64).clamp(min, max) },
 )}>
 ```
 

@@ -251,6 +251,16 @@ html, body {
   white-space: nowrap;
 }
 
+/* the build number, so "did the deploy reach this tab" is answerable at a glance */
+.brand-version {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
 .topbar-hint {
   margin-left: auto;
   color: var(--text-2);
@@ -629,6 +639,38 @@ button:active { background: var(--bg-4); }
   flex-direction: column;
   min-height: 0;
   background: var(--wave-bg);
+}
+
+/* The grip that resizes the label column (signal name + cursor value). It sits
+   on the seam, above the canvas overlay, and it is the only thing that *shows*
+   the column can be dragged: the old divider was an empty div with no css, i.e.
+   a zero-height element, so the feature looked unimplemented even though the
+   hit test in the wave body worked. */
+.wave-names-splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--names-w);
+  width: 7px;
+  transform: translateX(-3px);
+  z-index: 6;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.wave-names-splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+}
+
+.wave-names-splitter:hover::after,
+.wave-names-splitter.dragging::after {
+  background: var(--accent);
 }
 
 .timebar {

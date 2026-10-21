@@ -42,43 +42,42 @@ pub const SNAP_PX: f64 = 6.0;
 /// in css pixels.
 pub const CURSOR_GRAB_PX: f64 = 4.0;
 
-/// Snap a cursor time to the closest value-change edge on screen.
+/// Snap a surface position, in css pixels, to the closest value-change edge.
 ///
 /// `edges` is the sorted, de-duplicated list of the value changes of the rows
-/// that are visible (a viewer snaps to something the user can see). The snap
-/// only happens when the edge is within `tolerance_px` pixels of `target`; when
-/// nothing is close enough, or the inputs are degenerate, `target` is returned
-/// unchanged, so callers can use this unconditionally.
+/// that are visible (a viewer snaps to something the user can see). The
+/// distances are measured to the *whole pixel* the edge is drawn on: the cursor
+/// line is painted on a rounded column and an edge at, say, x = 244.48 used to
+/// snap for six pixels on its right and only for four on its left, which the
+/// user saw as an asymmetric snap.
 ///
-/// An exact tie between the edge before and the edge after `target` snaps to
-/// the earlier one, which keeps repeated clicks deterministic.
-pub fn snap_to_edges(target: Time, edges: &[Time], view: &View, tolerance_px: f64) -> Time {
-    if edges.is_empty() || !tolerance_px.is_finite() || tolerance_px <= 0.0 {
-        return target;
+/// Returns `None` when nothing is within `tolerance_px`, so callers can use this
+/// unconditionally. An exact tie between the edge before and the edge after `x`
+/// keeps the earlier one, which makes repeated clicks deterministic.
+pub fn snap_x_to_edges(x: f64, edges: &[Time], view: &View, tolerance_px: f64) -> Option<Time> {
+    if edges.is_empty()
+        || !tolerance_px.is_finite()
+        || tolerance_px <= 0.0
+        || !x.is_finite()
+    {
+        return None;
     }
-    debug_assert!(
-        edges.windows(2).all(|pair| pair[0] <= pair[1]),
-        "snap edges must be sorted"
-    );
-    let target_x = view.x_of(target);
-    let position = edges.partition_point(|&edge| edge < target);
     let mut best: Option<(f64, Time)> = None;
-    let mut consider = |edge: Time| {
-        let distance = (view.x_of(edge) - target_x).abs();
-        if distance <= tolerance_px && best.map_or(true, |(best_distance, _)| distance <= best_distance) {
+    for &edge in edges {
+        let distance = (view.x_of(edge).round() - x).abs();
+        if distance <= tolerance_px
+            && best.map_or(true, |(best_distance, _)| distance < best_distance)
+        {
             best = Some((distance, edge));
         }
-    };
-    // the later edge is considered first so an exact tie keeps the earlier one
-    if let Some(&edge) = edges.get(position) {
-        consider(edge);
     }
-    if let Some(index) = position.checked_sub(1) {
-        if let Some(&edge) = edges.get(index) {
-            consider(edge);
-        }
-    }
-    best.map(|(_, edge)| edge).unwrap_or(target)
+    best.map(|(_, edge)| edge)
+}
+
+/// [`snap_x_to_edges`] for a caller that already has a time, not a pixel.
+#[cfg(test)]
+pub fn snap_to_edges(target: Time, edges: &[Time], view: &View, tolerance_px: f64) -> Time {
+    snap_x_to_edges(view.x_of(target), edges, view, tolerance_px).unwrap_or(target)
 }
 
 /// The rows that intersect the viewport, plus a prefetch margin.
@@ -432,6 +431,23 @@ mod tests {
         //a panned view keeps snapping on screen positions, not on time deltas
         let panned = View::new(100.0, 1.0);
         assert_eq!(snap_to_edges(103, &edges, &panned, SNAP_PX), 100);
+    }
+
+    #[test]
+    fn snap_tolerance_is_symmetric_around_a_fractional_edge() {
+        // the edge sits at x = 244.48, between two pixel columns; the cursor
+        // line is drawn on the rounded column, so both sides must reach the
+        // same six integer pixels
+        let view = View::new(0.52, 1.0);
+        let edges = [245];
+        assert!((view.x_of(245) - 244.48).abs() < 1e-9);
+        assert_eq!(snap_x_to_edges(238.0, &edges, &view, SNAP_PX), Some(245));
+        assert_eq!(snap_x_to_edges(250.0, &edges, &view, SNAP_PX), Some(245));
+        assert_eq!(snap_x_to_edges(237.0, &edges, &view, SNAP_PX), None);
+        assert_eq!(snap_x_to_edges(251.0, &edges, &view, SNAP_PX), None);
+        // a fractional click position (high dpi / a drag) is symmetric too
+        assert_eq!(snap_x_to_edges(238.3, &edges, &view, SNAP_PX), Some(245));
+        assert_eq!(snap_x_to_edges(249.7, &edges, &view, SNAP_PX), Some(245));
     }
 
     #[test]

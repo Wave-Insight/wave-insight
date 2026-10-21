@@ -64,6 +64,9 @@ impl Component for TopBar {
                     </span>
                     <span class="brand-name">{"Wave Insight"}</span>
                     <span class="brand-tag">{"VCD / VERILOG"}</span>
+                    // Which build this tab runs: after a deploy the first thing to
+                    // check is that this number moved.
+                    <span class="brand-version">{format!("v{}", env!("CARGO_PKG_VERSION"))}</span>
                 </div>
                 <div class="topbar-hint">
                     {
@@ -83,6 +86,7 @@ impl Component for TopBar {
                     <kbd>{"click a name"}</kbd>{" adds it · "}
                     <kbd>{"↗"}</kbd>{" opens its declaration · "}
                     <kbd>{"z"}</kbd>{" "}<kbd>{"f"}</kbd>{" · left / right click sets a cursor"}
+                    {" · "}<kbd>{"del"}</kbd>{" removes the selected row"}
                 </div>
             </header>
         }

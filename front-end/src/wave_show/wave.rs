@@ -28,6 +28,9 @@ const KEEP_ROWS: usize = geometry::PREFETCH_ROWS * 4;
 /// Rows outside the viewport that are rendered into the DOM name column, so a
 /// fast scroll does not pop.
 const NAME_OVERSCAN: usize = 4;
+/// Width of the label column (signal name + cursor value), in css pixels. Also
+/// what a double click on the column's grip restores.
+const DEFAULT_NAMES_W: f64 = 330.0;
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct WaveShowProps {
@@ -203,6 +206,10 @@ pub struct WaveShow {
     keydown: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
     keyup: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
     onresize: Option<Closure<dyn FnMut(JsValue)>>,
+    /// Repaints the canvas whenever its box changes, including the tier-A
+    /// drags that write css variables without a Yew render.
+    resize_observer: Option<web_sys::ResizeObserver>,
+    resize_callback: Option<Closure<dyn FnMut()>>,
 }
 
 impl Component for WaveShow {
@@ -264,13 +271,15 @@ impl Component for WaveShow {
             used: RefCell::new(Metrics::default()),
             last_decoded: 0,
             draws: 0,
-            names_w: 330.0,
+            names_w: DEFAULT_NAMES_W,
             names_drag: None,
-            names_preview: Cell::new(330.0),
+            names_preview: Cell::new(DEFAULT_NAMES_W),
 
             keydown: None,
             keyup: None,
             onresize: None,
+            resize_observer: None,
+            resize_callback: None,
         };
         this.sync_rows();
         this.attach_listeners(ctx);
@@ -300,6 +309,11 @@ impl Component for WaveShow {
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
+        // watch the canvas box: the horizontal splitter and the sidebar splitter
+        // are tier-A (they write css variables straight to the dom), so a resize
+        // can happen with no render at all; without this the backing store keeps
+        // the old size and the trace is stretched over the new box
+        self.observe_canvas(ctx);
         let measured = self.measure();
         if measured.is_usable() && !measured.approximately(&self.used.borrow()) {
             ctx.link().send_message(Msg::Resize);
@@ -328,6 +342,10 @@ impl Component for WaveShow {
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
+        if let Some(observer) = self.resize_observer.take() {
+            observer.disconnect();
+        }
+        self.resize_callback = None;
         if let Some(window) = web_sys::window() {
             if let Some(keydown) = self.keydown.as_ref() {
                 let _ = window.remove_event_listener_with_callback(
@@ -383,6 +401,14 @@ impl Component for WaveShow {
                         delete={link.callback(|_| Msg::DeleteSig)} />
                 }
                 <TimeBar store={self.store.clone()} width={metrics.surface_w} />
+                // The grip for the label column. It has to be visible and to
+                // cover the seam: the old divider was an empty `<div>` with no
+                // css at all, i.e. a zero-height element nobody could hit, so
+                // the column *looked* undraggable even though the fallback in
+                // `MouseDown` worked.
+                <div class={if self.names_drag.is_some() {"wave-names-splitter dragging"} else {"wave-names-splitter"}}
+                    title="Drag to resize the label column, double click to reset"
+                    onmousedown={link.callback(Msg::NamesDown)} />
                 <div class="wave-body" id="wave-body"
                     onscroll={link.callback(|_| Msg::Scroll)}
                     onwheel={link.callback(Msg::Wheel)}
@@ -393,8 +419,6 @@ impl Component for WaveShow {
                     // must not open on top of the wave area
                     oncontextmenu={Callback::from(|event: MouseEvent| event.prevent_default())}>
                     <div class="wave-rows" style={format!("height:{rows_height}")}>
-                    <div class="wave-names-splitter"
-                        onmousedown={link.callback(Msg::NamesDown)} />
                     {if self.names_drag.is_some() {
                         html!{
                             <div class="splitter-shield"
@@ -561,6 +585,14 @@ impl WaveShow {
             }
             Msg::NamesDown(e) => {
                 e.prevent_default();
+                // double click restores the default width, like the other
+                // splitters in the app
+                if e.detail() >= 2 {
+                    self.names_drag = None;
+                    self.names_w = DEFAULT_NAMES_W;
+                    self.names_preview.set(DEFAULT_NAMES_W);
+                    return true;
+                }
                 self.names_drag = Some((e.x() as f64, self.names_w));
                 self.names_preview.set(self.names_w);
                 true
@@ -890,24 +922,14 @@ impl WaveShow {
 
     /// The time a click at `x` (surface pixels) places a cursor at: the raw
     /// time, snapped onto a visible value edge when one is a few pixels away.
-    /// time, snapped onto a visible value edge when one is a few pixels away.
     ///
     /// The distance is measured in **pixels from the click**, not by converting
-    /// the click to a time and back: that round trip truncates to whole ticks,
-    /// which made the tolerance a little wider on one side of an edge than on
-    /// the other (the user noticed the asymmetry before I did).
+    /// the click to a time and back: that round trip truncates to whole ticks.
+    /// [`geometry::snap_x_to_edges`] also measures to the whole pixel the edge is
+    /// drawn on, so the tolerance is the same on both sides of an edge.
     fn snapped_time(&self, x: f64) -> i32 {
-        let mut best: Option<(f64, Time)> = None;
-        for &edge in &self.snap_edges {
-            let distance = (self.view.x_of(edge) - x).abs();
-            if distance <= geometry::SNAP_PX
-                && best.map_or(true, |(best_distance, _)| distance < best_distance)
-            {
-                best = Some((distance, edge));
-            }
-        }
-        match best {
-            Some((_, edge)) => edge.min(i32::MAX as u64) as i32,
+        match geometry::snap_x_to_edges(x, &self.snap_edges, &self.view, geometry::SNAP_PX) {
+            Some(edge) => edge.min(i32::MAX as u64) as i32,
             None => self.view.time_at(x).max(0),
         }
     }
@@ -1159,6 +1181,33 @@ impl WaveShow {
             body_top,
             dpr,
         }
+    }
+
+    /// Repaint whenever the canvas box changes, whatever changed it.
+    ///
+    /// `rendered` only runs when the component re-renders; the splitters are
+    /// tier-A and move the pane by writing a css variable, so during those drags
+    /// nothing renders. A `ResizeObserver` on the canvas overlay is the only
+    /// signal that sees every box change, and it costs one message per change.
+    fn observe_canvas(&mut self, ctx: &Context<Self>) {
+        if self.resize_observer.is_some() {
+            return;
+        }
+        let Some(target) =
+            document().and_then(|document| document.get_element_by_id("wave-canvas"))
+        else {
+            return;
+        };
+        let link = ctx.link().clone();
+        let callback = Closure::<dyn FnMut()>::new(move || {
+            link.send_message(Msg::Resize);
+        });
+        let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) else {
+            return;
+        };
+        observer.observe(&target);
+        self.resize_observer = Some(observer);
+        self.resize_callback = Some(callback);
     }
 
     fn attach_listeners(&mut self, ctx: &Context<Self>) {

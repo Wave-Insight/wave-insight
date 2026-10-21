@@ -442,7 +442,14 @@ impl App {
             return 2.0 * (TAB_STRIP + EDITOR_CONTENT_MIN);
         }
         let (min, max) = self.editor_bounds(inspector_visible);
-        (self.main_h * f64::from(self.layout.editor_ratio)).clamp(min, max)
+        // The inspector dock sits in the same column, between the editor and the
+        // wave pane, so the stored ratio applies to the space the dock leaves.
+        // Applied to the whole pane it handed the dock's pixels to the editor and
+        // the wave pane dropped to the four-row minimum as soon as the sources
+        // (and with them the dock) opened.
+        let dock = if inspector_visible { INSPECTOR_MAX } else { 0.0 };
+        let share = (self.main_h - dock).max(min);
+        (share * f64::from(self.layout.editor_ratio)).clamp(min, max)
     }
 
     /// The editor heights the splitter may not leave: the expanded content is at

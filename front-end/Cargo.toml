@@ -1,6 +1,6 @@
 [package]
 name = "front-end"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -47,6 +47,9 @@ features = [
     "HtmlCanvasElement",
     "CanvasRenderingContext2d",
     "TextMetrics",
+    #wave_show: repaint the canvas when its box changes without a Yew render
+    #(the splitters are tier-A and only write css variables)
+    "ResizeObserver",
     #console error reporting when the monaco CDN cannot be reached
     "console",]
 

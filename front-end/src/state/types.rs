@@ -84,7 +84,11 @@ impl Default for Layout {
     fn default() -> Self {
         Self {
             sidebar_w: SIDEBAR_DEFAULT,
-            editor_ratio: 0.5,
+            // A little under half: the waveform is the thing that is read, and
+            // once the inspector dock opens the two panes share one column. At
+            // 0.5 the wave pane kept only ~220 px on a 900 px window, which read
+            // as "the waveform is squashed" as soon as the sources were opened.
+            editor_ratio: 0.42,
             drawer_open: true,
         }
     }
@@ -417,7 +421,9 @@ mod tests {
     fn layout_default_matches_the_design() {
         let layout = Layout::default();
         assert_eq!(layout.sidebar_w, SIDEBAR_DEFAULT);
-        assert_eq!(layout.editor_ratio, 0.5);
+        // docs/state-store.md §3.2: a little under half goes to the editor, so
+        // the waveform keeps the larger share of the column it sits in
+        assert_eq!(layout.editor_ratio, 0.42);
         assert!(layout.drawer_open);
         assert_eq!(layout.clamped(), layout);
     }
