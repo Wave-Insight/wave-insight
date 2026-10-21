@@ -28,6 +28,10 @@ pub struct CtrlProps {
     pub drive: Vec<String>,
     #[prop_or_default]
     pub onset: Callback<(bool,Settings)>,//<close ctrl menu,new Settings>
+    /// The load/drive buttons: `(load?, index)`. The app resolves the span and
+    /// lists the several matches in the inspector.
+    #[prop_or_default]
+    pub onlocate: Callback<(bool, usize)>,
     pub delete: Callback<()>,
 }
 
@@ -114,9 +118,14 @@ impl Component for Ctrl {
                 true
             }
             Msg::AddAllDrive => {
+                // Verdi's "drive" button: show the first driver, and let the app
+                // list the others in the Drivers / loads panel
+                props.onlocate.emit((false, 0));
                 true
             }
             Msg::AddAllLoad => {
+                // Verdi's "load" button: same for the first load
+                props.onlocate.emit((true, 0));
                 true
             }
             Msg::DeleteSig => {

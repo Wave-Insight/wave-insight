@@ -44,6 +44,11 @@ pub struct WaveShowProps {
     /// Open the declaration of one signal in the source pane.
     #[prop_or_default]
     pub onjump: Callback<String>,
+    /// The settings dialog asked for a driver/load: `(load?, index, path)`.
+    /// The app resolves the span and decides between "jump to the one target"
+    /// and "the several are listed in the inspector".
+    #[prop_or_default]
+    pub onlocate: Callback<(bool, usize, String)>,
 }
 
 pub enum Msg {
@@ -66,6 +71,8 @@ pub enum Msg {
     NameClick(usize),
     /// the little arrow on a name cell: open its declaration
     Jump(usize),
+    /// the settings dialog asked for a load (`true`) or a driver (`false`)
+    Locate((bool, usize)),
     /// the layout moved, everything has to be measured again
     Resize,
     /// rows were decoded after the last render: the value column has values to
@@ -334,6 +341,7 @@ impl Component for WaveShow {
                         load={self.signal_things[self.on_setting_idx[0]].load.clone()}
                         drive={self.signal_things[self.on_setting_idx[0]].driver.clone()}
                         onset={link.callback(Msg::SetSignal)}
+                        onlocate={link.callback(Msg::Locate)}
                         delete={link.callback(|_| Msg::DeleteSig)} />
                 }
                 <TimeBar store={self.store.clone()} width={metrics.surface_w} />
@@ -668,6 +676,20 @@ impl WaveShow {
                     let path = item.path.clone();
                     ctx.props().onselect.emit(Some(path.clone()));
                     ctx.props().onjump.emit(path);
+                }
+                true
+            }
+            Msg::Locate((load, index)) => {
+                // the dialog belongs to the first row of its target set; the app
+                // resolves the driver/load span (or lists the several) from there
+                let path = self
+                    .on_setting_idx
+                    .first()
+                    .and_then(|idx| self.signal_things.iter().nth(*idx))
+                    .map(|item| item.path.clone());
+                if let Some(path) = path {
+                    self.menu_show = false;
+                    ctx.props().onlocate.emit((load, index, path));
                 }
                 true
             }

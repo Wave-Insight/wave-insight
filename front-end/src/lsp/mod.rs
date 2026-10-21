@@ -23,5 +23,7 @@ mod bridge;
 mod provider;
 mod shim;
 
+pub(crate) mod inlay;
+
 pub use bridge::{document_uri, file_of_uri, LspBridge, LANGUAGE_ID};
 pub use provider::install;

@@ -7,6 +7,7 @@ use yew::prelude::*;
 use crate::code_reader::CodeReader;
 use crate::lsp::LspBridge;
 use crate::nav::{
+    match_dump_candidates,
     DesignState,
     Goto,
     PathPicker,
@@ -15,7 +16,7 @@ use crate::nav::{
     SidebarTree,
     SignalInspector,
     SourceClick};
-use crate::state::{self, Action, Layout, Status, Store, Subscription};
+use crate::state::{self, Action, Cursors, Layout, RowsSlice, Status, Store, Subscription};
 use crate::wave_show::WaveShow;
 use crate::module_struct::ModuleStruct;
 
@@ -66,6 +67,8 @@ pub enum Msg {
     WaveSelect(Option<String>),
     /// The wave view asked where a signal is declared.
     WaveJump(String),
+    /// The settings dialog asked for a driver/load: `(load?, index, path)`.
+    Locate((bool, usize, String)),
     /// Bring one source position into view.
     Goto((String, u32, u32)),
     /// Several signals cover the clicked position; the user chose one.
@@ -123,6 +126,10 @@ pub struct App {
     design: SharedDesign,
     /// The language server client the source editor talks to.
     lsp: LspBridge,
+    /// Cursor/dump subscriptions for the editor inlay hints; they update the
+    /// page-wide hint context without rendering anything.
+    _cursors_sub: Subscription,
+    _rows_sub: Subscription,
     verilog_source: Vec<(String,String)>,
     /// Hierarchical path of the signal selected in the wave view.
     selected: Option<String>,
@@ -183,6 +190,20 @@ impl Component for App {
             state::select::layout,
             ctx.link().callback(Msg::Layout),
         );
+        // The editor's inlay hints show the value at cursor 1; the context is
+        // page state (the provider runs inside a monaco callback), so it is
+        // updated from subscriptions and never triggers a Yew render.
+        crate::lsp::inlay::init(design.clone(), store.clone());
+        let cursors_sub = store.subscribe(
+            state::select::cursors,
+            Callback::from(|cursors: Cursors| {
+                crate::lsp::inlay::set_cursor(cursors.one.map(i64::from))
+            }),
+        );
+        let rows_sub = store.subscribe(
+            state::select::rows,
+            Callback::from(|_rows: RowsSlice| crate::lsp::inlay::refresh()),
+        );
         let mut this = Self {
             store,
             layout,
@@ -196,6 +217,8 @@ impl Component for App {
             waveform: None,
             design,
             lsp,
+            _cursors_sub: cursors_sub,
+            _rows_sub: rows_sub,
             verilog_source: vec![],
             selected: None,
             picker: None,
@@ -314,7 +337,8 @@ impl Component for App {
                             store={self.store.clone()}
                             waveform={self.waveform.clone()}
                             onselect={link.callback(Msg::WaveSelect)}
-                            onjump={link.callback(Msg::WaveJump)} />
+                            onjump={link.callback(Msg::WaveJump)}
+                            onlocate={link.callback(Msg::Locate)} />
                     </main>
                 </div>
                 {if let Some(picker) = &self.picker {
@@ -514,7 +538,9 @@ impl App {
                 }
             }
             Msg::SidebarAdd(path) => {
-                self.add_path(&path);
+                // the sidebar is the explicit "add and show me where it is"
+                // gesture, unlike a click in the source
+                self.add_path(&path, true);
                 true
             }
             Msg::GetWaveform(waveform) => {
@@ -533,6 +559,8 @@ impl App {
                 // the ruler and the fit zoom read it from the store now
                 self.store.dispatch(Action::DumpOpened { time_range });
                 self.waveform = Some(waveform);
+                // the inlay hints can only show values once a dump is open
+                crate::lsp::inlay::set_waveform(self.waveform.clone());
                 self.refresh_tree();
                 self.sync_lsp_top();
                 self.note(Status::info("waveform loaded"));
@@ -549,6 +577,8 @@ impl App {
                 self.lsp.open(&file, &text);
                 self.refresh_tree();
                 self.sync_lsp_top();
+                // names that resolved to nothing before may resolve now
+                crate::lsp::inlay::refresh();
                 self.note(Status::info(format!("parsed {file}")));
                 true
             }
@@ -579,7 +609,9 @@ impl App {
                             "`{}` is not a signal of the elaborated design", click.word)));
                     }
                     1 => {
-                        self.add_path(&candidates[0]);
+                        // Verdi behaviour: clicking a name in the source adds it
+                        // to the wave view, and does not move the editor
+                        self.add_path(&candidates[0], false);
                     }
                     _ => {
                         self.note(Status::info(format!(
@@ -597,15 +629,12 @@ impl App {
                 true
             }
             Msg::WaveJump(path) => {
-                match self.declare_target(&path) {
-                    Some((file, line, col)) => {
-                        self.goto_to(file, line, col);
-                    }
-                    None => {
-                        self.note(Status::error(format!(
-                            "no declaration for {path} — load the .v/.sv sources it came from")));
-                    }
-                }
+                self.jump_to_declaration(&path);
+                true
+            }
+            Msg::Locate((load, index, path)) => {
+                self.selected = Some(path.clone());
+                self.locate_reference(&path, load, index);
                 true
             }
             Msg::Goto((file, line, col)) => {
@@ -615,7 +644,9 @@ impl App {
             Msg::PickPath(index) => {
                 if let Some(picker) = self.picker.take() {
                     if let Some(path) = picker.paths.get(index).cloned() {
-                        self.add_path(&path);
+                        // the picker was opened by a click in the source: same
+                        // rule, add without moving the editor
+                        self.add_path(&path, false);
                     }
                 }
                 true
@@ -748,27 +779,177 @@ impl App {
         signal
     }
 
-    /// Add one hierarchical path to the wave view and, when the design knows
-    /// it and its file is open, show where it is declared.
-    fn add_path(&mut self, path: &str) {
+    /// Add one signal to the wave view.
+    ///
+    /// `path` can be a *design* path (a click in the source, a picker choice) or
+    /// a *dump* path (the sidebar tree). The row must carry the dump path, because
+    /// the wave view looks the decoded values up by it; when the two hierarchies
+    /// spell their root scope differently the dump side is resolved by
+    /// [`match_dump_candidates`], and an ambiguous name opens the picker instead
+    /// of guessing.
+    ///
+    /// `show_declaration` is for the explicit "add and show me where it is"
+    /// gestures (the sidebar). A click in the source adds the row and leaves the
+    /// editor where it is, which is the Verdi behaviour the user asked for.
+    fn add_path(&mut self, path: &str, show_declaration: bool) {
+        let mut dump_candidates = Vec::new();
+        if let Some(waveform) = &self.waveform {
+            dump_candidates = match_dump_candidates(waveform.as_waveform(), path);
+            match dump_candidates.len() {
+                0 => {
+                    // the dump is the source of values: adding a row that cannot
+                    // decode is exactly the "the added signal draws nothing" bug
+                    self.note(Status::error(format!(
+                        "`{path}` is not in the loaded waveform"
+                    )));
+                    return;
+                }
+                1 => {}
+                _ => {
+                    self.note(Status::info(format!(
+                        "{} signals in the waveform match `{path}`",
+                        dump_candidates.len()
+                    )));
+                    self.picker = Some(Picker {
+                        title: format!(
+                            "{} signals in the waveform match `{path}`",
+                            dump_candidates.len()
+                        ),
+                        paths: dump_candidates,
+                    });
+                    return;
+                }
+            }
+        }
+        let row_path = dump_candidates
+            .first()
+            .cloned()
+            .unwrap_or_else(|| path.to_string());
+
         // the row list is store state now: resolve what the reducer cannot know
         // (width from the dump/design, driver + load locations) and dispatch
-        let signal = self.signal_for_path(path);
+        let signal = self.signal_for_path(&row_path);
         self.store.dispatch(Action::RowAdded {
-            path: path.to_string(),
-            name: path.to_string(),
+            path: row_path.clone(),
+            name: row_path.clone(),
             width: signal.size,
             load: signal.load.clone(),
             drive: signal.drive.clone(),
         });
-        self.selected = Some(path.to_string());
-        self.note(Status::info(format!("added {path} to the waveform")));
-        // only jump when the source pane can show the file: a closed tab would
-        // otherwise turn a successful add into an "is not open" message
-        if let Some((file, line, col)) = self.declare_target(path) {
-            if self.verilog_source.iter().any(|(name, _)| name == &file) {
-                self.goto_to(file, line, col);
+        self.selected = Some(row_path.clone());
+        self.note(Status::info(format!("added {row_path} to the waveform")));
+        if show_declaration {
+            // only jump when the source pane can show the file: a closed tab
+            // would otherwise turn a successful add into an error status
+            if let Some((file, line, col)) = self.declare_target(&row_path) {
+                if self.verilog_source.iter().any(|(name, _)| name == &file) {
+                    self.goto_to(file, line, col);
+                }
             }
+        }
+    }
+
+    /// Navigate the source pane to where `path` is declared.
+    ///
+    /// The lookup is fuzzy on purpose (the dump root and the elaboration root can
+    /// disagree). An ambiguous path is reported with its candidates; a design that
+    /// cannot answer says why (no sources, no elaborated top, or a genuinely
+    /// missing declaration) instead of pretending the declaration does not exist.
+    fn jump_to_declaration(&mut self, path: &str) {
+        if let Some((file, line, col)) = self.declare_target(path) {
+            self.goto_to(file, line, col);
+            return;
+        }
+        let state = self.design.borrow();
+        if state.is_empty() {
+            self.note(Status::error(format!(
+                "no sources loaded — `{path}` is declared in the .v/.sv files; load them to navigate"
+            )));
+            return;
+        }
+        let candidates = state.resolve_candidates(path);
+        if candidates.len() > 1 {
+            let names: Vec<&str> = candidates
+                .iter()
+                .take(4)
+                .map(|signal| signal.path.as_str())
+                .collect();
+            let more = if candidates.len() > names.len() { ", ..." } else { "" };
+            self.note(Status::error(format!(
+                "ambiguous: {} signals match `{path}` — {}{more}",
+                candidates.len(),
+                names.join(", ")
+            )));
+            return;
+        }
+        match state.top() {
+            Some(top) => self.note(Status::error(format!(
+                "the loaded sources do not declare `{path}` (elaborated top: {top})"
+            ))),
+            None => self.note(Status::error(
+                "the loaded sources do not elaborate to a top module, so declarations cannot be resolved".to_string(),
+            )),
+        }
+    }
+
+    /// Jump to a driver or a load of `path` (the settings dialog's buttons).
+    ///
+    /// One reference navigates straight to it. Several are listed in the
+    /// Drivers / loads inspector — the panel the row selection already drives —
+    /// and the requested one is opened, so the button never silently picks a
+    /// reference while pretending there is only one.
+    fn locate_reference(&mut self, path: &str, load: bool, index: usize) {
+        let kind = if load { "load" } else { "driver" };
+        let (targets, has_signal) = {
+            let design = self.design.borrow();
+            let signal = design.resolve_path(path);
+            let targets = signal
+                .map(|signal| {
+                    let spans = if load { &signal.loads } else { &signal.drivers };
+                    spans
+                        .iter()
+                        .map(|usage| {
+                            (
+                                usage.span.file.display().to_string(),
+                                usage.span.start_line,
+                                usage.span.start_col,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            (targets, signal.is_some())
+        };
+        if !has_signal {
+            let message = if self.design.borrow().is_empty() {
+                format!("no sources loaded — load the .v/.sv files to find the {kind}s of `{path}`")
+            } else {
+                format!("the loaded sources do not contain `{path}` — cannot find its {kind}s")
+            };
+            self.note(Status::error(message));
+            return;
+        }
+        let count = targets.len();
+        if count == 0 {
+            self.note(Status::error(format!(
+                "no {kind} found for `{path}` in the loaded sources"
+            )));
+            return;
+        }
+        let chosen = index.min(count - 1);
+        let (file, line, col) = targets[chosen].clone();
+        if !self.verilog_source.iter().any(|(name, _)| name == &file) {
+            self.note(Status::error(format!(
+                "{file} is not open in the source pane — open it from the file picker again"
+            )));
+            return;
+        }
+        self.goto_to(file, line, col);
+        if count > 1 {
+            self.note(Status::info(format!(
+                "{count} {kind}s for `{path}` — opened #{}; all of them are listed in Drivers / loads",
+                chosen + 1
+            )));
         }
     }
 

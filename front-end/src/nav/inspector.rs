@@ -49,13 +49,26 @@ impl Component for SignalInspector {
 
         // take an owned copy of everything; the database borrow must not be held
         // while the html is built
-        let (details, has_sources, top, diagnostics) = {
+        let (details, has_sources, top, diagnostics, candidates) = {
             let design = props.design.borrow();
+            let candidates = props
+                .path
+                .as_deref()
+                .map(|path| {
+                    design
+                        .resolve_candidates(path)
+                        .iter()
+                        .take(4)
+                        .map(|signal| signal.path.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             (
                 props.path.as_deref().and_then(|path| design.signal_details(path)),
                 !design.is_empty(),
                 design.top().map(str::to_string),
                 design.diagnostic_count(),
+                candidates,
             )
         };
 
@@ -71,7 +84,7 @@ impl Component for SignalInspector {
                     </span>
                 </div>
                 <div class="panel-body">
-                    {self.body(link, props, details, has_sources, top, diagnostics)}
+                    {self.body(link, props, details, has_sources, top, diagnostics, candidates)}
                 </div>
             </section>
         }
@@ -88,6 +101,7 @@ impl SignalInspector {
         has_sources: bool,
         top: Option<String>,
         diagnostics: usize,
+        candidates: Vec<String>,
     ) -> Html {
         let Some(path) = &props.path else {
             return html! {
@@ -106,6 +120,16 @@ impl SignalInspector {
             };
         }
         let Some(details) = details else {
+            if candidates.len() > 1 {
+                return html! {
+                    <div class="empty-hint" style="padding:14px 12px;text-align:left">
+                        <code>{path.clone()}</code>
+                        {format!(" matches {} signals and is ambiguous:", candidates.len())}
+                        <span style="display:block;color:var(--text-1)">{candidates.join(", ")}</span>
+                        {" Pick the instance in the hierarchy to see its drivers and loads."}
+                    </div>
+                };
+            }
             return html! {
                 <div class="empty-hint" style="padding:14px 12px;text-align:left">
                     <code>{path.clone()}</code>

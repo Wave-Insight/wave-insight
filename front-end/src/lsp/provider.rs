@@ -1,8 +1,9 @@
-//! The four monaco language providers, backed by the browser LSP client.
+//! The five monaco language providers, backed by the browser LSP client and the
+//! waveform.
 //!
 //! Installation happens once per page, on the `systemverilog` language, through
-//! [`MonacoEditor::on_ready`]: monaco is loaded lazily from a CDN, so the
-//! registration waits for the `monaco` namespace instead of assuming it.
+//! [`MonacoEditor::on_ready`]: monaco is loaded lazily, so the registration waits
+//! for the `monaco` namespace instead of assuming it.
 //!
 //! Every provider body is a Rust closure: it turns monaco's `(model, position)`
 //! into a design-source position, asks [`LspBridge`], and hands monaco a
@@ -121,11 +122,32 @@ fn register(monaco: &JsValue, bridge: LspBridge) {
     );
     symbols_provider.forget();
 
+    // Inlay hints are the one provider that is not an LSP request: the value
+    // comes from the waveform and cursor 1, so it answers synchronously and is
+    // refreshed through its own event (cursor moved / dump opened) instead of a
+    // per-keystroke round trip.
+    let inlay = Object::new();
+    let inlay_provider = Closure::wrap(Box::new(
+        move |model: JsValue, range: JsValue, _token: JsValue| -> JsValue {
+            super::inlay::provide(&model, &range)
+        },
+    ) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> JsValue>);
+    set(
+        &inlay,
+        "provideInlayHints",
+        inlay_provider.as_ref().unchecked_ref::<Function>().into(),
+    );
+    inlay_provider.forget();
+    if let Some(event) = super::inlay::change_event() {
+        set(&inlay, "onDidChangeInlayHints", event.into());
+    }
+
     attach(&languages, "registerDefinitionProvider", &definition);
     attach(&languages, "registerReferenceProvider", &references);
     attach(&languages, "registerHoverProvider", &hover);
     attach(&languages, "registerDocumentSymbolProvider", &symbols);
-    publish(definition, references, hover, symbols);
+    attach(&languages, "registerInlayHintsProvider", &inlay);
+    publish(definition, references, hover, symbols, inlay);
 }
 
 /// Attach one provider object to the language.
@@ -343,13 +365,14 @@ fn symbol_kind(kind: i64) -> f64 {
 ///
 /// monaco has no outline or reference list of its own outside VS Code, so the
 /// headless driver calls these very functions (the ones monaco dispatches to)
-/// to inspect definition, hover, references and documentSymbol results
-/// directly.
+/// to inspect definition, hover, references, documentSymbol and inlay hint
+/// results directly.
 fn publish(
     definition: Object,
     references: Object,
     hover: Object,
     symbols: Object,
+    inlay: Object,
 ) {
     let Some(window) = web_sys::window() else {
         return;
@@ -359,6 +382,7 @@ fn publish(
     set(&hook, "references", references.into());
     set(&hook, "hover", hover.into());
     set(&hook, "documentSymbol", symbols.into());
+    set(&hook, "inlayHints", inlay.into());
 
     let to_uri = Closure::<dyn Fn(String) -> String>::new(|file: String| document_uri(&file));
     set(&hook, "documentUri", to_uri.as_ref().unchecked_ref::<Function>().into());

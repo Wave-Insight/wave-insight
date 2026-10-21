@@ -129,19 +129,55 @@ impl DesignState {
     }
 
     /// The flat signal table entry for a hierarchical path.
+    ///
+    /// Accepts the exact elaborated path as well as a path from the waveform
+    /// hierarchy that spells the root scope differently; see [`Self::resolve_path`].
     pub fn flat_signal(&self, path: &str) -> Option<&FlatSignal> {
-        self.design.as_ref()?.signal(path)
+        self.resolve_path(path)
+    }
+
+    /// Resolve a signal path against the elaborated design.
+    ///
+    /// An exact hierarchical path always wins. The dump and the sources can spell
+    /// the root scope differently (`tb_top.u_cpu.pc` in the VCD vs
+    /// `top.u_cpu.pc` in the sources); the ordered rules are documented on
+    /// [`super::resolve_candidates`]. `None` when the answer would be ambiguous:
+    /// guessing between two instances would navigate to the wrong declaration.
+    pub fn resolve_path(&self, path: &str) -> Option<&FlatSignal> {
+        let mut candidates = self.resolve_candidates(path).into_iter();
+        let first = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        Some(first)
+    }
+
+    /// Every signal a path can mean, at the most specific interpretation that
+    /// matches at all (exact path first, then the root-replacement/suffix rules of
+    /// [`super::resolve_candidates`]).
+    ///
+    /// Callers that navigate must not pick one when this returns several; the UI
+    /// says how many candidates matched instead of guessing.
+    pub fn resolve_candidates(&self, path: &str) -> Vec<&FlatSignal> {
+        let Some(design) = self.design.as_ref() else {
+            return Vec::new();
+        };
+        super::resolve_candidates(
+            path,
+            design.signals().iter(),
+            |signal| signal.path.as_str(),
+            |signal| signal.local_name.as_str(),
+        )
     }
 
     /// Where a hierarchical path is declared.
     pub fn declaration(&self, path: &str) -> Option<&Span> {
-        self.design.as_ref()?.declaration(path)
+        self.resolve_path(path).map(|signal| &signal.declaration)
     }
 
     /// Anything the inspector needs for one signal.
     pub fn signal_details(&self, path: &str) -> Option<SignalDetails> {
-        let design = self.design.as_ref()?;
-        let signal = design.signal(path)?;
+        let signal = self.resolve_path(path)?;
         Some(SignalDetails {
             path: signal.path.clone(),
             width: signal.width,
@@ -305,5 +341,53 @@ fn usage_label(kind: UsageKind) -> &'static str {
         UsageKind::EventControl => "event",
         UsageKind::Declaration => "declaration",
         UsageKind::Unknown => "reference",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn design() -> DesignState {
+        let mut state = DesignState::new();
+        state.add_source(
+            "top.sv",
+            "module top;\n  wire clk;\n  child u_c(.clk(clk));\nendmodule\n\
+             module child(input clk);\nendmodule\n",
+        );
+        state
+    }
+
+    #[test]
+    fn resolve_prefers_exact_then_hierarchical_suffix() {
+        let state = design();
+        assert_eq!(
+            state.resolve_path("top.clk").map(|signal| signal.path.as_str()),
+            Some("top.clk")
+        );
+        assert_eq!(
+            state.resolve_path("top.u_c.clk").map(|signal| signal.path.as_str()),
+            Some("top.u_c.clk")
+        );
+        // the dump can have an extra testbench level above the elaborated top
+        assert_eq!(
+            state.resolve_path("tb_top.clk").map(|signal| signal.path.as_str()),
+            Some("top.clk")
+        );
+        assert_eq!(
+            state.resolve_path("tb_top.u_c.clk").map(|signal| signal.path.as_str()),
+            Some("top.u_c.clk")
+        );
+        assert!(state.resolve_path("tb_top.nope").is_none());
+    }
+
+    #[test]
+    fn ambiguous_paths_do_not_resolve() {
+        let state = design();
+        // `clk` exists in both modules: a local-name-only lookup must not guess
+        assert!(state.resolve_path("clk").is_none());
+        assert_eq!(state.resolve_candidates("clk").len(), 2);
+        assert!(state.declaration("clk").is_none());
+        assert!(state.signal_details("clk").is_none());
     }
 }
