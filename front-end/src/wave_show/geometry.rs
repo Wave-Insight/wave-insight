@@ -34,6 +34,53 @@ pub const PREFETCH_ROWS: usize = 12;
 /// line call each and looks the same as drawing the last one per bucket.
 const MIN_PX_PER_CHANGE: f64 = 1.0;
 
+/// How close a click has to be to a value change to snap its cursor onto that
+/// change, in css pixels.
+pub const SNAP_PX: f64 = 6.0;
+
+/// How close a press has to be to a cursor line to grab and drag that cursor,
+/// in css pixels.
+pub const CURSOR_GRAB_PX: f64 = 4.0;
+
+/// Snap a cursor time to the closest value-change edge on screen.
+///
+/// `edges` is the sorted, de-duplicated list of the value changes of the rows
+/// that are visible (a viewer snaps to something the user can see). The snap
+/// only happens when the edge is within `tolerance_px` pixels of `target`; when
+/// nothing is close enough, or the inputs are degenerate, `target` is returned
+/// unchanged, so callers can use this unconditionally.
+///
+/// An exact tie between the edge before and the edge after `target` snaps to
+/// the earlier one, which keeps repeated clicks deterministic.
+pub fn snap_to_edges(target: Time, edges: &[Time], view: &View, tolerance_px: f64) -> Time {
+    if edges.is_empty() || !tolerance_px.is_finite() || tolerance_px <= 0.0 {
+        return target;
+    }
+    debug_assert!(
+        edges.windows(2).all(|pair| pair[0] <= pair[1]),
+        "snap edges must be sorted"
+    );
+    let target_x = view.x_of(target);
+    let position = edges.partition_point(|&edge| edge < target);
+    let mut best: Option<(f64, Time)> = None;
+    let mut consider = |edge: Time| {
+        let distance = (view.x_of(edge) - target_x).abs();
+        if distance <= tolerance_px && best.map_or(true, |(best_distance, _)| distance <= best_distance) {
+            best = Some((distance, edge));
+        }
+    };
+    // the later edge is considered first so an exact tie keeps the earlier one
+    if let Some(&edge) = edges.get(position) {
+        consider(edge);
+    }
+    if let Some(index) = position.checked_sub(1) {
+        if let Some(&edge) = edges.get(index) {
+            consider(edge);
+        }
+    }
+    best.map(|(_, edge)| edge).unwrap_or(target)
+}
+
 /// The rows that intersect the viewport, plus a prefetch margin.
 ///
 /// Returns `(draw_first, draw_last, fetch_first, fetch_last)`; the draw range is
@@ -354,5 +401,62 @@ mod tests {
         assert_eq!(clamp_time(f64::NAN), 0);
         assert_eq!(clamp_time(f64::INFINITY), u64::MAX);
         assert_eq!(clamp_time(42.9), 42);
+    }
+
+    #[test]
+    fn snap_picks_the_closest_edge_inside_the_tolerance() {
+        //1 px per time step, edges at 100, 200 and 400
+        let view = View::new(0.0, 1.0);
+        let edges = [100, 200, 400];
+        assert_eq!(snap_to_edges(103, &edges, &view, SNAP_PX), 100);
+        assert_eq!(snap_to_edges(97, &edges, &view, SNAP_PX), 100);
+        assert_eq!(snap_to_edges(196, &edges, &view, SNAP_PX), 200);
+        //outside the tolerance nothing changes
+        assert_eq!(snap_to_edges(120, &edges, &view, SNAP_PX), 120);
+        assert_eq!(snap_to_edges(0, &edges, &view, SNAP_PX), 0);
+        assert_eq!(snap_to_edges(1_000, &edges, &view, SNAP_PX), 1_000);
+    }
+
+    #[test]
+    fn snap_tolerance_is_inclusive_and_in_pixels() {
+        let view = View::new(0.0, 1.0);
+        let edges = [100];
+        //exactly at the tolerance distance: snaps
+        assert_eq!(snap_to_edges(103, &edges, &view, 3.0), 100);
+        //one pixel further: does not
+        assert_eq!(snap_to_edges(104, &edges, &view, 3.0), 104);
+        //the same time distance is far away when zoomed out (0.1 px per step)
+        let zoomed = View::new(0.0, 0.1);
+        assert_eq!(snap_to_edges(130, &edges, &zoomed, SNAP_PX), 100);
+        assert_eq!(snap_to_edges(200, &edges, &zoomed, SNAP_PX), 200);
+        //a panned view keeps snapping on screen positions, not on time deltas
+        let panned = View::new(100.0, 1.0);
+        assert_eq!(snap_to_edges(103, &edges, &panned, SNAP_PX), 100);
+    }
+
+    #[test]
+    fn snap_prefers_the_earlier_edge_on_a_tie() {
+        let view = View::new(0.0, 1.0);
+        let edges = [100, 200];
+        //150 is 50 px from both edges: the earlier one wins
+        assert_eq!(snap_to_edges(150, &edges, &view, 60.0), 100);
+        //and the choice does not depend on the click order of equal distances
+        assert_eq!(snap_to_edges(150, &edges, &view, 50.0), 100);
+    }
+
+    #[test]
+    fn snap_handles_degenerate_inputs() {
+        let view = View::new(0.0, 1.0);
+        let edges = [100, 200];
+        assert_eq!(snap_to_edges(150, &[], &view, SNAP_PX), 150);
+        assert_eq!(snap_to_edges(150, &edges, &view, 0.0), 150);
+        assert_eq!(snap_to_edges(150, &edges, &view, -5.0), 150);
+        assert_eq!(snap_to_edges(150, &edges, &view, f64::NAN), 150);
+        assert_eq!(snap_to_edges(150, &edges, &view, f64::INFINITY), 150);
+        //a target on an edge is left alone (and does not pick a neighbour)
+        assert_eq!(snap_to_edges(200, &edges, &view, SNAP_PX), 200);
+        //a view with a nonsense origin makes every distance NaN: no snap, no panic
+        let broken = View::new(f64::NAN, 1.0);
+        assert_eq!(snap_to_edges(150, &edges, &broken, SNAP_PX), 150);
     }
 }

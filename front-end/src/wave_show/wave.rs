@@ -13,10 +13,10 @@ use crate::state::{self, select, Cursors, RowsSlice, Store, Subscription, View, 
 
 use super::canvas;
 use super::ctrl::Ctrl;
-use super::geometry::{self, content_height, visible_rows, ROW_HEIGHT};
+use super::geometry::{self, content_height, visible_rows, ROW_HEIGHT, Time};
 use super::settings::Settings;
 use super::signal::SignalName;
-use super::time::{build_axis, Time};
+use super::time::{build_axis, Time as TimeBar};
 use super::util::signal_things::{RowValues, SignalItem, SignalThings};
 
 /// Decoded histories kept in memory before rows outside the viewport are
@@ -68,6 +68,9 @@ pub enum Msg {
     Jump(usize),
     /// the layout moved, everything has to be measured again
     Resize,
+    /// rows were decoded after the last render: the value column has values to
+    /// show now, so re-render the name column once (see `rendered`)
+    ValuesReady,
 }
 
 /// Geometry of the wave area, measured from the dom.
@@ -100,6 +103,13 @@ impl Metrics {
     }
 }
 
+/// Which cursor a press that landed on a cursor line is dragging.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CursorDrag {
+    One,
+    Two,
+}
+
 pub struct WaveShow {
     /// The app store the rows are read from and dispatched to.
     store: Store,
@@ -110,6 +120,16 @@ pub struct WaveShow {
     rows: RowsSlice,
     /// The committed cursors, mirrored here for drawing.
     cursors: Cursors,
+    /// Cursors being dragged: a local preview, committed on mouseup (tier A).
+    cursor_preview: Option<Cursors>,
+    /// Which cursor the current press grabbed, if the press drags one.
+    cursor_drag: Option<CursorDrag>,
+    /// The value-change edges on screen when the press started; cursors snap to
+    /// these. Collected once per gesture, never per mouse move.
+    snap_edges: Vec<Time>,
+    /// Rows were decoded after the last render, so the value column has new
+    /// cell values: one extra render is sent from `rendered`.
+    values_need_render: bool,
     /// The opened dump's range, mirrored here for the ruler and the fit zoom.
     time_range: Option<TimeRange>,
     /// Kept so the subscriptions live exactly as long as the component.
@@ -123,6 +143,13 @@ pub struct WaveShow {
     view: View,
     /// `true` once the fit-to-trace zoom was applied for this dump.
     fitted: bool,
+    /// `true` once the computed fit zoom was also committed to the store.
+    ///
+    /// The fit is applied locally in [`Self::redraw`] (it needs the measured
+    /// width), but the store owns the committed viewport: without this commit a
+    /// later cursor commit would hand back the store's default view and reset
+    /// the zoom, and the time bar would draw a ruler for a view nobody sees.
+    fit_committed: bool,
     /// Vertical scroll offset of the row list, in css pixels.
     scroll_top: f64,
 
@@ -173,6 +200,10 @@ impl Component for WaveShow {
             waveform: ctx.props().waveform.clone(),
             rows: store.select(select::rows),
             cursors: store.select(select::cursors),
+            cursor_preview: None,
+            cursor_drag: None,
+            snap_edges: Vec::new(),
+            values_need_render: false,
             time_range: store.select(select::time_range),
             _rows_sub: rows_sub,
             _viewport_sub: viewport_sub,
@@ -181,6 +212,7 @@ impl Component for WaveShow {
 
             view: View::default(),
             fitted: false,
+            fit_committed: false,
             scroll_top: 0.0,
 
             menu_show: false,
@@ -225,6 +257,7 @@ impl Component for WaveShow {
         if self.waveform != ctx.props().waveform {
             self.waveform = ctx.props().waveform.clone();
             self.fitted = false;
+            self.fit_committed = false;
             self.signal_things
                 .refresh(self.waveform.as_ref().map(|waveform| waveform.as_waveform()));
             self.scroll_top = scroll_top_from_dom();
@@ -243,8 +276,26 @@ impl Component for WaveShow {
             ctx.link().send_message(Msg::Resize);
         }
         *self.used.borrow_mut() = measured;
-        self.redraw();
+        // Publish *before* the repaint: `redraw` copies the counter into
+        // `window.__waveDebug`, and publishing afterwards made the tier-A gate
+        // see every render one repaint late (the count moved inside the next
+        // gesture window instead of at its own commit).
         self.publish_pane_render_count();
+        self.redraw();
+        // the fit zoom is applied on the first real measurement; commit it once
+        // so the store, the ruler and every later commit agree on the viewport
+        if self.fitted && !self.fit_committed {
+            self.fit_committed = true;
+            self.dispatch(state::Action::ViewCommitted(self.view));
+        }
+        // Rows decoded by that redraw now have values for the value column. A
+        // render happens *before* `rendered`, so the column would show blanks
+        // after a scroll until the next unrelated render; ask for exactly one
+        // more render (never one per mouse move).
+        if self.values_need_render {
+            self.values_need_render = false;
+            ctx.link().send_message(Msg::ValuesReady);
+        }
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
@@ -272,7 +323,11 @@ impl Component for WaveShow {
         let rows_height = format!("{:.1}px", content_height(rows));
 
         html! {
-            <div class="wave-pane">
+            <div class="wave-pane"
+                // The value column lives in the label area, so the shared label
+                // width (used by the name cells, the canvas and the ruler) is
+                // widened. `styles.css` belongs to the UI pass, hence inline.
+                style="--names-w: 330px">
                 if self.menu_show && !self.on_setting_idx.is_empty() {
                     <Ctrl name={self.signal_things[self.on_setting_idx[0]].name.clone()}
                         setting={self.signal_things[self.on_setting_idx[0]].setting.clone()}
@@ -281,7 +336,7 @@ impl Component for WaveShow {
                         onset={link.callback(Msg::SetSignal)}
                         delete={link.callback(|_| Msg::DeleteSig)} />
                 }
-                <Time store={self.store.clone()} width={metrics.surface_w} />
+                <TimeBar store={self.store.clone()} width={metrics.surface_w} />
                 <div class="wave-body" id="wave-body"
                     onscroll={link.callback(|_| Msg::Scroll)}
                     onwheel={link.callback(Msg::Wheel)}
@@ -295,10 +350,19 @@ impl Component for WaveShow {
                         {
                             for (name_first..name_last).map(|idx| {
                                 let item = &self.signal_things[idx];
+                                // the cursor values live in the label column now,
+                                // not on the canvas next to the cursor line
+                                let value = self.value_text_at(item, self.cursors.one);
+                                let value2 = self
+                                    .cursors
+                                    .two
+                                    .map(|_| self.value_text_at(item, self.cursors.two).unwrap_or_default());
                                 html!{<SignalName
                                     name={item.name.clone()}
                                     choose={item.choose}
                                     top={idx as f64 * ROW_HEIGHT}
+                                    value={value}
+                                    value2={value2}
                                     menu={link.callback(move |()| Msg::ShowMenu(idx))}
                                     onjump={link.callback(move |()| Msg::Jump(idx))}
                                     onclick={link.callback(move |()| Msg::NameClick(idx))}/>}
@@ -339,10 +403,16 @@ impl WaveShow {
             }
             Msg::Viewport(viewport) => {
                 // a committed gesture landed: mirror it and repaint the canvas.
-                // No Yew render — the time bar has its own subscription and the
-                // row list did not change (design doc §4.1, tier A/C).
+                // A zoom/pan needs no Yew render — the time bar has its own
+                // subscription and the row list did not change (tier A/C) — but
+                // the value column shows the cursor values, so a *cursor* commit
+                // has to re-render the name column once.
+                let cursors_changed = viewport.cursors != self.cursors;
                 self.view = viewport.view;
                 self.cursors = viewport.cursors;
+                if cursors_changed {
+                    return true;
+                }
                 self.redraw();
                 false
             }
@@ -446,14 +516,42 @@ impl WaveShow {
                     self.name_choose = self.row_at(e.y() as f64);
                     return false;
                 }
+                // the edges the cursors can snap to are frozen at the press; a
+                // drag of the view must not re-collect them per mouse move
+                self.snap_edges = self.collect_snap_edges(&metrics);
+                let local_x = x - metrics.surface_left;
+                // pressing on a cursor line grabs it (the Verdi gesture: drag
+                // the line to move the cursor); anywhere else starts a zoom band
+                if let Some(which) = self.cursor_at(local_x) {
+                    self.cursor_drag = Some(which);
+                    self.cursor_preview = None;
+                    self.mouse_press = false;
+                    return false;
+                }
+                self.cursor_drag = None;
+                self.cursor_preview = None;
                 self.mouse_press = true;
-                self.mouse_start_x = x - metrics.surface_left;
-                self.mouse_current_x = self.mouse_start_x;
+                self.mouse_start_x = local_x;
+                self.mouse_current_x = local_x;
                 // tier A: the band is a local preview, never a Yew render
                 self.redraw();
                 false
             }
             Msg::MouseMove(e) => {
+                if let Some(which) = self.cursor_drag {
+                    let metrics = self.measure();
+                    let x = e.x() as f64 - metrics.surface_left;
+                    let time = self.snapped_time(x);
+                    let mut preview = self.cursor_preview.unwrap_or(self.cursors);
+                    match which {
+                        CursorDrag::One => preview.one = Some(time),
+                        CursorDrag::Two => preview.two = Some(time),
+                    }
+                    self.cursor_preview = Some(preview);
+                    // tier A: repaint the dragged line, no dispatch and no render
+                    self.redraw();
+                    return false;
+                }
                 if !self.mouse_press {
                     return false;
                 }
@@ -465,6 +563,26 @@ impl WaveShow {
             }
             Msg::MouseUp(e) => {
                 e.prevent_default();
+                if let Some(which) = self.cursor_drag.take() {
+                    let preview = self.cursor_preview.take().unwrap_or(self.cursors);
+                    self.snap_edges.clear();
+                    if preview == self.cursors {
+                        // a press without a move is still a click: it clears
+                        // the cursor it landed on
+                        let mut cursors = self.cursors;
+                        match which {
+                            CursorDrag::One => cursors.one = None,
+                            CursorDrag::Two => cursors.two = None,
+                        }
+                        self.commit_cursors(cursors);
+                    } else {
+                        // one dispatch for the whole drag, on mouseup
+                        self.commit_cursors(preview);
+                    }
+                    // one render after the commit, so the value column follows
+                    // the moved cursor; the drag itself never rendered
+                    return true;
+                }
                 if self.name_choose_valid {
                     self.name_choose_valid = false;
                     // A click also fires mousedown and mouseup; only a real drag
@@ -498,8 +616,10 @@ impl WaveShow {
                 let metrics = self.measure();
                 let x = e.x() as f64 - metrics.surface_left;
                 if (self.mouse_start_x - x).abs() <= 2.0 {
-                    //a click, not a drag: set (or clear) one of the cursors
-                    let cursor_time = self.view.time_at(x);
+                    //a click, not a drag: set (or clear) one of the cursors,
+                    //snapped to the closest value edge on screen
+                    let cursor_time = self.snapped_time(x);
+                    self.snap_edges.clear();
                     let mut cursors = self.cursors;
                     if e.button() == 0 {
                         cursors.one = if cursors.one == Some(cursor_time) {
@@ -515,13 +635,16 @@ impl WaveShow {
                         };
                     }
                     self.commit_cursors(cursors);
+                    // one render after the commit, for the value column (tier A
+                    // only forbids renders while the pointer moves)
+                    true
                 } else {
                     //drag a range to zoom into it
                     let mut view = self.view;
                     view.zoom_to_px(self.mouse_start_x, x, metrics.surface_w);
                     self.commit_view(view);
+                    false
                 }
-                false
             }
             Msg::NameClick(idx) => {
                 let ctrl = self.key(17);
@@ -549,6 +672,9 @@ impl WaveShow {
                 true
             }
             Msg::Resize => true,
+            // rows were decoded after the last render: the value column now has
+            // the values to show
+            Msg::ValuesReady => true,
         }
     }
 
@@ -567,6 +693,65 @@ impl WaveShow {
         self.cursors = cursors;
         self.dispatch(state::Action::CursorsChanged(cursors));
         self.redraw();
+    }
+
+    /// The cursors to draw: the drag preview while a cursor line is being moved.
+    fn shown_cursors(&self) -> Cursors {
+        self.cursor_preview.unwrap_or(self.cursors)
+    }
+
+    /// The formatted value of one row at a cursor, for the value column.
+    ///
+    /// `None` when the cursor is not set, the row has no decoded value (it is
+    /// outside the decode window) or the value has no textual form (an event).
+    fn value_text_at(&self, item: &SignalItem, cursor: Option<i32>) -> Option<String> {
+        let cursor = cursor?;
+        if cursor < 0 {
+            return None;
+        }
+        let value = item.values.value_at(cursor as Time)?;
+        canvas::value_text(value, item.format_width(), &item.setting)
+    }
+
+    /// The time a click at `x` (surface pixels) places a cursor at: the raw
+    /// time, snapped onto a visible value edge when one is a few pixels away.
+    fn snapped_time(&self, x: f64) -> i32 {
+        let raw = self.view.time_at(x).max(0) as Time;
+        let snapped = geometry::snap_to_edges(raw, &self.snap_edges, &self.view, geometry::SNAP_PX);
+        snapped.min(i32::MAX as u64) as i32
+    }
+
+    /// The cursor whose line is under `x` (surface pixels), if any.
+    fn cursor_at(&self, x: f64) -> Option<CursorDrag> {
+        let mut best: Option<(f64, CursorDrag)> = None;
+        for (cursor, which) in [
+            (self.cursors.one, CursorDrag::One),
+            (self.cursors.two, CursorDrag::Two),
+        ] {
+            let Some(cursor) = cursor else { continue };
+            let distance = (self.view.x_of(cursor.max(0) as Time) - x).abs();
+            if distance <= geometry::CURSOR_GRAB_PX
+                && best.map_or(true, |(best_distance, _)| distance < best_distance)
+            {
+                best = Some((distance, which));
+            }
+        }
+        best.map(|(_, which)| which)
+    }
+
+    /// The value-change edges of the rows on screen, sorted and de-duplicated.
+    ///
+    /// Collected once when a press starts, then reused for the whole gesture: a
+    /// drag must not walk the decoded histories per mouse move (tier A).
+    fn collect_snap_edges(&self, metrics: &Metrics) -> Vec<Time> {
+        let rows = self.signal_things.len();
+        let (draw, _) = visible_rows(self.scroll_top, metrics.surface_h, rows);
+        let (start, end) = self.view.window(metrics.surface_w);
+        let mut edges = Vec::new();
+        self.signal_things.edges(draw, start, end, &mut edges);
+        edges.sort_unstable();
+        edges.dedup();
+        edges
     }
 
     /// Publish the pane's re-render count next to the shell's, for the QA gate.
@@ -695,6 +880,10 @@ impl WaveShow {
         let decode_started = js_sys::Date::now();
         self.decode_pending(fetch);
         let decode_ms = js_sys::Date::now() - decode_started;
+        if self.last_decoded > 0 && (self.cursors.one.is_some() || self.cursors.two.is_some()) {
+            // one render is needed for the value column to show the new decode
+            self.values_need_render = true;
+        }
         self.trim_cache(draw.clone());
 
         if !self.fitted {
@@ -710,6 +899,7 @@ impl WaveShow {
         let visible: Vec<(usize, &SignalItem)> = (draw.start..draw.end)
             .filter_map(|row| self.signal_things.iter().nth(row).map(|item| (row, item)))
             .collect();
+        let cursors = self.shown_cursors();
 
         let frame = canvas::Frame {
             view: self.view,
@@ -718,8 +908,8 @@ impl WaveShow {
             scroll_top: self.scroll_top,
             rows: &visible,
             grid: &axis.labels,
-            cursor1: self.cursors.one,
-            cursor2: self.cursors.two,
+            cursor1: cursors.one,
+            cursor2: cursors.two,
             drag: if self.mouse_press
                 && (self.mouse_current_x - self.mouse_start_x).abs() > 1.0
             {
@@ -746,8 +936,8 @@ impl WaveShow {
             total_rows: rows,
             scroll_top: self.scroll_top,
             first_row: draw.start,
-            cursor1: self.cursors.one,
-            cursor2: self.cursors.two,
+            cursor1: cursors.one,
+            cursor2: cursors.two,
             view: self.view,
         });
     }

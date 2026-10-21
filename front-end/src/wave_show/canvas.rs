@@ -9,6 +9,7 @@
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+use wave_insight_lib::data_struct::ShowType;
 use wave_insight_lib::waveform::{BitValue, WaveValue};
 
 use crate::wave_show::geometry::{ROW_HEIGHT, Time, View};
@@ -40,6 +41,12 @@ const FONT: &str =
 const WAVE_LINE: f64 = 1.6;
 /// Bus rails are drawn slightly thinner than the digital step line.
 const BUS_LINE: f64 = 1.2;
+/// Width of the diagonal that joins two bus values, in css pixels. A bus
+/// segment is a hexagon whose ends are cut at this angle, so consecutive values
+/// meet in a point on the row's middle line instead of a vertical edge; that is
+/// the usual "bus band" look (and what the user asked for: no straight up and
+/// down edges on multi bit signals).
+const BUS_SLANT: f64 = 6.0;
 /// Vertical padding inside a 30 px row.
 const ROW_PAD: f64 = 6.0;
 
@@ -71,6 +78,10 @@ pub struct PaintStats {
     pub rows: usize,
     /// Value changes that were visited after the per pixel decimation.
     pub changes: usize,
+    /// Bus segments drawn as bands (diagonal joins) instead of step edges.
+    pub bands: usize,
+    /// Rows drawn as an analog polyline instead of a digital one.
+    pub analog: usize,
 }
 
 /// Paint `frame` into `canvas`.
@@ -188,11 +199,13 @@ fn draw_rows(
 
         match item.values.kind() {
             RowKind::Empty => draw_no_data(context, top, width),
+            // analog mode replaces both the digital step and the bus band
+            _ if item.setting.analog_active => {
+                draw_analog_row(context, frame, item, top, width, stats)
+            }
             RowKind::Bool => draw_bool_row(context, frame, item, top, width, stats),
             RowKind::Bits => draw_bus_row(context, frame, item, top, width, stats),
         }
-
-        draw_cursor_value(context, frame, item, top, width, stats);
     }
 }
 
@@ -275,54 +288,244 @@ fn draw_bus_row(
 ) {
     let (start, end) = frame.view.window(width);
     let color = color_string(&item.setting);
-    let upper = top + ROW_PAD;
-    let lower = top + ROW_HEIGHT - ROW_PAD;
+    let band = Band {
+        upper: top + ROW_PAD,
+        lower: top + ROW_HEIGHT - ROW_PAD,
+        mid: top + ROW_HEIGHT / 2.0,
+    };
     let format_width = item.format_width();
 
     context.set_stroke_style_str(&color);
     context.set_line_width(BUS_LINE);
+    // the diagonal joins look wrong with the default miter of a thin line
+    context.set_line_join("round");
 
+    // The value in effect at the left edge; `None` before the history starts.
     let mut current = item.values.value_at(start);
-    let mut last_x = 0.0f64;
+    // Where the band of `current` begins, in surface pixels.
+    let mut segment_start = 0.0f64;
+
     context.begin_path();
     item.values
         .for_each_change(start, end, &frame.view, width, |x, value| {
             stats.changes += 1;
-            if let Some(previous) = current {
-                context.move_to(last_x, upper);
-                context.line_to(x, upper);
-                context.move_to(last_x, lower);
-                context.line_to(x, lower);
-                label_segment(context, previous, &item.setting, format_width, last_x, x, upper, lower);
+            let Some(previous) = current else {
+                // the history starts inside the window: this is the first band
+                current = Some(value);
+                segment_start = x;
+                return;
+            };
+            if *previous == *value {
+                // a delta cycle or an explicit re-assignment: one band, no
+                // transition edge
+                return;
             }
-            //the transition edge
-            context.move_to(x, upper);
-            context.line_to(x, lower);
-            last_x = x;
+            band.trace(context, segment_start, x);
+            stats.bands += 1;
+            label_segment(
+                context,
+                previous,
+                &item.setting,
+                format_width,
+                segment_start,
+                x,
+                band.upper,
+                band.lower,
+            );
             current = Some(value);
+            segment_start = x;
         });
-    if let Some(previous) = current {
-        context.move_to(last_x, upper);
-        context.line_to(width, upper);
-        context.move_to(last_x, lower);
-        context.line_to(width, lower);
+    if let Some(value) = current {
+        band.trace(context, segment_start, width);
+        stats.bands += 1;
         label_segment(
             context,
-            previous,
+            value,
             &item.setting,
             format_width,
-            last_x,
+            segment_start,
             width,
-            upper,
-            lower,
+            band.upper,
+            band.lower,
         );
     }
     context.stroke();
 }
 
+/// The vertical geometry of one bus row. The wave convention draws a multi bit
+/// value as a band: two horizontal edges joined by diagonals, with consecutive
+/// values meeting in a point on the middle line.
+struct Band {
+    upper: f64,
+    lower: f64,
+    mid: f64,
+}
+
+impl Band {
+    /// Add one value's outline to the current path.
+    ///
+    /// A normal segment is a hexagon (`>` like ends). A segment too short for
+    /// two diagonals degrades to a diamond so neighbouring values still join
+    /// without a vertical edge.
+    fn trace(&self, context: &CanvasRenderingContext2d, from: f64, to: f64) {
+        let length = to - from;
+        if !(length > 0.0) {
+            return;
+        }
+        let slant = BUS_SLANT.min(length / 2.0);
+        context.move_to(from, self.mid);
+        context.line_to(from + slant, self.upper);
+        if length > 2.0 * slant {
+            context.line_to(to - slant, self.upper);
+        }
+        context.line_to(to, self.mid);
+        context.line_to(to - slant, self.lower);
+        if length > 2.0 * slant {
+            context.line_to(from + slant, self.lower);
+        }
+        context.line_to(from, self.mid);
+    }
+}
+
+/// One row in analog mode: a sampled polyline through the numeric values.
+///
+/// The samples are the value changes on screen, decimated to one per pixel like
+/// the digital renderers. `Settings::analog_initerpolate != 0` (the default)
+/// joins the samples with straight segments, i.e. the value is interpolated
+/// between two changes; `0` keeps the digital zero-order hold shape but as a
+/// polyline. `x`/`z`/unknown samples break the line: the trace holds the last
+/// known value up to the gap and resumes at the next known sample.
+fn draw_analog_row(
+    context: &CanvasRenderingContext2d,
+    frame: &Frame<'_>,
+    item: &SignalItem,
+    top: f64,
+    width: f64,
+    stats: &mut PaintStats,
+) {
+    let (start, end) = frame.view.window(width);
+    let upper = top + ROW_PAD;
+    let lower = top + ROW_HEIGHT - ROW_PAD;
+
+    // The vertical scale is the range of the visible samples, so an analog row
+    // uses its whole height; a constant signal sits on the middle line.
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    let mut sample = |value: &WaveValue| {
+        if let Some(number) = analog_number(value, &item.setting) {
+            min = min.min(number);
+            max = max.max(number);
+        }
+    };
+    if let Some(value) = item.values.value_at(start) {
+        sample(value);
+    }
+    for (_, value) in item.values.window(start, end) {
+        sample(value);
+    }
+    if !min.is_finite() || !max.is_finite() {
+        // nothing numeric on screen (an event row, a string, only x/z): keep
+        // the row's place with the muted "no data" line
+        draw_no_data(context, top, width);
+        return;
+    }
+    let spread = max - min;
+    let y_of = |number: f64| -> f64 {
+        if spread > 0.0 {
+            lower - (number - min) / spread * (lower - upper)
+        } else {
+            (upper + lower) / 2.0
+        }
+    };
+
+    context.set_stroke_style_str(&color_string(&item.setting));
+    context.set_line_width(WAVE_LINE);
+    context.set_line_join("round");
+    context.begin_path();
+
+    let interpolate = item.setting.analog_initerpolate != 0;
+    // y of the last known sample; `None` while the trace is inside a gap
+    let mut last: Option<f64> = None;
+    // seed the left edge with the value in effect at the window start, so the
+    // trace is not empty until the first in-window change
+    if let Some(value) = item.values.value_at(start) {
+        let point = analog_number(value, &item.setting).map(|number| y_of(number));
+        analog_point(context, &mut last, 0.0, point, interpolate);
+    }
+    item.values
+        .for_each_change(start, end, &frame.view, width, |x, value| {
+            stats.changes += 1;
+            let point = analog_number(value, &item.setting).map(|number| y_of(number));
+            analog_point(context, &mut last, x, point, interpolate);
+        });
+    if let Some(previous) = last {
+        // hold the last known value to the right edge, like a sample and hold
+        context.line_to(width, previous);
+    }
+    context.stroke();
+    stats.analog += 1;
+}
+
+/// Add one analog sample (or a gap) to the current path.
+fn analog_point(
+    context: &CanvasRenderingContext2d,
+    last: &mut Option<f64>,
+    x: f64,
+    point: Option<f64>,
+    interpolate: bool,
+) {
+    match point {
+        Some(y) => {
+            match *last {
+                Some(previous) if !interpolate => {
+                    // zero order hold: stay on the old level until this change
+                    context.line_to(x, previous);
+                    context.line_to(x, y);
+                }
+                Some(_) => context.line_to(x, y),
+                None => context.move_to(x, y),
+            }
+            *last = Some(y);
+        }
+        None => {
+            // the value became unknown: hold up to the gap and break the line
+            if let Some(previous) = *last {
+                context.line_to(x, previous);
+            }
+            *last = None;
+        }
+    }
+}
+
+/// Numeric value of one sample for analog drawing.
+///
+/// `None` when the value has no number: any `x`/`z` bit, a string, an event, a
+/// NaN real, or a vector wider than what the formatter can represent.
+fn analog_number(value: &WaveValue, setting: &Settings) -> Option<f64> {
+    match value {
+        WaveValue::Real(number) => number.is_finite().then_some(*number),
+        other => {
+            let bits = other.as_bits()?;
+            let raw = bits.as_u64()?;
+            let width = bits.width();
+            if setting.show_type == ShowType::SInt && (1..=63).contains(&width) {
+                // two's complement, so a signed bus is plotted around zero
+                let modulus = 1i64 << width;
+                let signed = if raw & (1u64 << (width - 1)) != 0 {
+                    raw as i64 - modulus
+                } else {
+                    raw as i64
+                };
+                return Some(signed as f64);
+            }
+            Some(raw as f64)
+        }
+    }
+}
+
 /// The label of one value: bit vectors follow the row's `ShowType`, reals and
 /// strings are printed as they are, events have no text.
-fn value_text(value: &WaveValue, width: usize, setting: &Settings) -> Option<String> {
+pub(crate) fn value_text(value: &WaveValue, width: usize, setting: &Settings) -> Option<String> {
     match value {
         WaveValue::Real(number) => Some(format!("{number}")),
         WaveValue::String(text) => Some(text.clone()),
@@ -330,7 +533,8 @@ fn value_text(value: &WaveValue, width: usize, setting: &Settings) -> Option<Str
     }
 }
 
-/// Draw the value of one bus segment if the text fits between `from` and `to`.
+/// Draw the value of one bus segment in the middle of its band, if the text fits
+/// between `from` and `to`.
 fn label_segment(
     context: &CanvasRenderingContext2d,
     value: &WaveValue,
@@ -360,46 +564,8 @@ fn label_segment(
     context.set_fill_style_str(palette::TEXT);
     let y = (upper + lower) / 2.0;
     let _ = context.set_text_baseline("middle");
-    let _ = context.fill_text(&text, from + 3.0, y);
-}
-
-/// The value of this row at the first cursor, next to the cursor line.
-fn draw_cursor_value(
-    context: &CanvasRenderingContext2d,
-    frame: &Frame<'_>,
-    item: &SignalItem,
-    top: f64,
-    width: f64,
-    _stats: &mut PaintStats,
-) {
-    let Some(cursor) = frame.cursor1 else {
-        return;
-    };
-    if cursor < 0 {
-        return;
-    }
-    let cursor = cursor as Time;
-    let x = frame.view.x_of(cursor);
-    if x < 0.0 || x > width {
-        return;
-    }
-    let Some(value) = item.values.value_at(cursor) else {
-        return;
-    };
-    let Some(text) = value_text(value, item.format_width(), &item.setting) else {
-        return;
-    };
-    context.set_font(FONT);
-    let Ok(metrics) = context.measure_text(&text) else {
-        return;
-    };
-    let mut text_x = x + 4.0;
-    if text_x + metrics.width() > width {
-        text_x = (width - metrics.width() - 2.0).max(0.0);
-    }
-    context.set_fill_style_str(palette::TEXT);
-    let _ = context.set_text_baseline("middle");
-    let _ = context.fill_text(&text, text_x, top + ROW_HEIGHT / 2.0);
+    //centred in the band, like every waveform viewer draws a bus value
+    let _ = context.fill_text(&text, from + (segment - text_width) / 2.0, y);
 }
 
 fn draw_band(context: &CanvasRenderingContext2d, from: f64, to: f64, width: f64, height: f64) {
@@ -487,6 +653,8 @@ pub fn publish_debug(info: &DebugInfo) {
     };
     set("rows", JsValue::from_f64(info.stats.rows as f64));
     set("changes", JsValue::from_f64(info.stats.changes as f64));
+    set("bands", JsValue::from_f64(info.stats.bands as f64));
+    set("analog", JsValue::from_f64(info.stats.analog as f64));
     set("visible", JsValue::from_f64(info.visible as f64));
     set("decoded", JsValue::from_f64(info.decoded as f64));
     set(

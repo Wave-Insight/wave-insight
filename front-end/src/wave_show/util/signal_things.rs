@@ -15,7 +15,7 @@
 use std::ops::{Index, IndexMut};
 use std::slice::{Iter, SliceIndex};
 
-use wave_insight_lib::waveform::{DecodedSignal, SignalKind, WaveValue, Waveform};
+use wave_insight_lib::waveform::{Change, DecodedSignal, SignalKind, WaveValue, Waveform};
 
 use crate::state::{Row, Settings};
 use crate::wave_show::geometry::{self, Time};
@@ -87,6 +87,14 @@ impl RowValues {
         };
         let window = decoded.window(start, Some(end));
         geometry::for_each_pixel_change(window, view, width, |x, (_, value)| visit(x, value));
+    }
+
+    /// The changes of this row inside `start ..= end`, as a borrowed slice.
+    pub fn window(&self, start: Time, end: Time) -> &[Change] {
+        match self {
+            RowValues::Empty => &[],
+            RowValues::Backend(decoded) => decoded.window(start, Some(end)),
+        }
     }
 
     /// Bit count to format values with: the declared (or dump) width, clamped
@@ -246,6 +254,25 @@ impl SignalThings {
             item.width = resolved.width;
             item.is_bool = resolved.is_bool;
             item.values = RowValues::Empty;
+        }
+    }
+
+    /// Append the time stamps of the value changes of `rows` inside
+    /// `start ..= end` to `out`.
+    ///
+    /// Cursor snapping needs the edges that are on screen; collecting them per
+    /// gesture (not per mouse move) is cheap: only the rows in the given range
+    /// are looked at and only their window is walked. The caller sorts and
+    /// de-duplicates the result.
+    pub fn edges(&self, rows: std::ops::Range<usize>, start: Time, end: Time, out: &mut Vec<Time>) {
+        for row in rows {
+            let Some(item) = self.item.get(row) else {
+                break;
+            };
+            let RowValues::Backend(decoded) = &item.values else {
+                continue;
+            };
+            out.extend(decoded.window(start, Some(end)).iter().map(|(time, _)| *time));
         }
     }
 
@@ -454,6 +481,29 @@ mod tests {
         assert!(things[0].values.is_empty());
         assert_eq!(things[0].index, None);
         assert!(things[0].is_bool);
+    }
+
+    #[test]
+    fn edges_lists_the_changes_of_the_decoded_rows_in_the_window() {
+        // three rows, only the first is decoded (values at 0, 10, 20)
+        let mut things = synced(&[("a", 1), ("b", 8), ("c", 1)]);
+        things[0].index = Some(1);
+        things[1].index = Some(2);
+        things.set_backend(0, decoded(1, 3));
+
+        let mut edges = Vec::new();
+        things.edges(0..3, 5, 25, &mut edges);
+        assert_eq!(edges, vec![10, 20]);
+        // the window bounds are inclusive and the undecoded rows are skipped
+        edges.clear();
+        things.edges(0..3, 0, 10, &mut edges);
+        assert_eq!(edges, vec![0, 10]);
+        edges.clear();
+        things.edges(1..2, 0, 25, &mut edges);
+        assert!(edges.is_empty());
+        // out of range rows never panic
+        things.edges(2..9, 0, 25, &mut edges);
+        assert!(edges.is_empty());
     }
 
     #[test]
