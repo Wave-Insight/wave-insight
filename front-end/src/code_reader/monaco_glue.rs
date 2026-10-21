@@ -399,13 +399,18 @@ impl MonacoEditor {
                 .and_then(|word| {
                     let start = js_sys::Reflect::get(&word, &JsValue::from_str("startColumn")).ok()?.as_f64()?;
                     let end = js_sys::Reflect::get(&word, &JsValue::from_str("endColumn")).ok()?.as_f64()?;
-                    let ctor = js_sys::Reflect::get(monaco, &JsValue::from_str("Range")).ok()?;
+                    let ctor = js_sys::Reflect::get(monaco, &JsValue::from_str("Selection")).ok()?;
                     let ctor = ctor.dyn_into::<js_sys::Function>().ok()?;
                     let args = js_sys::Array::new();
-                    args.push(&JsValue::from_f64(line as f64));
-                    args.push(&JsValue::from_f64(start));
+                    // `new Selection(startLine, startColumn, positionLine, positionColumn)`:
+                    // the arguments are passed backwards so the whole identifier stays
+                    // selected while the *position* (what `editor.getPosition()`
+                    // reports, and where the app's "go to declaration" lands) is the
+                    // first letter of the word, not its end.
                     args.push(&JsValue::from_f64(line as f64));
                     args.push(&JsValue::from_f64(end));
+                    args.push(&JsValue::from_f64(line as f64));
+                    args.push(&JsValue::from_f64(start));
                     js_sys::Reflect::construct(&ctor, &args).ok()
                 });
 
