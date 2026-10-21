@@ -62,6 +62,11 @@ pub enum Msg {
     Wheel(WheelEvent),
     /// the row list was scrolled
     Scroll,
+    /// the label-column splitter was grabbed
+    NamesDown(MouseEvent),
+    /// the splitter moved (tier A: writes the css variable, no dispatch)
+    NamesMove(MouseEvent),
+    NamesUp,
     ShowMenu(usize),
     SetSignal((bool, Settings)),
     DeleteSig,
@@ -162,6 +167,12 @@ pub struct WaveShow {
     /// Vertical scroll offset of the row list, in css pixels.
     scroll_top: f64,
 
+    /// Width of the label column, dragged by the splitter at its right edge.
+    names_w: f64,
+    /// Splitter drag: pointer x and width at the press, plus the live width.
+    names_drag: Option<(f64, f64)>,
+    names_preview: Cell<f64>,
+
     menu_show: bool,
     on_setting_idx: Vec<usize>,
 
@@ -245,6 +256,9 @@ impl Component for WaveShow {
             used: RefCell::new(Metrics::default()),
             last_decoded: 0,
             draws: 0,
+            names_w: 330.0,
+            names_drag: None,
+            names_preview: Cell::new(330.0),
 
             keydown: None,
             keyup: None,
@@ -323,11 +337,12 @@ impl Component for WaveShow {
         let rows_height = format!("{:.1}px", content_height(rows));
 
         html! {
-            <div class="wave-pane"
+            <div class="wave-pane" id="wave-pane"
                 // The value column lives in the label area, so the shared label
                 // width (used by the name cells, the canvas and the ruler) is
-                // widened. `styles.css` belongs to the UI pass, hence inline.
-                style="--names-w: 330px">
+                // adjustable: the splitter writes it during the drag and it is
+                // committed here on mouseup.
+                style={format!("--names-w: {:.0}px", self.names_w)}>
                 if self.menu_show && !self.on_setting_idx.is_empty() {
                     <Ctrl name={self.signal_things[self.on_setting_idx[0]].name.clone()}
                         setting={self.signal_things[self.on_setting_idx[0]].setting.clone()}
@@ -348,6 +363,18 @@ impl Component for WaveShow {
                     // must not open on top of the wave area
                     oncontextmenu={Callback::from(|event: MouseEvent| event.prevent_default())}>
                     <div class="wave-rows" style={format!("height:{rows_height}")}>
+                    <div class="wave-names-splitter"
+                        onmousedown={link.callback(Msg::NamesDown)} />
+                    {if self.names_drag.is_some() {
+                        html!{
+                            <div class="splitter-shield"
+                                onmousemove={link.callback(Msg::NamesMove)}
+                                onmouseup={link.callback(|_| Msg::NamesUp)}
+                                onmouseout={link.callback(|_| Msg::NamesUp)} />
+                        }
+                    }else {
+                        html!{}
+                    }}
                         {
                             for (name_first..name_last).map(|idx| {
                                 let item = &self.signal_things[idx];
@@ -500,6 +527,42 @@ impl WaveShow {
                 let indices = std::mem::take(&mut self.on_setting_idx);
                 self.dispatch(state::Action::RowsRemoved { indices });
                 ctx.props().onselect.emit(None);
+                true
+            }
+            Msg::NamesDown(e) => {
+                e.prevent_default();
+                self.names_drag = Some((e.x() as f64, self.names_w));
+                self.names_preview.set(self.names_w);
+                true
+            }
+            Msg::NamesMove(e) => {
+                if let Some((start_x, start_w)) = self.names_drag {
+                    let width = (start_w + (e.x() as f64 - start_x)).clamp(200.0, 640.0);
+                    self.names_preview.set(width);
+                    // tier A: write the css variable directly, no re-render
+                    if let Some(element) = web_sys::window()
+                        .and_then(|window| window.document())
+                        .and_then(|document| document.get_element_by_id("wave-pane"))
+                    {
+                        if let Ok(style) = js_sys::Reflect::get(&element, &JsValue::from_str("style")) {
+                            if let Ok(set_property) =
+                                js_sys::Reflect::get(&style, &JsValue::from_str("setProperty"))
+                                    .and_then(|function| function.dyn_into::<js_sys::Function>())
+                            {
+                                let args = js_sys::Array::new();
+                                args.push(&JsValue::from_str("--names-w"));
+                                args.push(&JsValue::from_str(&format!("{width:.0}px")));
+                                let _ = set_property.apply(&style, &args);
+                            }
+                        }
+                    }
+                }
+                false
+            }
+            Msg::NamesUp => {
+                if self.names_drag.take().is_some() {
+                    self.names_w = self.names_preview.get();
+                }
                 true
             }
             Msg::KeyEvent(idx) => {

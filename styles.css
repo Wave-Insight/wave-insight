@@ -1,0 +1,17 @@
+
+/* draggable divider between the label column and the wave area */
+.wave-names-splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--names-w) - 3px);
+  width: 6px;
+  z-index: 5;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.wave-names-splitter:hover,
+.wave-names-splitter:active {
+  background: var(--accent-line);
+}
