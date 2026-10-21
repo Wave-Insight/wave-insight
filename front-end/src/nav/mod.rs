@@ -100,14 +100,32 @@ impl Default for SharedDesign {
 
 /// Text of one waveform value, formatted with a row's base format.
 ///
-/// Used by the displays outside the wave canvas (the editor inlay hints); the
-/// canvas has its own formatter for the same values, because it also draws them.
+/// Multi-bit vectors carry their radix in Verilog style (`'h2a`, `'d42`,
+/// `'b1010`, `'o52`, `'sd-3`), because a bare `2a` reads as decimal at a glance.
+/// A 1-bit value keeps its bare `0`/`1`/`x`/`z`, and reals/strings are printed
+/// as they are: a prefix there would say nothing true.
+///
+/// Used by the editor inlay hints, the value column and the canvas band labels
+/// (the canvas calls this too, so all three displays always agree).
 pub fn value_text(value: &WaveValue, width: usize, show: &ShowType) -> Option<String> {
-    match value {
-        WaveValue::Real(number) => Some(format!("{number}")),
-        WaveValue::String(text) => Some(text.clone()),
-        _ => value.render(width, show),
+    let text = match value {
+        WaveValue::Real(number) => return Some(format!("{number}")),
+        WaveValue::String(text) => return Some(text.clone()),
+        _ => value.render(width, show)?,
+    };
+    if width <= 1 {
+        return Some(text);
     }
+    let radix = match show {
+        ShowType::Hex => "'h",
+        ShowType::UInt => "'d",
+        ShowType::SInt => "'sd",
+        ShowType::Oct => "'o",
+        ShowType::Bin => "'b",
+        // ASCII (and any future non numeric presentation) stays bare text
+        ShowType::Ascii => "",
+    };
+    Some(format!("{radix}{text}"))
 }
 
 /// Every dump signal a hierarchical path can mean, most specific first.

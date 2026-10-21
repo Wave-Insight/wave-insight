@@ -525,12 +525,11 @@ fn analog_number(value: &WaveValue, setting: &Settings) -> Option<f64> {
 
 /// The label of one value: bit vectors follow the row's `ShowType`, reals and
 /// strings are printed as they are, events have no text.
+///
+/// Delegates to [`crate::nav::value_text`] so the band labels, the value column
+/// and the editor inlay hints can never disagree about radix or formatting.
 pub(crate) fn value_text(value: &WaveValue, width: usize, setting: &Settings) -> Option<String> {
-    match value {
-        WaveValue::Real(number) => Some(format!("{number}")),
-        WaveValue::String(text) => Some(text.clone()),
-        _ => value.render(width, &setting.show_type),
-    }
+    crate::nav::value_text(value, width, &setting.show_type)
 }
 
 /// Draw the value of one bus segment in the middle of its band, if the text fits

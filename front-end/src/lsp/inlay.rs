@@ -265,7 +265,9 @@ fn hint_at(
     set_f64(&position, "column", f64::from(end.max(start + 1)));
     let hint = Object::new();
     set(&hint, "position", position.into());
-    set(&hint, "label", JsValue::from_str(&format!("= {text}")));
+    // A colon, not `=`: an inlay hint must never read as Verilog source, where
+    // `=` is the assignment/equality operator.
+    set(&hint, "label", JsValue::from_str(&format!(": {text}")));
     // monaco's InlayHintKind: Type = 1 (a value annotation)
     set_f64(&hint, "kind", 1.0);
     set(&hint, "paddingLeft", JsValue::TRUE);
