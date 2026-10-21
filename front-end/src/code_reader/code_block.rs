@@ -97,8 +97,10 @@ impl Component for CodeBlock {
 
         if let Some(goto) = &props.goto {
             if self.shown_token != Some(goto.token) {
-                // The user clicked another declaration or driver/load.
-                editor.reveal_position_in_center(goto.line, goto.col);
+                // The user clicked another declaration or driver/load: put the
+                // position in the middle and select the identifier there, so
+                // the target is visible instead of merely scrolled to.
+                editor.select_word_at(goto.line, goto.col);
                 self.shown_token = Some(goto.token);
             }
         }

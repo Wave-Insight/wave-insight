@@ -369,6 +369,61 @@ impl MonacoEditor {
         flush(&mut slot);
     }
 
+    /// Put `line:col` in the middle **and select the identifier there**.
+    ///
+    /// Used after a jump from the waveform: scrolling alone leaves the eye to
+    /// find the name, selecting it makes the target obvious.
+    pub fn select_word_at(&self, line: u32, col: u32) {
+        self.on_ready(Box::new(move |monaco, editor| {
+            let run = || -> Option<()> {
+            let call = |target: &JsValue, name: &str, args: &js_sys::Array| -> Option<JsValue> {
+                let function = js_sys::Reflect::get(target, &JsValue::from_str(name)).ok()?;
+                let function = function.dyn_into::<js_sys::Function>().ok()?;
+                function.apply(target, args).ok()
+            };
+
+            let model = call(editor, "getModel", &js_sys::Array::new())?;
+
+            let position = js_sys::Object::new();
+            js_sys::Reflect::set(&position, &JsValue::from_str("lineNumber"), &JsValue::from_f64(line as f64)).ok()?;
+            js_sys::Reflect::set(&position, &JsValue::from_str("column"), &JsValue::from_f64(col.max(1) as f64)).ok()?;
+
+            // select the identifier under the cursor when there is one
+            let word = {
+                let args = js_sys::Array::new();
+                args.push(&position);
+                call(&model, "getWordAtPosition", &args)
+            };
+            let range = word
+                .filter(|word| !word.is_null() && !word.is_undefined())
+                .and_then(|word| {
+                    let start = js_sys::Reflect::get(&word, &JsValue::from_str("startColumn")).ok()?.as_f64()?;
+                    let end = js_sys::Reflect::get(&word, &JsValue::from_str("endColumn")).ok()?.as_f64()?;
+                    let ctor = js_sys::Reflect::get(monaco, &JsValue::from_str("Range")).ok()?;
+                    let ctor = ctor.dyn_into::<js_sys::Function>().ok()?;
+                    let args = js_sys::Array::new();
+                    args.push(&JsValue::from_f64(line as f64));
+                    args.push(&JsValue::from_f64(start));
+                    args.push(&JsValue::from_f64(line as f64));
+                    args.push(&JsValue::from_f64(end));
+                    js_sys::Reflect::construct(&ctor, &args).ok()
+                });
+
+            if let Some(range) = range {
+                let args = js_sys::Array::new();
+                args.push(&range);
+                let _ = call(editor, "setSelection", &args);
+            }
+
+            let args = js_sys::Array::new();
+            args.push(&position);
+            let _ = call(editor, "revealPositionInCenter", &args);
+            Some(())
+            };
+            let _ = run();
+        }));
+    }
+
     /// Tear the editor down. Safe to call repeatedly and before the loader is
     /// done (the pending creation is then abandoned).
     pub fn dispose(&self) {

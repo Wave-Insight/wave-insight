@@ -518,6 +518,21 @@ impl WaveShow {
                     let end = self.trace_end(self.time_range);
                     view = View::new(0.0, View::fit_size(end, metrics.surface_w));
                     self.fitted = true;
+                } else if idx == 46 || idx == 8 {
+                    //delete / backspace removes the selected rows
+                    let indices: Vec<usize> = self
+                        .rows
+                        .items
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, row)| row.chosen)
+                        .map(|(index, _)| index)
+                        .collect();
+                    if !indices.is_empty() {
+                        self.dispatch(state::Action::RowsRemoved { indices });
+                        ctx.props().onselect.emit(None);
+                        return true;
+                    }
                 }
                 self.commit_view(view);
                 false
