@@ -469,6 +469,9 @@ function __wbg_get_imports() {
         __wbg_removeEventListener_261678bfcbd90907: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             arg0.removeEventListener(getStringFromWasm0(arg1, arg2), arg3, arg4 !== 0);
         }, arguments); },
+        __wbg_removeEventListener_6e68185345978771: function() { return handleError(function (arg0, arg1, arg2, arg3) {
+            arg0.removeEventListener(getStringFromWasm0(arg1, arg2), arg3);
+        }, arguments); },
         __wbg_resolve_0076e10020304ede: function(arg0) {
             const ret = Promise.resolve(arg0);
             return ret;
@@ -520,15 +523,6 @@ function __wbg_get_imports() {
         },
         __wbg_set_once_8c45bbbfb71d1b34: function(arg0, arg1) {
             arg0.once = arg1 !== 0;
-        },
-        __wbg_set_onkeydown_86952e3f4a63f46f: function(arg0, arg1) {
-            arg0.onkeydown = arg1;
-        },
-        __wbg_set_onkeyup_da9afd9cd702310e: function(arg0, arg1) {
-            arg0.onkeyup = arg1;
-        },
-        __wbg_set_onresize_cf200ba8c5fe6a5f: function(arg0, arg1) {
-            arg0.onresize = arg1;
         },
         __wbg_set_passive_31e9f895d2ac0046: function(arg0, arg1) {
             arg0.passive = arg1 !== 0;
