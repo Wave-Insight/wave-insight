@@ -996,6 +996,7 @@ impl App {
             width: signal.size,
             load: signal.load.clone(),
             drive: signal.drive.clone(),
+            bit: None,
         });
         self.selected = Some(row_path.clone());
         self.note(Status::info(format!("added {row_path} to the waveform")));

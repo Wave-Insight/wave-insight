@@ -30,14 +30,21 @@ pub enum Action {
     ClearStatus,
 
     /// Append one signal row; `width`/`load`/`drive` are resolved by `App` (the
-    /// reducer has no access to the dump or the design).
+    /// reducer has no access to the dump or the design). `bit` adds the row as
+    /// one bit of the bus at `path` (the expand-bus view).
     RowAdded {
         path: String,
         name: String,
         width: usize,
         load: Vec<String>,
         drive: Vec<String>,
+        bit: Option<u8>,
     },
+    /// Show the bits of the bus at `index` as their own rows right below it.
+    /// `width` is the width the dump resolved (the reducer cannot read the dump).
+    RowsBitExpanded { index: usize, width: usize },
+    /// Remove the bit rows that belong to the bus at `index`.
+    RowsBitCollapsed { index: usize },
     /// Remove the given rows (indices; the reducer sorts and dedupes them).
     RowsRemoved { indices: Vec<usize> },
     /// A name cell was clicked; `ctrl`/`shift` are the modifier state.

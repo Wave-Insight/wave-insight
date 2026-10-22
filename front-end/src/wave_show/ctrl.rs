@@ -37,10 +37,19 @@ pub struct CtrlProps {
     #[prop_or_default]
     pub onlocate: Callback<(bool, usize)>,
     pub delete: Callback<()>,
+    /// Width of the row's signal when it can be expanded (a bus that the dump
+    /// has), `1` otherwise.
+    #[prop_or_default]
+    pub bits: usize,
+    /// The bits of this bus are currently shown as their own rows.
+    #[prop_or_default]
+    pub expanded: bool,
+    /// Ask the wave pane to expand the bits, or collapse them again.
+    #[prop_or_default]
+    pub onbits: Callback<()>,
 }
 
 /// Copy text with the async clipboard API.
-///
 /// Called from a click, which the browser counts as the user gesture the API
 /// requires. `false` when the API is missing or refused (an iframe without the
 /// permission, an old browser), so the button can say so instead of lying.
@@ -80,6 +89,8 @@ pub enum Msg {
     DeleteSig,
     /// Put the row's full hierarchical path on the clipboard.
     CopyPath,
+    /// Expand the bus into its bits, or collapse the bits again.
+    ToggleBits,
 }
 
 pub struct Ctrl {
@@ -107,6 +118,10 @@ impl Component for Ctrl {
         match msg {
             Msg::CopyPath => {
                 self.copied = Some(copy_to_clipboard(&props.path));
+                true
+            }
+            Msg::ToggleBits => {
+                props.onbits.emit(());
                 true
             }
             Msg::ExitMenu(_e) => {
@@ -273,6 +288,30 @@ impl Component for Ctrl {
                             </button>
                             <code class="modal-path">{props.path.clone()}</code>
                         </div>
+                        {
+                            // only a multi-bit signal can be expanded, and only
+                            // when the dump has it (there is nothing to slice
+                            // otherwise)
+                            if props.bits > 1 {
+                                html!{
+                                    <div class="modal-row" style="margin-top:6px">
+                                        <button type="button" class="btn"
+                                            title="Show every bit of this bus as its own row"
+                                            onclick={link.callback(|_| Msg::ToggleBits)}>
+                                            {
+                                                if props.expanded {
+                                                    "Collapse bits".to_string()
+                                                } else {
+                                                    format!("Expand {} bits", props.bits)
+                                                }
+                                            }
+                                        </button>
+                                    </div>
+                                }
+                            } else {
+                                html!{}
+                            }
+                        }
                     </div>
 
                     <div class="modal-section">

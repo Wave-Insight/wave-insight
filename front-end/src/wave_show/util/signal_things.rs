@@ -15,7 +15,9 @@
 use std::ops::{Index, IndexMut};
 use std::slice::{Iter, SliceIndex};
 
-use wave_insight_lib::waveform::{Change, DecodedSignal, SignalKind, WaveValue, Waveform};
+use wave_insight_lib::waveform::{
+    BitValue, Bits, Change, DecodedSignal, SignalKind, WaveValue, Waveform,
+};
 
 use crate::state::{Row, Settings};
 use crate::wave_show::geometry::{self, Time};
@@ -125,6 +127,9 @@ pub struct SignalItem {
     pub name: String,
     /// The row's identity in the store (the hierarchical path).
     pub path: String,
+    /// `Some(bit)` for a row that shows one bit of the bus at `path` (the
+    /// expanded-bus view).
+    pub bit: Option<u8>,
     /// Width the design declares (the suffix is derived from it).
     pub declared: usize,
     /// Index in the opened waveform, resolved once so a draw never hashes a path.
@@ -176,6 +181,30 @@ fn resolve(path: &str, declared: usize, waveform: Option<&Waveform>) -> Resolved
     }
 }
 
+/// The history of one bit of a decoded bus.
+///
+/// Costs one pass over the parent's changes and one small value per time the bit
+/// actually changes (a bit that never toggles costs nothing but its first
+/// value). The result is a normal [`DecodedSignal`], so the renderer, the value
+/// column and the edge snapping treat an expanded bit exactly like a signal that
+/// is one bit wide in the dump.
+pub fn derive_bit(parent: &DecodedSignal, bit: usize) -> DecodedSignal {
+    let mut out: Vec<Change> = Vec::new();
+    let mut last: Option<BitValue> = None;
+    for (time, value) in parent.changes() {
+        let next = value.as_bits().and_then(|bits| bits.get(bit));
+        if next == last {
+            continue;
+        }
+        last = next;
+        out.push((
+            *time,
+            WaveValue::Bits(Bits::new_msb_first(vec![next.unwrap_or(BitValue::X)])),
+        ));
+    }
+    DecodedSignal::from_changes(out)
+}
+
 /// The rows the renderer draws: a local view model synced from the store.
 pub struct SignalThings {
     item: Vec<SignalItem>,
@@ -198,12 +227,15 @@ impl SignalThings {
         let mut previous = std::mem::take(&mut self.item);
         let mut next = Vec::with_capacity(rows.len());
         for row in rows {
-            let existing = previous.iter().position(|item| item.path == row.path);
+            let existing = previous
+                .iter()
+                .position(|item| item.path == row.path && item.bit == row.bit);
             let mut item = match existing {
                 Some(index) => previous.remove(index),
                 None => SignalItem {
                     name: String::new(),
                     path: row.path.clone(),
+                    bit: row.bit,
                     declared: row.width.max(1),
                     index: None,
                     width: row.width.max(1),
@@ -217,15 +249,23 @@ impl SignalThings {
             };
             let resolved = resolve(&row.path, row.width, waveform);
             item.path = row.path.clone();
+            item.bit = row.bit;
             item.declared = row.width.max(1);
             item.index = resolved.index;
-            item.width = resolved.width;
-            item.is_bool = resolved.is_bool;
-            item.name = if resolved.is_bool {
-                row.name.clone()
+            if let Some(bit) = row.bit {
+                // one bit of the bus: the parent's dump signal, drawn as a bit
+                item.width = 1;
+                item.is_bool = true;
+                item.name = format!("{}[{}]", row.name, bit);
             } else {
-                format!("{}[{}:0]", row.name, item.declared - 1)
-            };
+                item.width = resolved.width;
+                item.is_bool = resolved.is_bool;
+                item.name = if resolved.is_bool {
+                    row.name.clone()
+                } else {
+                    format!("{}[{}:0]", row.name, item.declared - 1)
+                };
+            }
             item.setting = row.setting.clone();
             item.load = row.load.clone();
             item.driver = row.drive.clone();
@@ -251,8 +291,14 @@ impl SignalThings {
         for item in &mut self.item {
             let resolved = resolve(&item.path, item.declared, waveform);
             item.index = resolved.index;
-            item.width = resolved.width;
-            item.is_bool = resolved.is_bool;
+            if item.bit.is_some() {
+                // a bit row stays one bit wide whatever the bus says
+                item.width = 1;
+                item.is_bool = true;
+            } else {
+                item.width = resolved.width;
+                item.is_bool = resolved.is_bool;
+            }
             item.values = RowValues::Empty;
         }
     }
@@ -372,6 +418,7 @@ mod tests {
             chosen: false,
             load: Vec::new(),
             drive: Vec::new(),
+            bit: None,
         }
     }
 
@@ -524,5 +571,39 @@ mod tests {
         assert_eq!(RowValues::Backend(decoded(8, 1)).kind(), RowKind::Bits);
         //a vector with no changes has nothing to draw
         assert_eq!(RowValues::Backend(decoded(1, 0)).kind(), RowKind::Empty);
+    }
+
+    /// A 4-bit value with the given low bits (msb first).
+    fn nibble(low: [BitValue; 2]) -> WaveValue {
+        WaveValue::Bits(Bits::new_msb_first(vec![
+            BitValue::Zero,
+            BitValue::Zero,
+            low[1],
+            low[0],
+        ]))
+    }
+
+    #[test]
+    fn derive_bit_keeps_only_the_changes_of_that_bit() {
+        // 0 -> 1 -> 2 -> 3: bit 0 toggles at every change, bit 1 only twice
+        let parent = DecodedSignal::from_changes(vec![
+            (0, nibble([BitValue::Zero, BitValue::Zero])),
+            (5, nibble([BitValue::One, BitValue::Zero])),
+            (9, nibble([BitValue::Zero, BitValue::One])),
+            (12, nibble([BitValue::One, BitValue::One])),
+        ]);
+        let times = |signal: &DecodedSignal| {
+            signal.changes().iter().map(|(time, _)| *time).collect::<Vec<_>>()
+        };
+        assert_eq!(times(&derive_bit(&parent, 0)), vec![0, 5, 9, 12]);
+        // bit 1 is 0,0,1,1: only the first value and the jump at 9
+        assert_eq!(times(&derive_bit(&parent, 1)), vec![0, 9]);
+        // a bit that never changes still has its initial value
+        let constant = derive_bit(&parent, 3);
+        assert_eq!(times(&constant), vec![0]);
+        // and a derived bit is one bit wide, so it is drawn as a digital row
+        assert_eq!(constant.first_change().map(|(_, value)| value.width()), Some(Some(1)));
+        // a bit the bus does not have (an empty history) does not panic
+        assert!(derive_bit(&parent, 40).is_empty());
     }
 }

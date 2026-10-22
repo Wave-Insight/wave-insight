@@ -17,7 +17,7 @@ use super::geometry::{self, content_height, visible_rows, ROW_HEIGHT, Time};
 use super::settings::Settings;
 use super::signal::SignalName;
 use super::time::{build_axis, Time as TimeBar};
-use super::util::signal_things::{RowValues, SignalItem, SignalThings};
+use super::util::signal_things::{derive_bit, RowValues, SignalItem, SignalThings};
 
 /// Decoded histories kept in memory before rows outside the viewport are
 /// dropped again. The backend charges ~40 bytes per decoded change.
@@ -77,6 +77,9 @@ pub enum Msg {
     NamesMove(MouseEvent),
     NamesUp,
     ShowMenu(usize),
+    /// Expand the bits of a bus row, or collapse them again (the settings
+    /// dialog's "expand bits" button).
+    ToggleBits(usize),
     SetSignal((bool, Settings)),
     DeleteSig,
     KeyEvent(u32),
@@ -399,6 +402,9 @@ impl Component for WaveShow {
         let name_last = (draw.end + NAME_OVERSCAN).min(rows);
 
         let rows_height = format!("{:.1}px", content_height(rows));
+        // the settings dialog can expand a bus into its bits
+        let bits_idx = self.on_setting_idx.first().copied().unwrap_or(0);
+        let (bit_width, bits_expanded) = self.bits_state(bits_idx);
 
         html! {
             <div class={if ctx.props().hidden {"wave-pane hidden"} else {"wave-pane"}} id="wave-pane"
@@ -413,6 +419,9 @@ impl Component for WaveShow {
                         setting={self.signal_things[self.on_setting_idx[0]].setting.clone()}
                         load={self.signal_things[self.on_setting_idx[0]].load.clone()}
                         drive={self.signal_things[self.on_setting_idx[0]].driver.clone()}
+                        bits={bit_width}
+                        expanded={bits_expanded}
+                        onbits={link.callback(move |()| Msg::ToggleBits(bits_idx))}
                         onset={link.callback(Msg::SetSignal)}
                         onlocate={link.callback(Msg::Locate)}
                         delete={link.callback(|_| Msg::DeleteSig)} />
@@ -566,6 +575,34 @@ impl WaveShow {
             }
             Msg::Scroll => {
                 self.scroll_top = scroll_top_from_dom();
+                true
+            }
+            Msg::ToggleBits(idx) => {
+                let Some(row) = self.rows.items.get(idx) else {
+                    return true;
+                };
+                let path = row.path.clone();
+                let expanded = self
+                    .rows
+                    .items
+                    .iter()
+                    .any(|candidate| candidate.path == path && candidate.bit.is_some());
+                if expanded {
+                    self.dispatch(state::Action::RowsBitCollapsed { index: idx });
+                } else {
+                    let width = self
+                        .signal_things
+                        .iter()
+                        .nth(idx)
+                        .map(|item| item.width)
+                        .unwrap_or(1);
+                    if width > 1 && width <= 64 {
+                        self.dispatch(state::Action::RowsBitExpanded { index: idx, width });
+                    }
+                }
+                // the dialog was the entry point; the expanded rows are the
+                // answer, so close it
+                self.menu_show = false;
                 true
             }
             Msg::ShowMenu(idx) => {
@@ -1136,6 +1173,25 @@ impl WaveShow {
             .unwrap_or(0)
     }
 
+    /// `(width, expanded)` of the row at `index`, for the expand-bits button:
+    /// only a bus that is really in the dump can be expanded, and only once.
+    fn bits_state(&self, index: usize) -> (usize, bool) {
+        let width = self
+            .signal_things
+            .iter()
+            .nth(index)
+            .filter(|item| item.index.is_some() && item.bit.is_none())
+            .map(|item| item.width)
+            .unwrap_or(1);
+        let expanded = self.rows.items.get(index).is_some_and(|row| {
+            self.rows
+                .items
+                .iter()
+                .any(|candidate| candidate.path == row.path && candidate.bit.is_some())
+        });
+        (width, expanded)
+    }
+
     /// Row index under a client y coordinate (including the scroll offset).
     fn row_at(&self, client_y: f64) -> usize {
         let metrics = self.measure();
@@ -1166,7 +1222,17 @@ impl WaveShow {
         match waveform.decoded_changes_many(&indices) {
             Ok(decoded) => {
                 for ((row, _), handle) in pending.into_iter().zip(decoded) {
-                    self.signal_things.set_backend(row, handle);
+                    // an expanded bit is one bit of its parent's history: derive
+                    // the bit instead of asking the backend for a signal that
+                    // does not exist in the dump
+                    let bit = self.signal_things.iter().nth(row).and_then(|item| item.bit);
+                    match bit {
+                        Some(bit) => {
+                            let derived = derive_bit(&handle, bit as usize);
+                            self.signal_things.set_backend(row, derived);
+                        }
+                        None => self.signal_things.set_backend(row, handle),
+                    }
                 }
                 self.last_decoded = indices.len();
             }

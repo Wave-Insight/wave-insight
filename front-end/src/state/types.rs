@@ -219,6 +219,11 @@ pub struct Row {
     /// Source locations of the drivers/loads, for the settings dialog.
     pub load: Vec<String>,
     pub drive: Vec<String>,
+    /// `Some(bit)` when this row shows one bit of the bus at `path` (the
+    /// "expand bus" view). `path`/`name` stay the parent's, so the row resolves
+    /// to the same dump signal and the hierarchy stays readable; the identity of
+    /// a row is `(path, bit)`.
+    pub bit: Option<u8>,
 }
 
 /// A versioned snapshot of the rows.
@@ -479,6 +484,7 @@ mod tests {
             chosen: false,
             load: Vec::new(),
             drive: Vec::new(),
+            bit: None,
         };
         let a = RowsSlice { version: 3, items: Rc::new(vec![row.clone()]) };
         let b = RowsSlice { version: 3, items: Rc::new(vec![]) };

@@ -33,10 +33,15 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
         Action::ClearStatus => {
             state.nav.status = None;
         }
-        Action::RowAdded { path, name, width, load, drive } => {
+        Action::RowAdded { path, name, width, load, drive, bit } => {
             if !path.is_empty() {
                 let mut items = (*state.rows.items).clone();
-                if !items.iter().any(|row| row.path == path) {
+                // a row is identified by its path *and* the bit it shows, so the
+                // bus and its expanded bits can coexist
+                if !items
+                    .iter()
+                    .any(|row| row.path == path && row.bit == bit)
+                {
                     // insert after the last chosen row, like the old push()
                     let insert_at = items
                         .iter()
@@ -56,10 +61,60 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                             chosen: false,
                             load,
                             drive,
+                            bit,
                         },
                     );
                     state.set_rows(items);
                 }
+            }
+        }
+        Action::RowsBitExpanded { index, width } => {
+            let mut items = (*state.rows.items).clone();
+            let Some(row) = items.get(index) else {
+                return Vec::new();
+            };
+            // only a bus, and only once
+            if row.bit.is_some() || width < 2 || width > 64 {
+                return Vec::new();
+            }
+            if items
+                .iter()
+                .any(|candidate| candidate.path == row.path && candidate.bit.is_some())
+            {
+                return Vec::new();
+            }
+            let (path, name) = (row.path.clone(), row.name.clone());
+            // most significant bit on top, like Verdi's expanded bus
+            let bits: Vec<Row> = (0..width)
+                .rev()
+                .map(|bit| Row {
+                    path: path.clone(),
+                    name: name.clone(),
+                    width: 1,
+                    setting: State::default_row_setting(),
+                    chosen: false,
+                    load: Vec::new(),
+                    drive: Vec::new(),
+                    bit: Some(bit as u8),
+                })
+                .collect();
+            items.splice(index + 1..index + 1, bits);
+            state.set_rows(items);
+        }
+        Action::RowsBitCollapsed { index } => {
+            let mut items = (*state.rows.items).clone();
+            let Some(row) = items.get(index) else {
+                return Vec::new();
+            };
+            let path = row.path.clone();
+            // the bit rows are the contiguous block right below the bus
+            let mut end = index + 1;
+            while end < items.len() && items[end].path == path && items[end].bit.is_some() {
+                end += 1;
+            }
+            if end > index + 1 {
+                items.drain(index + 1..end);
+                state.set_rows(items);
             }
         }
         Action::RowsRemoved { indices } => {
@@ -208,12 +263,60 @@ mod tests {
                 width: 8,
                 load: vec![],
                 drive: vec![],
+                bit: None,
             },
         );
     }
 
     fn paths(state: &State) -> Vec<String> {
         state.rows.items.iter().map(|row| row.path.clone()).collect()
+    }
+
+    #[test]
+    fn expanding_a_bus_adds_one_row_per_bit_most_significant_first() {
+        let mut state = state();
+        add(&mut state, "top.pc");
+        reduce(&mut state, Action::RowsBitExpanded { index: 0, width: 4 });
+        assert_eq!(
+            state.rows.items.iter().map(|row| row.bit).collect::<Vec<_>>(),
+            vec![None, Some(3), Some(2), Some(1), Some(0)]
+        );
+        assert!(state.rows.items.iter().all(|row| row.path == "top.pc"));
+        assert!(state.rows.items[1..].iter().all(|row| row.width == 1));
+        // expanding twice does not add a second block
+        reduce(&mut state, Action::RowsBitExpanded { index: 0, width: 4 });
+        assert_eq!(state.rows.items.len(), 5);
+        // collapsing removes exactly the block below the bus
+        reduce(&mut state, Action::RowsBitCollapsed { index: 0 });
+        assert_eq!(
+            state.rows.items.iter().map(|row| row.bit).collect::<Vec<_>>(),
+            vec![None]
+        );
+        // and a bit row is not the bus, so it is not a duplicate either
+        reduce(
+            &mut state,
+            Action::RowAdded {
+                path: "top.pc".into(),
+                name: "top.pc".into(),
+                width: 1,
+                load: vec![],
+                drive: vec![],
+                bit: Some(1),
+            },
+        );
+        assert_eq!(state.rows.items.len(), 2);
+        reduce(
+            &mut state,
+            Action::RowAdded {
+                path: "top.pc".into(),
+                name: "top.pc".into(),
+                width: 1,
+                load: vec![],
+                drive: vec![],
+                bit: Some(1),
+            },
+        );
+        assert_eq!(state.rows.items.len(), 2);
     }
 
     #[test]
