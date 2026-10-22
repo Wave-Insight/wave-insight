@@ -50,6 +50,9 @@
   --timebar-h: 30px;
   /* the horizontal divider between the editor and the wave pane */
   --wave-splitter-h: 5px;
+  /* the tab strip that switches the wave frame between waveform and loads;
+     kept in sync with DOCK_TABS in app.rs */
+  --dock-tabs-h: 28px;
   /* the scrollbar the wave body reserves on the right (see ::-webkit-scrollbar) */
   --scrollbar-w: 10px;
 }
@@ -531,27 +534,74 @@ button:active { background: var(--bg-4); }
   display: none;
 }
 
-/* R2 step 4: the driver/load panel is its own dock between the editor and the
-   wave pane, not part of the collapsing editor. It takes only the height its
-   content needs (up to 190 px) and the splitter/wave pane get the rest. */
-.inspector {
-  flex: 0 0 auto;
-  max-height: 190px;
+/* The waveform and the driver/load view share this frame; the tab strip switches
+   them. The dock used to sit between the editor and the waveform and took its
+   height from the waveform, which is what made opening the sources look like a
+   squashed trace. */
+.wave-frame {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+.dock-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex: 0 0 var(--dock-tabs-h);
+  height: var(--dock-tabs-h);
+  padding: 0 6px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.dock-tab {
+  appearance: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  padding: 0 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dock-tab:hover { color: var(--text-0); }
+
+.dock-tab.active {
+  color: var(--text-0);
+  border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dock-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* the inactive view stays mounted (zoom, scroll and decode cache survive the
+   switch) but takes no space and no pointer events */
+.hidden { display: none !important; }
+
+.inspector-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: var(--bg-1);
-  border-bottom: 1px solid var(--line);
 }
 
-.inspector .panel {
-  flex: 1 1 auto;
-  border-bottom: none;
-}
-
-/* R2 step 4: draggable divider between the editor (+ inspector dock) and the
-   wave pane. Tier A: the drag writes --editor-h straight to the DOM. */
+/* divider between the editor and the wave frame. Tier A: the drag writes
+   --editor-h straight to the DOM. */
 .wave-splitter {
   position: relative;
   z-index: 2;

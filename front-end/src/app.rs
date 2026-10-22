@@ -79,11 +79,35 @@ pub enum Msg {
     ///the mouse moved while dragging the splitter
     SplitterMove(MouseEvent),
     SplitterUp,
-    /// the editor/wave splitter was grabbed
+    /// The editor/wave splitter was grabbed
     WaveSplitterDown(MouseEvent),
-    /// the mouse moved while dragging that splitter
+    /// The mouse moved while dragging that splitter
     WaveSplitterMove(MouseEvent),
     WaveSplitterUp,
+    /// A tab of the wave frame was chosen (the waveform or the load/drive view).
+    WaveFrameTab(WaveFrameTab),
+}
+
+/// Which view the wave frame shows.
+///
+/// The driver/load view used to be a dock between the editor and the waveform,
+/// so opening the sources shrank the waveform by the height of a panel the user
+/// had not asked for. Both views now share the frame and are switched by a tab
+/// strip, like Verdi's waveform window and its signal info pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaveFrameTab {
+    Waveform,
+    LoadDrive,
+}
+
+impl WaveFrameTab {
+    fn class(self, active: WaveFrameTab) -> &'static str {
+        if self == active {
+            "dock-tab active"
+        } else {
+            "dock-tab"
+        }
+    }
 }
 
 // The locked layout constants (docs/state-store.md §3.4). The QA gate asserts
@@ -100,8 +124,9 @@ const WAVE_MIN_ROWS: f64 = 4.0;
 const TIMEBAR: f64 = 30.0;
 /// Height of `.wave-splitter` (kept in sync with `--wave-splitter-h`).
 const WAVE_SPLITTER: f64 = 5.0;
-/// Upper bound of the inspector dock's height (`max-height` in styles.css).
-const INSPECTOR_MAX: f64 = 190.0;
+/// Height of the tab strip that switches the wave frame between the waveform
+/// and the load/drive view (kept in sync with `--dock-tabs-h` in styles.css).
+const DOCK_TABS: f64 = 28.0;
 
 /// The widest the sidebar may get for the current window.
 fn sidebar_max() -> f64 {
@@ -163,9 +188,10 @@ pub struct App {
     sidebar_preview: Option<f64>,
     ///(mouse y, editor height) while the editor/wave splitter is dragged
     wave_splitter_start: Option<(f64, f64)>,
-    /// Height written straight to the DOM while that splitter is dragged;
-    /// committed to the store as a ratio on mouseup.
+    /// Live height of the editor while the splitter is dragged (tier A).
     editor_preview: Option<f64>,
+    /// Which view the wave frame shows; the waveform is the default.
+    wave_tab: WaveFrameTab,
 }
 
 impl Component for App {
@@ -251,6 +277,7 @@ impl Component for App {
             sidebar_preview: None,
             wave_splitter_start: None,
             editor_preview: None,
+            wave_tab: WaveFrameTab::Waveform,
         };
         this.attach_window_listeners(ctx);
         this
@@ -298,10 +325,9 @@ impl Component for App {
         // R2 step 2/4: with no sources the editor collapses to the tab strip and
         // the wave pane takes the rest (design doc §3.1, constants §3.4)
         let collapsed = self.verilog_source.is_empty();
-        let inspector_visible = self.inspector_visible();
         let editor_h = self
             .editor_preview
-            .unwrap_or_else(|| self.editor_height(collapsed, inspector_visible));
+            .unwrap_or_else(|| self.editor_height(collapsed));
 
         html! {
             <div class="app" ref={self.root.clone()} style={format!("--sidebar-w:{sidebar_w:.0}px; --editor-h:{editor_h:.0}px")}>
@@ -356,31 +382,44 @@ impl Component for App {
                                 onclose={link.callback(Msg::CloseSource)}
                                 onwordclick={link.callback(Msg::SourceClick)} />
                         </div>
-                        {
-                            // R2 step 4: the inspector is its own dock between the
-                            // editor and the wave pane, outside the collapsing part
-                            if inspector_visible {
-                                html!{
-                                    <div class="inspector">
-                                        <SignalInspector
-                                            design={self.design.clone()}
-                                            version={design_version}
-                                            path={self.selected.clone()}
-                                            ongoto={link.callback(Msg::Goto)} />
-                                    </div>
-                                }
-                            }else {
-                                html!{}
-                            }
-                        }
                         <div class={if self.wave_splitter_start.is_some() {"wave-splitter dragging"} else {"wave-splitter"}}
                             title="Drag to resize, double click to reset"
                             onmousedown={link.callback(Msg::WaveSplitterDown)} />
-                        <WaveShow
-                            store={self.store.clone()}
-                            onselect={link.callback(Msg::WaveSelect)}
-                            onjump={link.callback(Msg::WaveJump)}
-                            onlocate={link.callback(Msg::Locate)} />
+                        // The waveform and the driver/load view share one frame and
+                        // are switched by a tab strip. Both stay mounted (the
+                        // hidden one with `display:none`), so switching back does
+                        // not lose the zoom, the scroll position or the decode
+                        // cache of the waveform.
+                        <div class="wave-frame">
+                            <div class="dock-tabs">
+                                <button type="button"
+                                    class={WaveFrameTab::Waveform.class(self.wave_tab)}
+                                    title="The waveform (cursor values, drag to zoom)"
+                                    onclick={link.callback(|_| Msg::WaveFrameTab(WaveFrameTab::Waveform))}>
+                                    {"Waveform"}
+                                </button>
+                                <button type="button"
+                                    class={WaveFrameTab::LoadDrive.class(self.wave_tab)}
+                                    title="Declaration, drivers and loads of the selected signal"
+                                    onclick={link.callback(|_| Msg::WaveFrameTab(WaveFrameTab::LoadDrive))}>
+                                    {"Drivers / loads"}
+                                </button>
+                            </div>
+                            <div class="dock-body">
+                                <WaveShow
+                                    hidden={self.wave_tab != WaveFrameTab::Waveform}
+                                    store={self.store.clone()}
+                                    onselect={link.callback(Msg::WaveSelect)}
+                                    onjump={link.callback(Msg::WaveJump)}
+                                    onlocate={link.callback(Msg::Locate)} />
+                                <SignalInspector
+                                    hidden={self.wave_tab != WaveFrameTab::LoadDrive}
+                                    design={self.design.clone()}
+                                    version={design_version}
+                                    path={self.selected.clone()}
+                                    ongoto={link.callback(Msg::Goto)} />
+                            </div>
+                        </div>
                     </main>
                 </div>
                 {if let Some(picker) = &self.picker {
@@ -433,7 +472,7 @@ impl App {
     /// * expanded: `ratio * main`, never below 120 px of content, and the wave
     ///   pane keeps at least four rows — the row minimum wins over the ratio, so
     ///   the ratio is trimmed here and never the rows.
-    fn editor_height(&self, collapsed: bool, inspector_visible: bool) -> f64 {
+    fn editor_height(&self, collapsed: bool) -> f64 {
         if collapsed {
             return TAB_STRIP;
         }
@@ -441,32 +480,18 @@ impl App {
             // nothing measured yet: a sane expanded height for the first paint
             return 2.0 * (TAB_STRIP + EDITOR_CONTENT_MIN);
         }
-        let (min, max) = self.editor_bounds(inspector_visible);
-        // The inspector dock sits in the same column, between the editor and the
-        // wave pane, so the stored ratio applies to the space the dock leaves.
-        // Applied to the whole pane it handed the dock's pixels to the editor and
-        // the wave pane dropped to the four-row minimum as soon as the sources
-        // (and with them the dock) opened.
-        let dock = if inspector_visible { INSPECTOR_MAX } else { 0.0 };
-        let share = (self.main_h - dock).max(min);
-        (share * f64::from(self.layout.editor_ratio)).clamp(min, max)
+        let (min, max) = self.editor_bounds();
+        (self.main_h * f64::from(self.layout.editor_ratio)).clamp(min, max)
     }
 
     /// The editor heights the splitter may not leave: the expanded content is at
-    /// least 120 px, and the wave pane keeps its four rows plus the ruler and the
-    /// dock (the row minimum wins, so the ratio is trimmed).
-    fn editor_bounds(&self, inspector_visible: bool) -> (f64, f64) {
+    /// least 120 px, and the wave frame keeps its tab strip, its ruler and four
+    /// rows (the row minimum wins, so the ratio is trimmed).
+    fn editor_bounds(&self) -> (f64, f64) {
         let min = TAB_STRIP + EDITOR_CONTENT_MIN;
-        let inspector = if inspector_visible { INSPECTOR_MAX } else { 0.0 };
-        let wave = WAVE_MIN_ROWS * ROW_HEIGHT + TIMEBAR;
-        let max = (self.main_h - wave - WAVE_SPLITTER - inspector).max(min);
+        let wave = DOCK_TABS + TIMEBAR + WAVE_MIN_ROWS * ROW_HEIGHT;
+        let max = (self.main_h - wave - WAVE_SPLITTER).max(min);
         (min, max)
-    }
-
-    /// The inspector dock is visible when it has something to say: a loaded
-    /// design, or a selected signal (design doc §3.1, `inspector_visible`).
-    fn inspector_visible(&self) -> bool {
-        !self.design.borrow().is_empty() || self.selected.is_some()
     }
 
     /// `window.addEventListener("resize")`, kept out of `window.onresize` so the
@@ -627,7 +652,7 @@ impl App {
             }
             Msg::WaveSplitterMove(e) => {
                 if let Some((start_y, start_height)) = self.wave_splitter_start {
-                    let (low, high) = self.editor_bounds(self.inspector_visible());
+                    let (low, high) = self.editor_bounds();
                     let height = (start_height + (e.y() as f64 - start_y)).clamp(low, high);
                     // Tier A: the drag follows the pointer through one CSS
                     // variable; the store is told once, as a ratio, on mouseup.
@@ -650,6 +675,15 @@ impl App {
                     // a click without a drag still has to remove the shield
                     None => true,
                 }
+            }
+            Msg::WaveFrameTab(tab) => {
+                if self.wave_tab == tab {
+                    return false;
+                }
+                self.wave_tab = tab;
+                // opening the load/drive view is a read: the waveform keeps its
+                // zoom and scroll, it is only hidden
+                true
             }
             Msg::SidebarAdd(path) => {
                 // the sidebar is the explicit "add and show me where it is"
@@ -780,9 +814,8 @@ impl App {
     /// The editor height the shell currently shows: the live drag preview while
     /// the editor/wave splitter moves, the derived height otherwise.
     fn current_editor_height(&self) -> f64 {
-        self.editor_preview.unwrap_or_else(|| {
-            self.editor_height(self.verilog_source.is_empty(), self.inspector_visible())
-        })
+        self.editor_preview
+            .unwrap_or_else(|| self.editor_height(self.verilog_source.is_empty()))
     }
 
     /// Write the two pane variables straight to the DOM while a splitter is

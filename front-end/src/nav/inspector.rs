@@ -18,6 +18,11 @@ pub struct SignalInspectorProps {
     /// `(file, line, col)` of a row the user clicked.
     #[prop_or_default]
     pub ongoto: Callback<(String, u32, u32)>,
+
+    /// The wave frame shows the waveform: this panel is hidden with
+    /// `display:none` but stays mounted (and keeps its place in the tab strip).
+    #[prop_or_default]
+    pub hidden: bool,
 }
 
 pub enum Msg {
@@ -73,7 +78,7 @@ impl Component for SignalInspector {
         };
 
         html! {
-            <section class="panel" style="flex:0 0 auto;max-height:190px">
+            <section class={if props.hidden {"panel inspector-panel hidden"} else {"panel inspector-panel"}}>
                 <div class="panel-head">
                     {"Drivers / loads"}
                     // a signal path is case sensitive, so keep the panel head's

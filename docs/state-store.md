@@ -395,16 +395,15 @@ wave pane is short.
    where the empty editor was).
 3. As soon as one source opens, the pane expands to its remembered ratio
    (`layout.editor_ratio`, default `0.42`) — automatic, no click. The expanded
-   editor content is **at least 120 px**, whatever the ratio says. The ratio is
-   applied to the space the inspector dock leaves, not to the whole pane: the
-   dock lives in the same column, so counting it as editor share pushed the wave
-   pane down to its four-row minimum as soon as the sources opened.
+   editor content is **at least 120 px**, whatever the ratio says.
 4. `.wave-splitter` (5 px, `cursor: row-resize`) drags the boundary. Double
    click restores the default ratio. The bounds are locked, see §3.4.
-5. The inspector (drivers/loads) is a fixed dock **between** the editor and the
-   wave pane, not inside the collapsing region: it stays visible when the
-   editor collapses, and hides itself when it has nothing to say
-   (`design.is_empty() && focus.signal.is_none()`).
+5. The drivers/loads view is **not** a dock: it shares the wave frame with the
+   waveform and is switched by a tab strip (`Waveform` / `Drivers / loads`).
+   Both views stay mounted and the inactive one is `display: none`, so a switch
+   never loses the zoom, the scroll position or the decoded rows. The panel
+   shows "select a signal…" when it has nothing to say, so the tab is always
+   there and always explains itself.
 
 ### 3.2 How it is expressed
 
@@ -427,14 +426,10 @@ one inline style from `layout`:
 
 ```rust
 // App::view — the shell owns the two variables every pane is laid out from.
-// The inspector docks in the same column, so it is subtracted before the ratio
-// is applied; the four-row wave minimum still wins over the ratio.
-let dock = if inspector_visible { INSPECTOR_MAX } else { 0.0 };
-let share = (main_h - dock).max(TABSTRIP_PX + EDITOR_CONTENT_MIN);
 <div class="app" style={format!(
     "--sidebar-w:{:.0}px; --editor-h:{}px",
     layout.sidebar_w,
-    if collapsed { TABSTRIP_PX } else { (share * layout.editor_ratio as f64).clamp(min, max) },
+    if collapsed { TABSTRIP_PX } else { (main_h * layout.editor_ratio as f64).clamp(min, max) },
 )}>
 ```
 
@@ -443,7 +438,9 @@ CSS changes (`styles.css`, not R2's state work but required by it):
 ```css
 .main-pane { display: flex; flex-direction: column; }
 .code-pane { flex: 0 0 var(--editor-h); min-height: var(--tabs-h); }
-.inspector { flex: 0 0 auto; max-height: 190px; }
+.wave-frame { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.dock-tabs { flex: 0 0 var(--dock-tabs-h); }        /* 28 px: waveform / drivers */
+.dock-body { flex: 1; min-height: 0; }
 .wave-pane { flex: 1 1 auto; min-height: 0; }
 .wave-splitter { flex: 0 0 5px; cursor: row-resize; }   /* same drag-shield trick as the column splitter */
 ```
@@ -471,7 +468,7 @@ Do not invent other numbers; these are the contract the QA gate asserts.
 | collapsed editor | tab strip only, **content height 0** |
 | expanded editor content, minimum | **120 px** |
 | `layout.editor_ratio` | clamped to **[0.15, 0.75]** on every write |
-| wave pane minimum | **4 rows** = `4 * --row-h` |
+| wave pane minimum | **4 rows** = `4 * --row-h`, plus the 30 px ruler and the 28 px tab strip |
 
 **Precedence.** The wave minimum wins over the ratio: if the ratio would push
 the wave pane below four rows, the *ratio is trimmed*, never the rows. The same
@@ -599,7 +596,8 @@ New assertion: `design: adding a source re-parses exactly once` (version seam).
 
 ### Step 4 — layout and the legacy teardown
 
-- `--editor-h`, `.wave-splitter`, collapse rule and the inspector dock (§3);
+- `--editor-h`, `.wave-splitter`, collapse rule and the wave frame's tab strip
+  (the load/drive view shares the frame with the waveform, §3);
 - delete `Rc<RefCell<ModuleValue>>`, `Rc<Module>`, `signal_value`, the
   `end_clock` plumbing and the `#[cfg(feature = "backend")]` values path (R3
   removes the transports it served);
@@ -610,7 +608,8 @@ signals listed`, `fst: *`, `both: *`, `extras: the wave canvas stays usable in
 a tiny window`.
 New assertions: `layout: the editor starts collapsed with no sources`,
 `layout: opening a source expands the editor`,
-`layout: the inspector is hidden with no design and no selection`.
+`layout: the load/drive view is a tab of the wave frame (no dock card between
+the editor and the waveform)`.
 
 ---
 
