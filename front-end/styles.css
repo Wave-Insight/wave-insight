@@ -755,6 +755,31 @@ button:active { background: var(--bg-4); }
   flex: 1;
   min-width: 0;
   height: 100%;
+  /* the ruler is draggable: drag pans the trace, a click drops a cursor */
+  cursor: grab;
+}
+
+.timebar-svg.dragging { cursor: grabbing; }
+
+/* the goto box in the ruler readout: type a time, press Enter, cursor 1 moves */
+.timebar-goto {
+  flex: 0 0 auto;
+  width: 58px;
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.timebar-goto::placeholder { color: var(--text-2); }
+
+.timebar-goto:focus {
+  outline: none;
+  border-color: var(--accent-line);
+  color: var(--text-0);
 }
 
 .wave-body {
@@ -1034,6 +1059,18 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
 }
 
 .modal-row { position: relative; }
+
+/* the full hierarchical path next to "copy path" (the title is the short name) */
+.modal-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
 
 .modal-pop {
   position: absolute;

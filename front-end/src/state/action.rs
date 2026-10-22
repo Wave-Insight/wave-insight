@@ -42,6 +42,10 @@ pub enum Action {
     RowsRemoved { indices: Vec<usize> },
     /// A name cell was clicked; `ctrl`/`shift` are the modifier state.
     RowSelected { index: usize, ctrl: bool, shift: bool },
+    /// `Ctrl+A`: every row is selected (so one Delete removes all of them).
+    RowsAllSelected,
+    /// `Esc`: nothing is selected any more.
+    RowsCleared,
     /// A row was dragged to another position.
     RowsReordered { from: usize, to: usize },
     /// A presentation setting was changed for the given rows.

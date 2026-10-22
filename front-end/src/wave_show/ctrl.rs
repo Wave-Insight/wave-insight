@@ -1,3 +1,4 @@
+use wasm_bindgen::{JsCast, JsValue};
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -23,6 +24,9 @@ fn btn_class(on: bool) -> &'static str {
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct CtrlProps {
     pub name: String,
+    /// Hierarchical path of the row, for "copy path" (the name is the short one).
+    #[prop_or_default]
+    pub path: String,
     pub setting: Settings,
     pub load: Vec<String>,
     pub drive: Vec<String>,
@@ -33,6 +37,33 @@ pub struct CtrlProps {
     #[prop_or_default]
     pub onlocate: Callback<(bool, usize)>,
     pub delete: Callback<()>,
+}
+
+/// Copy text with the async clipboard API.
+///
+/// Called from a click, which the browser counts as the user gesture the API
+/// requires. `false` when the API is missing or refused (an iframe without the
+/// permission, an old browser), so the button can say so instead of lying.
+fn copy_to_clipboard(text: &str) -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let read = |target: &JsValue, key: &str| js_sys::Reflect::get(target, &JsValue::from_str(key));
+    let Ok(navigator) = read(&window, "navigator") else {
+        return false;
+    };
+    let Ok(clipboard) = read(&navigator, "clipboard") else {
+        return false;
+    };
+    let Ok(write) = read(&clipboard, "writeText") else {
+        return false;
+    };
+    let Ok(write) = write.dyn_into::<js_sys::Function>() else {
+        return false;
+    };
+    let args = js_sys::Array::new();
+    args.push(&JsValue::from_str(text));
+    write.apply(&clipboard, &args).is_ok()
 }
 
 pub enum Msg {
@@ -47,11 +78,16 @@ pub enum Msg {
     AddAllLoad,
     AddAllDrive,
     DeleteSig,
+    /// Put the row's full hierarchical path on the clipboard.
+    CopyPath,
 }
 
 pub struct Ctrl {
     show_load: bool,
     show_drive: bool,
+    /// `Some(true)` after a successful copy, `Some(false)` when the browser
+    /// refused; `None` before the button was pressed.
+    copied: Option<bool>,
 }
 
 impl Component for Ctrl {
@@ -62,12 +98,17 @@ impl Component for Ctrl {
         Self {
             show_load: false,
             show_drive: false,
+            copied: None,
         }
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         let props = ctx.props();
         match msg {
+            Msg::CopyPath => {
+                self.copied = Some(copy_to_clipboard(&props.path));
+                true
+            }
             Msg::ExitMenu(_e) => {
                 props.onset.emit((true,props.setting.clone()));
                 true
@@ -213,6 +254,24 @@ impl Component for Ctrl {
                                     }
                                 })
                             }
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <p class="modal-label">{"Signal"}</p>
+                        <div class="modal-row">
+                            <button type="button" class="btn"
+                                title={props.path.clone()}
+                                onclick={link.callback(|_| Msg::CopyPath)}>
+                                {
+                                    match self.copied {
+                                        Some(true) => "Copied ✓",
+                                        Some(false) => "Copy failed",
+                                        None => "Copy path",
+                                    }
+                                }
+                            </button>
+                            <code class="modal-path">{props.path.clone()}</code>
                         </div>
                     </div>
 

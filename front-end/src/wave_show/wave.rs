@@ -409,6 +409,7 @@ impl Component for WaveShow {
                 style={format!("--names-w: {:.0}px", self.names_w)}>
                 if self.menu_show && !self.on_setting_idx.is_empty() {
                     <Ctrl name={self.signal_things[self.on_setting_idx[0]].name.clone()}
+                        path={self.signal_things[self.on_setting_idx[0]].path.clone()}
                         setting={self.signal_things[self.on_setting_idx[0]].setting.clone()}
                         load={self.signal_things[self.on_setting_idx[0]].load.clone()}
                         drive={self.signal_things[self.on_setting_idx[0]].driver.clone()}
@@ -541,20 +542,22 @@ impl WaveShow {
                 if (e.x() as f64) < metrics.surface_left {
                     return false;
                 }
-                e.prevent_default();
                 let delta_y = e.delta_y();
                 let mut view = self.view;
                 if self.key(17) {
-                    //ctrl
-                    if delta_y < 0.0 {
-                        view.zoom(1.25);
-                    } else {
-                        view.zoom(0.8);
-                    }
-                } else if delta_y > 0.0 {
-                    view.pan_px(30.0);
+                    // ctrl: zoom at the pointer. Verdi zooms where you look;
+                    // a left-edge zoom slides the interesting part away.
+                    e.prevent_default();
+                    let local_x = e.x() as f64 - metrics.surface_left;
+                    let factor = if delta_y < 0.0 { 1.25 } else { 0.8 };
+                    view.zoom_at_px(local_x, factor, metrics.surface_w);
+                } else if self.key(16) {
+                    // shift: pan the trace, one notch at a time
+                    e.prevent_default();
+                    view.pan_px(if delta_y > 0.0 { 60.0 } else { -60.0 });
                 } else {
-                    view.pan_px(-30.0);
+                    // plain wheel: the row list scrolls, like any list
+                    return false;
                 }
                 // one dispatch per notch; the canvas is repainted from the local
                 // frame, the time bar re-renders from its own subscription
@@ -659,6 +662,23 @@ impl WaveShow {
                     let end = self.trace_end(self.time_range);
                     view = View::new(0.0, View::fit_size(end, metrics.surface_w));
                     self.fitted = true;
+                } else if idx == 78 {
+                    // n / shift+n: Verdi's "next / previous transition". The
+                    // cursor walks the value changes of the selected rows, or of
+                    // every visible row when nothing is selected.
+                    let direction = if self.key(16) { -1 } else { 1 };
+                    self.jump_to_transition(direction);
+                    return false;
+                } else if idx == 65 {
+                    //ctrl+a: select every row (one Delete then removes them all)
+                    if self.key(17) {
+                        self.dispatch(state::Action::RowsAllSelected);
+                        return true;
+                    }
+                } else if idx == 27 {
+                    //esc: clear the selection
+                    self.dispatch(state::Action::RowsCleared);
+                    return true;
                 } else if idx == 46 || idx == 8 {
                     //delete / backspace removes the selected rows
                     let indices: Vec<usize> = self
@@ -901,6 +921,73 @@ impl WaveShow {
         }
     }
 
+
+    /// Move cursor 1 to the next (`direction > 0`) or previous value change of
+    /// the selected rows, or of every visible row when nothing is selected.
+    ///
+    /// This is Verdi's "next transition": the cursor walks the edges of what you
+    /// are looking at, and the view follows when the edge is off screen. The
+    /// histories are sorted, so each row costs one binary search, not a walk.
+    fn jump_to_transition(&mut self, direction: i64) {
+        let metrics = self.measure();
+        if !metrics.is_usable() {
+            return;
+        }
+        let (draw, _) = visible_rows(self.scroll_top, metrics.surface_h, self.signal_things.len());
+        let selected: Vec<usize> = self
+            .rows
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.chosen)
+            .map(|(index, _)| index)
+            .collect();
+        let rows: Vec<usize> = if selected.is_empty() {
+            draw.collect()
+        } else {
+            selected
+        };
+        let current = self.cursors.one.unwrap_or(-1).max(0) as Time;
+        let mut best: Option<Time> = None;
+        for row in rows {
+            let Some(item) = self.signal_things.iter().nth(row) else {
+                continue;
+            };
+            let RowValues::Backend(decoded) = &item.values else {
+                continue;
+            };
+            let changes = decoded.changes();
+            let candidate = if direction > 0 {
+                let index = changes.partition_point(|(time, _)| *time <= current);
+                changes.get(index).map(|(time, _)| *time)
+            } else {
+                let index = changes.partition_point(|(time, _)| *time < current);
+                index.checked_sub(1).and_then(|index| changes.get(index)).map(|(time, _)| *time)
+            };
+            let Some(candidate) = candidate else {
+                continue;
+            };
+            best = Some(match best {
+                Some(best) if direction > 0 => best.min(candidate),
+                Some(best) => best.max(candidate),
+                None => candidate,
+            });
+        }
+        let Some(target) = best else {
+            return;
+        };
+        // keep the cursor on screen: when the edge is outside the window, move
+        // the view so it lands a quarter from the left
+        let x = self.view.x_of(target);
+        if !(8.0..=metrics.surface_w - 8.0).contains(&x) {
+            let span = self.view.time_span(metrics.surface_w);
+            let axis = (target as f64 - span * 0.25).max(0.0);
+            self.commit_view(View::new(axis, self.view.size));
+        }
+        let mut cursors = self.cursors;
+        cursors.one = Some(target.min(i32::MAX as Time as u64) as i32);
+        self.commit_cursors(cursors);
+    }
 
     /// Commit a zoom/pan: mirror it for the current frame, dispatch it once and
     /// repaint. No Yew render — the canvas is the only thing that changes, and

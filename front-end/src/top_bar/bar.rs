@@ -82,11 +82,13 @@ impl Component for TopBar {
                                 title={status.text.clone()}>{status.text.clone()}</span>}
                         }).unwrap_or_default()
                     }
-                    <kbd>{"ctrl"}</kbd>{" + wheel to zoom · "}
+                    <kbd>{"ctrl"}</kbd>{" + wheel zooms · "}
+                    <kbd>{"shift"}</kbd>{" + wheel pans · "}
+                    <kbd>{"n"}</kbd>{" / "}<kbd>{"shift+n"}</kbd>{" next / previous transition · "}
                     <kbd>{"click a name"}</kbd>{" adds it · "}
-                    <kbd>{"↗"}</kbd>{" opens its declaration · "}
-                    <kbd>{"z"}</kbd>{" "}<kbd>{"f"}</kbd>{" · left / right click sets a cursor"}
-                    {" · "}<kbd>{"del"}</kbd>{" removes the selected row"}
+                    <kbd>{"↗"}</kbd>{" declaration · "}
+                    <kbd>{"z"}</kbd>{" "}<kbd>{"f"}</kbd>{" fit / zoom · "}
+                    <kbd>{"del"}</kbd>{" removes the selected row"}
                 </div>
             </header>
         }

@@ -83,6 +83,24 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 state.set_rows(items);
             }
         }
+        Action::RowsAllSelected => {
+            let mut items = (*state.rows.items).clone();
+            if items.iter().any(|row| !row.chosen) {
+                for row in items.iter_mut() {
+                    row.chosen = true;
+                }
+                state.set_rows(items);
+            }
+        }
+        Action::RowsCleared => {
+            let mut items = (*state.rows.items).clone();
+            if items.iter().any(|row| row.chosen) {
+                for row in items.iter_mut() {
+                    row.chosen = false;
+                }
+                state.set_rows(items);
+            }
+        }
         Action::RowsReordered { from, to } => {
             let mut items = (*state.rows.items).clone();
             if from < items.len() && to < items.len() && from != to {
@@ -340,6 +358,28 @@ mod tests {
         // clicking the same row again clears it
         reduce(&mut state, Action::RowSelected { index: 1, ctrl: false, shift: false });
         assert!(!state.rows.items[1].chosen);
+    }
+
+    #[test]
+    fn select_all_and_clear_are_one_action_each() {
+        let mut state = state();
+        add(&mut state, "a");
+        add(&mut state, "b");
+        add(&mut state, "c");
+        // Ctrl+A on an empty selection selects every row
+        reduce(&mut state, Action::RowsAllSelected);
+        assert!(state.rows.items.iter().all(|row| row.chosen));
+        // running it again is a no-op (the version must not move, or every
+        // subscriber would re-render for nothing)
+        let version = state.rows.version;
+        reduce(&mut state, Action::RowsAllSelected);
+        assert_eq!(state.rows.version, version);
+        // Esc clears the selection
+        reduce(&mut state, Action::RowsCleared);
+        assert!(state.rows.items.iter().all(|row| !row.chosen));
+        let version = state.rows.version;
+        reduce(&mut state, Action::RowsCleared);
+        assert_eq!(state.rows.version, version);
     }
 
     #[test]

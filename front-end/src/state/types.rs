@@ -379,6 +379,20 @@ impl View {
         self.size = self.scale() * factor;
     }
 
+    /// Zoom around a surface pixel: the time under `px` stays under `px`.
+    ///
+    /// Verdi zooms at the pointer, not at the left edge: with the edge zoom the
+    /// thing you are looking at slides away exactly when you try to see more of
+    /// it.
+    pub fn zoom_at_px(&mut self, px: f64, factor: f64, width: f64) {
+        if !factor.is_finite() || factor <= 0.0 || !px.is_finite() || !(width > 0.0) {
+            return;
+        }
+        let anchor = self.time_of(px.clamp(0.0, width));
+        self.zoom(factor);
+        self.x_axis = (anchor - px / self.scale()).max(0.0);
+    }
+
     /// Zoom so that the range `[from_px, to_px]` fills the surface again.
     ///
     /// Both x positions are in css pixels of the current view; the left edge
