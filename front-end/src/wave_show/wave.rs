@@ -51,6 +51,12 @@ pub struct WaveShowProps {
     /// and "the several are listed in the inspector".
     #[prop_or_default]
     pub onlocate: Callback<(bool, usize, String)>,
+
+    /// The wave frame shows the other tab (loads/drivers): the pane is hidden
+    /// with `display:none` but stays mounted, so the zoom, the scroll position
+    /// and the decoded rows survive the switch.
+    #[prop_or_default]
+    pub hidden: bool,
 }
 
 pub enum Msg {
@@ -210,6 +216,8 @@ pub struct WaveShow {
     /// drags that write css variables without a Yew render.
     resize_observer: Option<web_sys::ResizeObserver>,
     resize_callback: Option<Closure<dyn FnMut()>>,
+    /// Last `hidden` prop, so `changed` knows whether the *view* has to re-run.
+    hidden: bool,
 }
 
 impl Component for WaveShow {
@@ -280,6 +288,7 @@ impl Component for WaveShow {
             onresize: None,
             resize_observer: None,
             resize_callback: None,
+            hidden: ctx.props().hidden,
         };
         this.sync_rows();
         this.attach_listeners(ctx);
@@ -295,7 +304,7 @@ impl Component for WaveShow {
         changed
     }
 
-    fn changed(&mut self, _ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>) -> bool {
         // every slice the pane reads (rows, viewport, dump, time range) arrives
         // through its own subscription, so a prop change alone never re-renders.
         // The pane's *size*, however, changes when the source pane grows (the
@@ -305,7 +314,14 @@ impl Component for WaveShow {
         // it the whole trace is drawn squashed until something else forces a
         // redraw.
         self.redraw();
-        false
+        // `false` means "props changed but the view is unchanged", which is the
+        // usual case here. The tab strip is the exception: `hidden` is rendered
+        // into the root class, so the view *must* re-run or the pane stays
+        // hidden after switching back from the loads/drivers view.
+        let hidden = ctx.props().hidden;
+        let rerender = hidden != self.hidden;
+        self.hidden = hidden;
+        rerender
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
@@ -385,7 +401,7 @@ impl Component for WaveShow {
         let rows_height = format!("{:.1}px", content_height(rows));
 
         html! {
-            <div class="wave-pane" id="wave-pane"
+            <div class={if ctx.props().hidden {"wave-pane hidden"} else {"wave-pane"}} id="wave-pane"
                 // The value column lives in the label area, so the shared label
                 // width (used by the name cells, the canvas and the ruler) is
                 // adjustable: the splitter writes it during the drag and it is
@@ -889,10 +905,24 @@ impl WaveShow {
     /// Commit a zoom/pan: mirror it for the current frame, dispatch it once and
     /// repaint. No Yew render — the canvas is the only thing that changes, and
     /// the time bar re-renders from its own store subscription.
+    ///
+    /// The view is kept inside the dump: panning or zooming out past the end
+    /// used to scroll the trace off to the left and leave the rest of the
+    /// surface empty (and, worse, holding the last value over it).
     fn commit_view(&mut self, view: View) {
+        let view = self.clamp_view(view);
         self.view = view;
         self.dispatch(state::Action::ViewCommitted(view));
         self.redraw();
+    }
+
+    /// `view`, pulled back so its right edge is at or before the end of the
+    /// trace. Formats without a known range (GHW) are left alone.
+    fn clamp_view(&self, view: View) -> View {
+        match self.time_range {
+            Some(range) => view.clamp_to_end(range.end as i64, self.measure().surface_w),
+            None => view,
+        }
     }
 
     /// Commit the cursors (one dispatch per click, never per mousemove).
@@ -1130,6 +1160,9 @@ impl WaveShow {
             } else {
                 None
             },
+            // rows stop at the end of the dump instead of holding their last
+            // value over the empty surface right of it
+            trace_end: self.time_range.map(|range| range.end as i64),
             dpr: metrics.dpr,
         };
         let stats = canvas::paint(&canvas, &frame);
@@ -1152,6 +1185,7 @@ impl WaveShow {
             cursor1: cursors.one,
             cursor2: cursors.two,
             view: self.view,
+            trace_end: self.time_range.map(|range| range.end as i64),
         });
     }
 

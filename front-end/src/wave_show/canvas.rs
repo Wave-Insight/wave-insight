@@ -67,6 +67,10 @@ pub struct Frame<'a> {
     pub cursor2: Option<i32>,
     /// Drag-to-zoom preview band, in surface pixels.
     pub drag: Option<(f64, f64)>,
+    /// Last time stamp the dump has, when the format knows it (VCD/FST do, GHW
+    /// does not). The rows stop drawing here: a value must not look as if it
+    /// went on forever past the end of the trace.
+    pub trace_end: Option<i64>,
     /// `window.devicePixelRatio`.
     pub dpr: f64,
 }
@@ -220,6 +224,19 @@ fn draw_no_data(context: &CanvasRenderingContext2d, top: f64, width: f64) {
     context.stroke();
 }
 
+/// Where the trace stops on this surface, in css pixels.
+///
+/// The end of the dump, clamped to the surface; `width` when the format does not
+/// report a time range, which keeps GHW drawing exactly as before. The rows use
+/// it instead of `width` for their last segment, so the last value is not held
+/// over the empty area right of the trace.
+fn trace_end_x(frame: &Frame<'_>, width: f64) -> f64 {
+    match frame.trace_end {
+        Some(end) => frame.view.x_of(end.max(0) as Time).clamp(0.0, width),
+        None => width,
+    }
+}
+
 fn bool_level(value: &WaveValue, top: f64) -> f64 {
     let high = top + ROW_PAD;
     let low = top + ROW_HEIGHT - ROW_PAD;
@@ -272,7 +289,7 @@ fn draw_bool_row(
             level = next;
         });
     if started {
-        context.line_to(width, level);
+        context.line_to(trace_end_x(frame, width), level);
         context.stroke();
     }
     let _ = low;
@@ -336,18 +353,23 @@ fn draw_bus_row(
             segment_start = x;
         });
     if let Some(value) = current {
-        band.trace(context, segment_start, width, segment_start <= 0.0, true);
-        stats.bands += 1;
-        label_segment(
-            context,
-            value,
-            &item.setting,
-            format_width,
-            segment_start,
-            width,
-            band.upper,
-            band.lower,
-        );
+        // the last band ends at the end of the trace, not at the right edge of
+        // an empty surface
+        let end_x = trace_end_x(frame, width);
+        if end_x > segment_start {
+            band.trace(context, segment_start, end_x, segment_start <= 0.0, true);
+            stats.bands += 1;
+            label_segment(
+                context,
+                value,
+                &item.setting,
+                format_width,
+                segment_start,
+                end_x,
+                band.upper,
+                band.lower,
+            );
+        }
     }
     context.stroke();
 }
@@ -401,14 +423,15 @@ impl Band {
     }
 }
 
-/// One row in analog mode: a sampled polyline through the numeric values.
+/// One row in analog mode: a sampled line through the numeric values.
 ///
 /// The samples are the value changes on screen, decimated to one per pixel like
-/// the digital renderers. `Settings::analog_initerpolate != 0` (the default)
-/// joins the samples with straight segments, i.e. the value is interpolated
-/// between two changes; `0` keeps the digital zero-order hold shape but as a
-/// polyline. `x`/`z`/unknown samples break the line: the trace holds the last
-/// known value up to the gap and resumes at the next known sample.
+/// the digital renderers. Between two changes the value is **held**, exactly
+/// like a digital row: a horizontal segment and then a vertical jump at the
+/// change. Interpolating the samples looked nicer on a data sheet but lied
+/// about the waveform — there is no value between 3 and 7, so the trace must
+/// not draw a line through 5. `x`/`z`/unknown samples break the line: the trace
+/// holds the last known value up to the gap and resumes at the next sample.
 fn draw_analog_row(
     context: &CanvasRenderingContext2d,
     frame: &Frame<'_>,
@@ -457,46 +480,40 @@ fn draw_analog_row(
     context.set_line_join("round");
     context.begin_path();
 
-    let interpolate = item.setting.analog_initerpolate != 0;
     // y of the last known sample; `None` while the trace is inside a gap
     let mut last: Option<f64> = None;
     // seed the left edge with the value in effect at the window start, so the
     // trace is not empty until the first in-window change
     if let Some(value) = item.values.value_at(start) {
         let point = analog_number(value, &item.setting).map(|number| y_of(number));
-        analog_point(context, &mut last, 0.0, point, interpolate);
+        analog_point(context, &mut last, 0.0, point);
     }
     item.values
         .for_each_change(start, end, &frame.view, width, |x, value| {
             stats.changes += 1;
             let point = analog_number(value, &item.setting).map(|number| y_of(number));
-            analog_point(context, &mut last, x, point, interpolate);
+            analog_point(context, &mut last, x, point);
         });
     if let Some(previous) = last {
-        // hold the last known value to the right edge, like a sample and hold
-        context.line_to(width, previous);
+        // hold the last value up to the end of the trace (never past it)
+        context.line_to(trace_end_x(frame, width), previous);
     }
     context.stroke();
     stats.analog += 1;
 }
 
 /// Add one analog sample (or a gap) to the current path.
-fn analog_point(
-    context: &CanvasRenderingContext2d,
-    last: &mut Option<f64>,
-    x: f64,
-    point: Option<f64>,
-    interpolate: bool,
-) {
+///
+/// A sample is a step: the trace stays on the previous level until the change
+/// position, then jumps vertically to the new one.
+fn analog_point(context: &CanvasRenderingContext2d, last: &mut Option<f64>, x: f64, point: Option<f64>) {
     match point {
         Some(y) => {
             match *last {
-                Some(previous) if !interpolate => {
-                    // zero order hold: stay on the old level until this change
+                Some(previous) => {
                     context.line_to(x, previous);
                     context.line_to(x, y);
                 }
-                Some(_) => context.line_to(x, y),
                 None => context.move_to(x, y),
             }
             *last = Some(y);
@@ -653,6 +670,9 @@ pub struct DebugInfo {
     pub cursor2: Option<i32>,
     /// Zoom/pan state, so a test can see that a gesture changed the view.
     pub view: View,
+    /// Last time stamp of the dump, when the format reports one. Rows stop
+    /// drawing there and the view cannot be panned past it.
+    pub trace_end: Option<i64>,
 }
 
 /// Expose one redraw's numbers on `window.__waveDebug` for the QA harness.
@@ -681,6 +701,11 @@ pub fn publish_debug(info: &DebugInfo) {
     set("first_row", JsValue::from_f64(info.first_row as f64));
     set("x_axis", JsValue::from_f64(info.view.x_axis));
     set("size", JsValue::from_f64(info.view.size));
+    set(
+        "trace_end",
+        info.trace_end
+            .map_or(JsValue::NULL, |end| JsValue::from_f64(end as f64)),
+    );
     set(
         "cursor1",
         info.cursor1.map_or(JsValue::NULL, |cursor| JsValue::from_f64(cursor as f64)),

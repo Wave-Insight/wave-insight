@@ -42,7 +42,6 @@ pub enum Msg {
     ActiveFixed,
     SetFixed(u32),
     ActiveAnalog,
-    SetAnalog(u32),
     FlipLoadShow,
     FlipDriveShow,
     AddAllLoad,
@@ -101,12 +100,6 @@ impl Component for Ctrl {
                 let mut set = props.setting.clone();
                 set.analog_active = !set.analog_active;
                 props.onset.emit((true,set));
-                true
-            }
-            Msg::SetAnalog(interpolate) => {
-                let mut set = props.setting.clone();
-                set.analog_initerpolate = interpolate;
-                props.onset.emit((false,set));
                 true
             }
             Msg::FlipLoadShow => {
@@ -169,7 +162,8 @@ impl Component for Ctrl {
                         <p class="modal-label">{"Analog"}</p>
                         <div class="modal-row">
                             <button type="button" class={btn_class(props.setting.analog_active)} onclick={link.callback(|_| Msg::ActiveAnalog)}>{"active"}</button>
-                            <input class="modal-input" type="number" onchange={link.callback(|e: Event| Msg::SetAnalog(e.target_unchecked_into::<HtmlInputElement>().value_as_number() as u32))} />
+                            // the trace is a step plot (the value holds until the
+                            // next change), so there is no interpolation to set
                         </div>
                     </div>
 

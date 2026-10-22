@@ -167,7 +167,6 @@ pub struct Settings {
     pub fixed_point: u32,
 
     pub analog_active: bool,
-    pub analog_initerpolate: u32,
 
     pub load_all: bool,
     pub load_one: i32,
@@ -185,7 +184,6 @@ impl Settings {
             fixed_point: 0,
 
             analog_active: false,
-            analog_initerpolate: 1,
 
             load_all: false,
             load_one: -1,
@@ -336,6 +334,29 @@ impl View {
         let start = clamp_time(start);
         let end = clamp_time(end).max(start);
         (start, end)
+    }
+
+    /// Time steps a surface `width` pixels wide covers.
+    pub fn time_span(&self, width: f64) -> f64 {
+        width / self.scale()
+    }
+
+    /// The same view moved back so its right edge is at (or before) `end_time`.
+    ///
+    /// Panning past the end of a dump used to leave the last value stretched
+    /// over the empty half of the surface, which reads as "the signal never
+    /// changes again"; the viewer now stops at the end. A zoomed-out view whose
+    /// whole trace is narrower than the surface is left alone (`x_axis` 0).
+    pub fn clamp_to_end(self, end_time: i64, width: f64) -> Self {
+        if end_time <= 0 || !(width > 0.0) || !self.x_axis.is_finite() {
+            return self;
+        }
+        let max_axis = (end_time as f64 - self.time_span(width)).max(0.0);
+        if self.x_axis > max_axis {
+            Self::new(max_axis, self.size)
+        } else {
+            self
+        }
     }
 
     /// Scale that fits `end_time` time steps into `width` pixels.
