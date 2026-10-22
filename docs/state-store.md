@@ -107,15 +107,20 @@ pub struct Row {
     pub index: Option<usize>,  // resolved signal index in the dump (cache, kept for the painter)
     pub setting: Settings,     // ShowType, colour, fixed/analog (moved from wave_show/settings.rs)
     pub chosen: bool,          // multi-selection in the wave list
+    pub bit: Option<u8>,       // Some(bit): this row shows one bit of the bus at `path`
 }
 ```
 
 Notes that matter:
 
-- **Row identity is `path`.** `SignalItem.signal: Rc<Signal>` disappears with
+- **Row identity is `(path, bit)`.** `SignalItem.signal: Rc<Signal>` disappears with
   R3; the painter only needs `path` (to resolve `index` and to format) plus
-  `width/is_bool/setting`. `module_tree()`/`legacy_module()` go away with R3,
-  so the sidebar's tree is derived data (2.3), never stored.
+  `width/is_bool/setting`. The `bit` half is what lets an expanded bus and its
+  bits live in the same list: a bit row resolves to the *parent's* dump signal and
+  derives its own one-bit history from it (`RowsBitExpanded`/`RowsBitCollapsed`),
+  so expanding twice is a no-op and collapsing removes exactly the block below the
+  bus. `module_tree()`/`legacy_module()` go away with R3, so the sidebar's tree is
+  derived data (2.3), never stored.
 - **The dump is a handle, not data.** `State.dump.waveform: Option<Rc<Waveform>>`
   is the one copy; decoded changes live in the library's cache (R3's
   `DecodedSignal`), never in `State`.
@@ -303,6 +308,8 @@ pub enum Action {
     RowSelected { index: usize, ctrl: bool, shift: bool },
     RowsReordered { from: usize, to: usize },
     RowSettingChanged { indices: Vec<usize>, setting: Settings },
+    RowsBitExpanded { index: usize, width: usize },
+    RowsBitCollapsed { index: usize },
     ViewCommitted { view: View },
     CursorsChanged { cursor1: Option<i32>, cursor2: Option<i32> },
     ScrollCommitted { scroll_top: f64 },
