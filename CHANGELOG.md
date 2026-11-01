@@ -10,6 +10,67 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.8.0] - 2026-11-02
+
+### Added
+
+- The language server merges elaboration diagnostics with the design-database
+  diagnostics of every open document: `width-mismatch`, `unresolved-name`,
+  an unresolved `.*` wildcard or implicit `.name` connection, and non-constant
+  generate bounds are deduplicated and published through
+  `textDocument/publishDiagnostics`, and they are republished when the top module
+  changes. The editor's monaco markers and
+  the top bar's problem chip pick them up through the existing bridge. Covered by
+  the server's diagnostics tests and the stdio transport tests.
+- Criterion benchmarks for the waveform hot paths
+  (`wave-insight-lib/benches/waveform.rs`; six groups / twenty benchmarks: open,
+  time_range_hint, decode, value_at, window, render). Large inputs are generated
+  in memory, so no multi-megabyte dump is committed.
+  `.github/workflows/bench.yml` is advisory on purpose: it compiles the suite on a
+  weekly schedule and, on manual dispatch, runs the hot-path groups
+  (`open`, `decode`, `time_range_hint`, `value_at`) and uploads the criterion
+  HTML report.
+- A supply-chain gate: `deny.toml` carries the policy (advisories, licences,
+  bans, source allow-list) with three reasoned ignores for unmaintained build-time
+  or transitive `tauri` 1.x crates, and `.github/workflows/audit.yml` runs
+  `cargo deny check` weekly and on every push to `main` as a hard gate.
+  Dependabot now opens grouped weekly cargo/actions PRs, with major bumps of
+  `tauri`, `tauri-build` and `yew` held until their migration. The Rust CI also
+  runs the host tests once in the release profile.
+- Session restore: the wave row list is remembered per dump identity (file name
+  plus byte size), up to 20 dumps and 200 rows per dump with the least recently
+  opened dump dropped first. Reopening the same dump restores its rows in order
+  with their display settings; remembered rows whose signal is gone are skipped
+  and the load status says how many. Rows added before any dump is open are not
+  attributed, and a same-name file whose size is unknown falls back to matching
+  on the name alone.
+- MAT export: the row settings dialog gained `MAT (row)`, which writes a MATLAB
+  level-5 v5 file with two n x 1 double columns, `wave_time` and
+  `sig_<sanitized name>`. x/z bits become `NaN`, and signed/fixed-point rows use
+  the same numeric values as the value column. MAT is one row at a time; the
+  all-rows button stays CSV.
+- The browser QA suite gained a `session` scenario (write rows, reload,
+  re-upload the same dump, assert the rows come back), a MAT-export check,
+  and now has 45 scenarios; the full matrix is green: **324 passed, 0 failed**
+  with the R2 layout rules required.
+
+### Changed
+
+- Persistence covers the row list now, not just the window layout and the
+  per-signal display settings: `wave-insight.sessions.v1` holds one entry per
+  dump identity (LRU, capped), restored by the reducer inside
+  `Action::DumpOpened`.
+- The state store gained a `sessions` slice for the remembered row lists. The
+  elaboration-diagnostics merge is not store state: it happens in the language
+  server and the store only carries the resulting problem count as before.
+
+### Fixed
+
+- RUSTSEC-2026-0384: tokio 1.54.0 (yanked; a race in `tokio::time::Interval`) was
+  surfaced by the new `cargo deny` gate and fixed by moving the lockfile to
+  tokio 1.54.1. `cargo deny --all-features check` reports advisories, bans,
+  licences and sources clean.
+
 ## [0.7.0] - 2026-11-02
 
 ### Added

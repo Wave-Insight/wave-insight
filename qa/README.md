@@ -68,7 +68,7 @@ Scenario list (the runner's `--list` prints it, default is all):
 `tierA`, `layoutRules`, `traceEnd`, `waveTabs`, `navigation`, `busExpand`,
 `busBench`, `busBands`, `snap`, `valueColumn`, `analog`, `analogStep`,
 `mismatch`, `loadDrive`, `inlayHints`, `wave1`, `wave2`, `virtualization`,
-`persistence`, `a11y`.
+`persistence`, `session`, `a11y`.
 
 `wave1` asserts the Wave 1 features (fixed point readout, search options);
 `wave2` asserts the Wave 2 features (CSV export through a real download,
@@ -76,14 +76,16 @@ the load report on the status line, LSP diagnostics as editor markers plus
 the top-bar problem chip); `virtualization` proves the sidebar tree and
 signal list keep the DOM bounded while the seam still reports the whole
 list; `persistence` writes layout and per-row settings, reloads the page
-and asserts they come back; `a11y` checks the listbox/dialog semantics,
-the modal focus trap, Escape behaviour, arrow-key selection and the real
-tab-closer buttons.
+and asserts they come back; `session` reloads and re-uploads the same dump
+to prove the row list is restored in order; `wave2` also exports the row as
+a MAT-file and checks its level-5 header; `a11y` checks the listbox/dialog
+semantics, the modal focus trap, Escape behaviour, arrow-key selection and
+the real tab-closer buttons.
 
-Baseline on the Wave 3 build (2026-11-02, 44 scenarios):
+Baseline on the Wave 4 build (2026-11-02, 45 scenarios):
 
 ```
-=== summary: 317 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
+=== summary: 324 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
 ```
 
 The summary has five counters: **passed**, **failed**, **pending** (an R2 rule

@@ -59,6 +59,27 @@ jobs:
     - name: Test the front end (reducer, store, layout, geometry)
       run: cargo test -p front-end --bins --locked
 
+  #the release profile is what ships (lto, codegen-units=1, panic=abort), and a
+  #panic=abort-only or lto-only breakage would not show up in the dev-profile job
+  #above. Measured warm: 3m01s to build the lib+back-end tests, and a cold run is
+  #worse, so it is a separate job with its own cache key instead of doubling the
+  #critical path of every PR.
+  test-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install the pinned toolchain
+      run: rustup show
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: release
+
+    - name: Test the crates that build on the host (release profile)
+      run: cargo test --workspace --exclude front-end --exclude app --release --locked
+
   fmt:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -169,6 +190,9 @@ jobs:
   #of the required path until it has a green track record, then delete
   #continue-on-error and add it to the required checks.
   qa:
+    #the job name says it: advisory. A red run is visible in the run list and its
+    #screenshots are uploaded below, but it does not block a merge yet.
+    name: qa (advisory)
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -189,3 +213,14 @@ jobs:
     #ubuntu-latest ships google-chrome; qa/run.mjs finds it on PATH or via CHROME
     - name: Browser smoke test (empty, vcd, layout, layoutRules)
       run: node qa/run.mjs --scenarios empty,vcd,layout,layoutRules
+
+    #advisory job: the screenshots are the way to see why a run went red
+    #(qa/artifacts is gitignored, so they only exist as a workflow artifact)
+    - name: Upload the QA screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: qa-artifacts
+        path: qa/artifacts
+        if-no-files-found: ignore
+        retention-days: 7

@@ -21,6 +21,11 @@
 //! restored on startup and written back when they change. The format, the merge
 //! and the row cap are pure and host-tested; only the `localStorage` call itself
 //! is wasm-only.
+//!
+//! Wave 4 extends the same module with the remembered *row list per dump*: the
+//! reducer restores it in `DumpOpened` and records it on every row change, the
+//! store persists it under a versioned key and the app mentions skipped rows in
+//! the status line.
 
 pub mod action;
 pub mod persist;
@@ -37,7 +42,7 @@ pub mod types;
 #[allow(unused_imports)]
 pub use action::{Action, Effect};
 #[allow(unused_imports)]
-pub use persist::{Persister, RowPrefs, Storage};
+pub use persist::{Persister, RowPrefs, Session, SessionRow, Sessions, Storage};
 #[allow(unused_imports)]
 pub use reduce::reduce;
 #[allow(unused_imports)]
@@ -45,5 +50,8 @@ pub use state::{Nav, Rows, State};
 #[allow(unused_imports)]
 pub use store::{Store, Subscription};
 #[allow(unused_imports)]
-pub use types::{Cursors, Dump, DumpHandle, Row, RowsSlice, Settings, StatusTone, View, Viewport};
+pub use types::{
+    Cursors, Dump, DumpHandle, DumpId, Row, RowsSlice, SessionRestore, Settings, StatusTone, View,
+    Viewport,
+};
 pub use types::{Layout, Status};

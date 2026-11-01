@@ -65,8 +65,12 @@
 //!
 //! Ask for a whole screen of rows in **one** call
 //! ([`Waveform::decoded_changes_many`]): wellen reads a set of signals per pass
-//! over the body, so decoding rows one by one re-scans the file once per row. On
-//! an 8 MB FST dump, 30 signals took 1.04 s sequentially and 73 ms batched.
+//! over the body, so decoding rows one by one re-scans the file once per row.
+//! The size of that win depends on the reader and the dump: it was originally
+//! measured on an 8 MB FST (30 signals: 1.04 s sequentially, 73 ms batched),
+//! which the checked-in 1.6 KB FST fixture is far too small to reproduce;
+//! `benches/waveform.rs` (`decode/sequential_8` vs `decode/batched_8`) measures
+//! the current numbers on whatever is checked in.
 //!
 //! # Memory behaviour
 //!

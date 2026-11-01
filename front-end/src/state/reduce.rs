@@ -11,7 +11,7 @@
 
 use super::action::{Action, Effect};
 use super::state::State;
-use super::types::{clamp_ratio, clamp_sidebar, Dump, Row};
+use super::types::{clamp_ratio, clamp_sidebar, Dump, Row, SessionRestore};
 
 pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
     match action {
@@ -177,7 +177,11 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 state.set_rows(items);
             }
         }
-        Action::DumpOpened { waveform, name } => {
+        Action::DumpOpened {
+            waveform,
+            name,
+            bytes,
+        } => {
             // the range is derived from the handle, never hand-written into the
             // store: the reducer is the one place that may compute it, and the
             // handle knows the GHW fallback (one body scan) behind one helper
@@ -187,7 +191,12 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 name,
                 time_range,
                 range_from_body,
+                bytes,
+                session_restore: None,
             };
+            // reopening a dump puts its remembered row list back (a different
+            // dump leaves the current list alone)
+            restore_session_rows(state);
         }
         Action::ViewCommitted(view) => {
             state.viewport.view = view;
@@ -221,6 +230,67 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
         }
     }
     Vec::new()
+}
+
+/// Put the remembered row list of the dump that just opened back on the wave.
+///
+/// Only runs for a dump with an identity (a named file): a dump that arrived as
+/// raw bytes is never remembered. When there is no remembered session the
+/// current list is left alone, exactly as before this feature existed.
+///
+/// A remembered row whose signal is not in the dump any more (or whose bit does
+/// not fit the bus it belongs to) is skipped and counted in
+/// [`SessionRestore`]; the open itself still succeeds, and the app mentions the
+/// skipped rows once in the status line instead of turning the load into an
+/// error. The stored list is rewritten with what actually came back, so the
+/// skipped rows are forgotten on the next write.
+fn restore_session_rows(state: &mut State) {
+    let Some(id) = state.dump.identity() else {
+        return;
+    };
+    let Some(session) = state.sessions.get(&id).cloned() else {
+        return;
+    };
+    let Some(handle) = state.dump.waveform.as_ref() else {
+        return;
+    };
+    let waveform = handle.waveform();
+    let mut items = Vec::with_capacity(session.rows.len());
+    let mut skipped = 0usize;
+    for stored in &session.rows {
+        let Some(signal) = waveform.signal_by_path(&stored.path) else {
+            skipped += 1;
+            continue;
+        };
+        let width = match stored.bit {
+            Some(bit) if signal.width() > u32::from(bit) => 1,
+            Some(_) => {
+                // the bus is narrower than the bit this row used to show
+                skipped += 1;
+                continue;
+            }
+            None => signal.width().max(1) as usize,
+        };
+        items.push(Row {
+            path: stored.path.clone(),
+            name: if stored.name.is_empty() {
+                stored.path.clone()
+            } else {
+                stored.name.clone()
+            },
+            width,
+            // the display settings are remembered by path, so a restored row
+            // comes back with the format the user chose for that signal
+            setting: state.row_prefs.setting_for(&stored.path),
+            chosen: false,
+            load: stored.load.clone(),
+            drive: stored.drive.clone(),
+            bit: stored.bit,
+        });
+    }
+    let restored = items.len();
+    state.dump.session_restore = Some(SessionRestore { restored, skipped });
+    state.set_rows(items);
 }
 
 /// The three selection modes of the wave rows, exactly as the view had them.
@@ -278,9 +348,11 @@ fn choose(items: &mut [Row], index: usize, ctrl: bool, shift: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::persist::SessionRow;
     use crate::state::types::{
-        DumpHandle, Layout, Settings, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN,
+        DumpHandle, DumpId, Layout, Settings, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN,
     };
+    use wave_insight_lib::data_struct::ShowType;
 
     fn state() -> State {
         State::default()
@@ -298,6 +370,27 @@ mod tests {
                 bit: None,
             },
         );
+    }
+
+    /// The VCD fixture the QA matrix uses: real signal paths, so the restore
+    /// filter (a signal that is not in the dump) is exercised for real.
+    fn wave_vcd() -> (DumpHandle, u64) {
+        let bytes = include_bytes!("../../../qa/fixtures/wave.vcd").to_vec();
+        let size = bytes.len() as u64;
+        let waveform =
+            wave_insight_lib::waveform::Waveform::open_bytes(bytes).expect("the vcd fixture opens");
+        (DumpHandle::new(waveform), size)
+    }
+
+    fn session_row(path: &str, bit: Option<u8>) -> SessionRow {
+        SessionRow {
+            path: path.to_string(),
+            name: path.to_string(),
+            width: if bit.is_some() { 1 } else { 8 },
+            load: Vec::new(),
+            drive: Vec::new(),
+            bit,
+        }
     }
 
     fn paths(state: &State) -> Vec<String> {
@@ -711,6 +804,7 @@ mod tests {
             Action::DumpOpened {
                 waveform: handle.clone(),
                 name: Some("io_mode_wave.fst".to_string()),
+                bytes: Some(4096),
             },
         );
         assert_eq!(state.dump.time_range, expected);
@@ -724,6 +818,146 @@ mod tests {
         )
         .expect("the fst fixture opens");
         assert_ne!(state.dump.waveform, Some(DumpHandle::new(other)));
+    }
+
+    #[test]
+    fn reopening_the_same_dump_restores_its_rows_in_order() {
+        let (handle, size) = wave_vcd();
+        let mut state = state();
+        reduce(
+            &mut state,
+            Action::DumpOpened {
+                waveform: handle,
+                name: Some("wave.vcd".to_string()),
+                bytes: Some(size),
+            },
+        );
+        // first open: nothing is remembered yet, so nothing is restored
+        assert!(state.rows.items.is_empty());
+        assert_eq!(state.dump.session_restore, None);
+
+        add(&mut state, "top.pc");
+        add(&mut state, "top.clk");
+        let mut setting = Settings::new();
+        setting.show_type = ShowType::Bin;
+        reduce(
+            &mut state,
+            Action::RowSettingChanged {
+                indices: vec![0],
+                setting: setting.clone(),
+            },
+        );
+        // every row change records the list under the dump identity
+        assert_eq!(state.sessions.entries().len(), 1);
+        assert_eq!(
+            state.sessions.entries()[0].id,
+            DumpId::new("wave.vcd", Some(size))
+        );
+        assert_eq!(state.sessions.entries()[0].rows.len(), 2);
+
+        // a reload: a fresh store has no rows but the remembered sessions and
+        // the per-signal settings
+        let mut reopened = State {
+            sessions: state.sessions.clone(),
+            row_prefs: state.row_prefs.clone(),
+            ..State::default()
+        };
+        let (handle, size) = wave_vcd();
+        reduce(
+            &mut reopened,
+            Action::DumpOpened {
+                waveform: handle,
+                name: Some("wave.vcd".to_string()),
+                bytes: Some(size),
+            },
+        );
+        assert_eq!(paths(&reopened), vec!["top.pc", "top.clk"]);
+        // the width comes from the dump, the format from the remembered settings
+        assert_eq!(reopened.rows.items[0].width, 8);
+        assert_eq!(reopened.rows.items[0].setting, setting);
+        assert!(!reopened.rows.items[0].chosen);
+        assert_eq!(
+            reopened.dump.session_restore,
+            Some(SessionRestore {
+                restored: 2,
+                skipped: 0
+            })
+        );
+    }
+
+    #[test]
+    fn remembered_rows_whose_signal_is_gone_are_skipped_and_counted() {
+        let (handle, size) = wave_vcd();
+        let mut state = state();
+        state.sessions.record(
+            DumpId::new("wave.vcd", Some(size)),
+            vec![
+                session_row("top.pc", None),
+                session_row("top.gone", None),
+                session_row("top.pc", Some(7)),
+                // pc is eight bits wide, so bit 8 does not fit
+                session_row("top.pc", Some(8)),
+            ],
+        );
+        reduce(
+            &mut state,
+            Action::DumpOpened {
+                waveform: handle,
+                name: Some("wave.vcd".to_string()),
+                bytes: Some(size),
+            },
+        );
+        let bits: Vec<Option<u8>> = state.rows.items.iter().map(|row| row.bit).collect();
+        assert_eq!(bits, vec![None, Some(7)]);
+        assert_eq!(
+            state.dump.session_restore,
+            Some(SessionRestore {
+                restored: 2,
+                skipped: 2
+            })
+        );
+        // what actually came back is recorded again; the skipped rows are gone
+        let remembered = state
+            .sessions
+            .get(&DumpId::new("wave.vcd", Some(size)))
+            .expect("the session is recorded");
+        assert_eq!(remembered.rows.len(), 2);
+    }
+
+    #[test]
+    fn a_different_or_nameless_dump_does_not_restore_rows() {
+        let (handle, size) = wave_vcd();
+        let mut state = state();
+        state.sessions.record(
+            DumpId::new("wave.vcd", Some(size)),
+            vec![session_row("top.pc", None)],
+        );
+        // same name, different size: a different file, so the list is left alone
+        reduce(
+            &mut state,
+            Action::DumpOpened {
+                waveform: handle,
+                name: Some("wave.vcd".to_string()),
+                bytes: Some(size + 1),
+            },
+        );
+        assert!(state.rows.items.is_empty());
+        assert_eq!(state.dump.session_restore, None);
+
+        // a dump that arrived as raw bytes has no name, so it has no identity:
+        // nothing is restored and nothing is remembered for it
+        let (handle, _) = wave_vcd();
+        reduce(
+            &mut state,
+            Action::DumpOpened {
+                waveform: handle,
+                name: None,
+                bytes: None,
+            },
+        );
+        assert!(state.rows.items.is_empty());
+        add(&mut state, "top.pc");
+        assert_eq!(state.sessions.entries().len(), 1);
     }
 
     #[test]

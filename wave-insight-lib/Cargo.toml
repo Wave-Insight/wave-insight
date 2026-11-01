@@ -26,3 +26,13 @@ sv-parser = "0.13"
 [dev-dependencies]
 #round trip tests for the types that cross the wasm boundary
 serde_json = "1"
+
+#statistics driven benchmarks of the waveform hot paths (benches/waveform.rs);
+#`html_reports` writes the report under target/criterion and is what the bench
+#workflow uploads. Dev only: the wasm bundles never see it.
+criterion = { version = "0.5", features = ["html_reports"] }
+
+#a plain binary driven by criterion's own harness, not by libtest
+[[bench]]
+name = "waveform"
+harness = false

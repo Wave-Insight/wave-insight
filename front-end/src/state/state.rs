@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use super::persist::RowPrefs;
+use super::persist::{RowPrefs, SessionRow, Sessions};
 use super::types::{Dump, Layout, Row, RowsSlice, Status, Viewport};
 
 /// The wave rows, versioned so a subscriber compares one integer.
@@ -52,13 +52,35 @@ pub struct State {
     /// [`super::persist`]); the reducer applies them when a row is added and
     /// records them when one changes, the store persists them.
     pub row_prefs: RowPrefs,
+    /// The row lists remembered per dump identity (see [`super::persist`]). The
+    /// reducer restores one when the same file is opened again and records the
+    /// current list on every row change; the store persists it.
+    pub sessions: Sessions,
 }
 
 impl State {
     /// Replace the rows and bump the version: every row action funnels through
     /// here, so a subscription sees exactly one change per action.
+    ///
+    /// It is also the single place the row list of the open dump is recorded
+    /// (see [`State::remember_rows`]), so no row action can forget to persist.
     pub(crate) fn set_rows(&mut self, items: Vec<Row>) {
         self.rows.items = Rc::new(items);
         self.rows.version = self.rows.version.wrapping_add(1);
+        self.remember_rows();
+    }
+
+    /// Record the current row list under the open dump's identity, so reopening
+    /// the same file restores it.
+    ///
+    /// A dump with no name has no identity (it arrived as raw bytes) and nothing
+    /// is remembered for it; with no dump open there is nothing to key the rows
+    /// by either.
+    fn remember_rows(&mut self) {
+        let Some(id) = self.dump.identity() else {
+            return;
+        };
+        let rows = self.rows.items.iter().map(SessionRow::from_row).collect();
+        self.sessions.record(id, rows);
     }
 }

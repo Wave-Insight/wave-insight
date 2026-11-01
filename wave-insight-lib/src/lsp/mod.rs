@@ -21,11 +21,13 @@
 //! `textDocument/hover`, `textDocument/documentSymbol`.
 //!
 //! The server pushes `textDocument/publishDiagnostics` notifications for the
-//! edited document, built from [`DesignDb::diagnostics`]; they are queued and
-//! drained with [`LspServer::take_notifications`] so [`LspServer::handle_message`]
-//! keeps returning replies only.  Completion is still not implemented; unknown
-//! requests are answered with JSON-RPC `-32601`, unknown notifications are
-//! ignored.
+//! edited document, merging [`DesignDb::diagnostics`] with the elaboration
+//! diagnostics from [`ElaboratedDesign::diagnostics`] (unresolved names, width
+//! mismatches, generate warnings) and mapping both to LSP ranges.  They are
+//! queued and drained with [`LspServer::take_notifications`] so
+//! [`LspServer::handle_message`] keeps returning replies only.  Completion is
+//! still not implemented; unknown requests are answered with JSON-RPC `-32601`,
+//! unknown notifications are ignored.
 //!
 //! # Coordinates
 //!

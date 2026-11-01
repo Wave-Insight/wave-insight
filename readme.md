@@ -46,16 +46,57 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-There are currently no benchmarks: the repository has no `benches/` targets, and
-the library's old `nightly-bench` feature gate enables nothing. (The repository
-root is still a convenient place for a test dump: `test*.vcd` there is
-git-ignored.)
+### benchmarks
+
+The waveform hot paths have criterion benchmarks in
+`wave-insight-lib/benches/waveform.rs` (six groups - `open`,
+`time_range_hint`, `decode`, `value_at`, `window`, `render` - twenty
+benchmarks). They build their large inputs synthetically in memory (a ~1.7 MB /
+100k-change and an ~8.3 MB / 500k-change VCD) plus the small checked-in fixtures,
+so no multi-megabyte dump is committed:
+
+```bash
+cargo bench -p wave-insight-lib -- --quick   # fast smoke run
+cargo bench -p wave-insight-lib              # criterion defaults
+cargo bench -p wave-insight-lib -- decode    # one group
+```
+
+The HTML report lands in `target/criterion/report/index.html`. CI never gates on
+the numbers: `.github/workflows/bench.yml` compiles the suite on a weekly
+schedule and, on manual dispatch, runs the hot-path groups (`open`, `decode`,
+`time_range_hint`, `value_at`) and uploads the criterion report as an artifact,
+so a broken benchmark is noticed without letting a noisy runner block a merge.
+Indicative `--quick` numbers from one developer machine (measurements, not
+budgets): opening a small inline VCD 7.3 us / 1.7 MB 410 us / 8.3 MB 1.75 ms;
+the first trace-range scan 13.5 ms and 6.4 ns when cached; decoding 11.6 ms for
+one signal / 12.1 ms batched / 38 ns when cached; `value_at` 306 ns packed and
+147 ns decoded; a streamed window 9.1 / 13.2 / 46.2 ms; formatting 148 ns for a
+32-bit hex value and 271 us for a 2500-change row. The old `nightly-bench`
+feature gate still enables nothing and is not used by these benchmarks.
+
+### supply chain
+
+The committed lockfile is watched by a supply-chain gate: [`deny.toml`](deny.toml)
+holds the policy (RustSec advisories, licences, banned crates and a source
+allow-list) and `.github/workflows/audit.yml` runs `cargo deny check` weekly and
+on every push to `main` as a **hard** gate. Three unmaintained crates are ignored
+with reasons in `deny.toml` (all build-time or transitive `tauri` 1.x
+dependencies, removed by the tauri 2 migration); vulnerabilities are never
+ignored - RUSTSEC-2026-0384 (the yanked tokio 1.54.0) was found by this gate and
+fixed by moving the lockfile to tokio 1.54.1. Run it locally with
+`cargo install cargo-deny && cargo deny check`. [`.github/dependabot.yml`](.github/dependabot.yml)
+keeps the lockfile moving with grouped weekly cargo/actions PRs; major bumps of
+`tauri`/`tauri-build`/`yew` are held until the migration in the roadmap. The
+Rust CI also runs the host tests once in the release profile
+(`cargo test ... --release`), because LTO / `codegen-units = 1` /
+`panic = "abort"` only show their breakage there. (The repository root is still
+a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 
 ### browser QA
 
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
-and asserts the user-visible behaviour (the current matrix has 41 scenarios;
+and asserts the user-visible behaviour (the current matrix has 45 scenarios;
 `--list` prints them). Build the front end first, then run:
 
 ```bash
@@ -122,13 +163,16 @@ an analog trace, colour, load/drive actions and an **Export** section. To the
 right of each signal name the value at the cursor is shown after a cursor is
 placed.
 
-- **Export**: the settings dialog's `CSV (row)`, `TXT (row)` and `CSV (all
-  rows)` buttons write a row as `time,value` CSV or `<time> <value>` TXT, or every
-  row as one long-format `time,signal,value` CSV. The
-  values use the row's on-screen format (fixed point included), and the download
-  is named after the dump (`<dump>-<signal>.csv`, `<dump>-rows.csv`; the dump's
-  file stem is used when it has one, otherwise its root scope). A generated file
-  over 200 MB is refused with an actionable message instead of freezing the tab.
+- **Export**: the settings dialog's `CSV (row)`, `TXT (row)`, `CSV (all rows)`
+  and `MAT (row)` buttons write a row as `time,value` CSV, `<time> <value>` TXT or
+  a MATLAB level-5 file, or every row as one long-format `time,signal,value` CSV.
+  Values use the row's on-screen format (fixed point included); the MAT file has
+  two n x 1 double columns, `wave_time` and `sig_<sanitized name>`, with x/z bits
+  written as `NaN` and signed/fixed-point values matching the value column, and it
+  is one row at a time (the all-rows button is CSV only). The download is named
+  after the dump (`<dump>-<signal>.csv`, `<dump>-rows.csv`; the dump's file stem
+  is used when it has one, otherwise its root scope). A generated file over 200 MB
+  is refused with an actionable message instead of freezing the tab.
 - **Large dumps**: a browser dump is read in 8 MB chunks with a progress row in
   the sidebar and a reading line in the top bar, then a `parsing ...` line while
   the parser runs. Esc or the cancel button stops the read and reports that the
@@ -136,12 +180,12 @@ placed.
   dumps over 512 MB are refused before a byte is read, with advice to trim the
   dump. The success line reports what it cost: `waveform loaded — opened in
   412 ms, 105 MB, wasm memory 320 MB`.
-- **Diagnostics**: problems the parser and front end find in the open sources
-  are published into the editor as monaco markers (squiggles), and the top bar
-  keeps an `N problem(s)` chip visible even when the source pane is collapsed.
-  (The elaboration diagnostics added in this wave - `unresolved-name` and
-  `width-mismatch` - are reported by the design API and tests but are not yet
-  forwarded to the editor; see Known limitations.)
+- **Diagnostics**: parser/front-end diagnostics and elaboration diagnostics
+  (`unresolved-name`, `width-mismatch`, wildcard and implicit connection
+  problems, non-constant generate bounds) are merged per document, deduplicated
+  and published into the editor as monaco markers (squiggles); the top bar keeps
+  an `N problem(s)` chip visible even when the source pane is collapsed. The
+  merged diagnostics are republished when the top module changes.
 - **Big designs**: the sidebar module tree and signal list are virtualized above
   80 rows - only the rows inside the scroll viewport exist in the DOM, with
   spacers keeping the scrollbar the real length - so a dump with thousands of
@@ -150,9 +194,15 @@ placed.
 - **Persistence**: the window layout (sidebar width, editor/wave ratio, sidebar
   visibility) and each signal's display settings (format, fixed point, analog,
   colour) are remembered in the browser's `localStorage` and restored on the next
-  visit. The rows themselves are not persisted: re-adding a signal brings back
-  the format you chose for it. A future/corrupt stored payload, or a browser that
-  denies storage, simply falls back to the defaults.
+  visit. The row list is remembered too, per dump identity (the file name and its
+  byte size): reopening the same dump puts its rows back in order with their
+  settings. Limits: up to 20 dumps and 200 rows per dump are remembered (the
+  least recently opened dump is dropped first), rows added before any dump is open
+  are not attributed to a dump, and a same-name file whose byte size is unknown
+  falls back to matching on the name alone. Remembered rows whose signal is no
+  longer in the dump are skipped and the load line says how many. A future or
+  corrupt stored payload, or a browser that denies storage, falls back to the
+  defaults.
 
 The keyboard and accessibility contract: `Delete` removes the selected rows,
 `ctrl+A` selects every row, the arrow keys and `Home`/`End` move the row
@@ -187,13 +237,12 @@ closer is a real button, and the wave list and candidate picker expose
 * **Language-server coverage.** Definition/hover/references/symbols come from the
   declaration spans the elaborator recorded; a construct from the "skipped"
   list above has no definition to jump to, and name lookup is best effort when a
-  signal cannot be resolved across instances. The editor squiggles and the top
-  bar's problem count currently cover the parser/front-end diagnostics; the new
-  elaboration diagnostics (`unresolved-name`, `width-mismatch`, non-constant
-  generate bounds) are visible through the design API and its tests but are not
-  yet pushed through `textDocument/publishDiagnostics`, so they do not appear in
-  the editor yet. A skipped construct may also be reported as a warning even
-  though the source is valid SystemVerilog.
+  signal cannot be resolved across instances. Editor squiggles and the top bar's
+  problem count now include the elaboration diagnostics (`unresolved-name`,
+  `width-mismatch`, non-constant generate bounds) merged with the parser/front-end
+  ones per document, deduplicated and republished when the top module changes. A
+  skipped construct may still be reported as a warning even though the source is
+  valid SystemVerilog.
 * **Corrupt dumps are recovered on a best-effort basis.** The readers validate
   input and turn bad files into an error message instead of panicking, and the
   library wraps third-party parsing in `catch_unwind`. The release profile is
@@ -222,22 +271,24 @@ Done in the next release (unreleased at the time of writing):
 
 - [x] fixed-point display (settings dialog: exponent)
 - [x] signal search options: match case, whole word and regular expression
-- [x] export signal values as CSV or TXT (one row, or every row as long-format CSV); `.mat` is not implemented
+- [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 44 scenarios, own fixtures) with an advisory CI smoke job
+- [x] browser QA suite moved into the repository (`qa/`, 45 scenarios, own fixtures) with an advisory CI smoke job
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
 - [x] accessibility/keyboard pass: modal semantics with a focus trap and focus return, visible focus rings, arrow/Home/End row selection, `ctrl+W`/`ctrl+F4` tab close, tier-A draggable ruler
-- [x] driver/load diagnostics: unresolved names, wildcard/implicit connections and port width mismatches are reported (design API and tests; not yet shown in the editor)
+- [x] driver/load diagnostics: unresolved names, wildcard/implicit connections and port width mismatches are reported, and now reach the editor through the merged LSP diagnostics
 - [x] tauri file browser starts in the user's home directory
 - [x] favicon data-URI, so the `/favicon.ico` 404 console error is gone
+- [x] elaboration diagnostics reach the editor: the language server merges design + elaboration diagnostics per document, deduplicates them and republishes on a top-module change
+- [x] session restore: the row list is remembered per dump identity (name + byte size; 20 dumps / 200 rows, LRU) and skipped rows are reported in one status line
+- [x] criterion benchmarks for the waveform hot paths (six groups / twenty benchmarks) with an advisory bench workflow that compiles weekly and runs the hot-path groups on dispatch
+- [x] supply-chain gate: `deny.toml` policy plus a weekly/push `cargo deny` audit workflow (it caught the yanked tokio 1.54.0)
 
 Still open:
 
-- [ ] forward elaboration diagnostics (`unresolved-name`, `width-mismatch`, non-constant generate bounds) to the editor through the language server
-- [ ] export to `.mat` (not implemented; the CSV/TXT export covers the current need)
 - [ ] inline python for writing your own process on signal values
 - [ ] signal bundles (AXI, Avalon and so on)
 - [ ] SpinalHDL support
@@ -250,5 +301,5 @@ Wave Insight is released under the **Apache License 2.0** — see [`LICENSE`](LI
 The editor bundled under `front-end/monaco` is [monaco-editor](https://github.com/microsoft/monaco-editor)
 0.44.0, which is **MIT**-licensed and is vendored unmodified from its npm
 release; its licence terms cover that directory. All Rust dependencies keep
-their own licences (run `cargo metadata`/`cargo deny`-style tooling if you need
-the full list).
+their own licences; the policy in [`deny.toml`](deny.toml) and the audit workflow
+are the authoritative check (`cargo deny check`).

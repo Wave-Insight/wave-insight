@@ -2515,6 +2515,24 @@ scenarios.wave2 = async (cdp) => {
   check('wave2: the csv has one line per change', lines.length > 3, lines.length);
   check('wave2: the csv value column uses the on-screen format',
     /^\d+,\S+$/.test(lines[1] || ''), lines.slice(1, 3));
+  // the same row also exports as a MATLAB level-5 file
+  await cdp.eval('window.__qa.click(".wave-more", 1)');
+  await sleep(400);
+  const matClicked = await cdp.eval('window.__qa.clickText(".modal .btn", "MAT (row)")');
+  let mat = null;
+  for (let i = 0; i < 50 && !mat; i++) {
+    await sleep(300);
+    const names = fs.existsSync(downloads) ? fs.readdirSync(downloads).filter((n) => n.endsWith('.mat')) : [];
+    for (const name of names) {
+      const full = path.join(downloads, name);
+      try { const stat = fs.statSync(full); if (stat.size > 0) { mat = { name: name, bytes: fs.readFileSync(full) }; } } catch (error) { /* still downloading */ }
+    }
+  }
+  note('mat download', mat ? { name: mat.name, bytes: mat.bytes.length } : null);
+  check('wave2: the MAT export produced a file', matClicked === 'ok' && !!mat, mat && mat.name);
+  check('wave2: the MAT file is a level-5 MAT-file',
+    !!mat && mat.bytes.length > 128 && mat.bytes.slice(124, 126).toString('hex') === '0001' && mat.bytes.slice(126, 128).toString() === 'IM',
+    mat && { header: mat.bytes.slice(0, 116).toString().replace(/\0+$/, ''), version: mat.bytes.slice(124, 128).toString('hex') });
   s = await state(cdp);
   note('export status', s.status);
   check('wave2: the export reports success in the status line', /export/i.test(s.status || ''), s.status);
@@ -2650,6 +2668,54 @@ scenarios.persistence = async (cdp) => {
   check('persistence: the remembered format is applied to the re-added row',
     !!active && active.indexOf('Bin') >= 0, active);
   check('persistence: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+};
+
+// --- Wave 4: the row list of a dump is remembered ---------------------------
+//
+// boot() clears storage, so this starts from nothing: add two rows, reload
+// without clearing, reopen the same file and the rows come back (in order, as
+// real rows whose value column decodes) because the dump identity and its row
+// list are persisted in localStorage.
+scenarios.session = async (cdp) => {
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(600);
+  await cdp.eval(`window.__qa.clickSignal('pc')`);
+  await sleep(700);
+  await cdp.eval(`window.__qa.clickSignal('clk')`);
+  await sleep(900);
+  let s = await state(cdp);
+  note('rows before the reload', s.waveNames);
+  check('session: two rows are on the wave before the reload', s.waveNames.length === 2, s.waveNames);
+  const stored = await cdp.eval('window.localStorage.getItem("wave-insight.sessions.v1")');
+  note('stored session', stored && stored.slice(0, 260));
+  check('session: the open row list is written for the dump',
+    !!stored && stored.indexOf('wave.vcd') >= 0 && stored.indexOf('top.pc') >= 0,
+    stored && stored.slice(0, 160));
+  // reload without clearing storage, then reopen the same file: the rows return
+  await cdp.send('Page.navigate', { url: APP_URL });
+  await waitFor(cdp, `!!window.__waveInsightLsp && !!document.querySelector('.app')`, 60000);
+  await cdp.eval(PAGE_HELPERS);
+  await sleep(1000);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(900);
+  s = await state(cdp);
+  note('rows after reopening the dump', s.waveNames);
+  check('session: reopening the same dump restores its rows in order',
+    s.waveNames.length === 2 && s.waveNames[0].includes('pc') && s.waveNames[1].includes('clk'),
+    s.waveNames);
+  // the restored rows are real rows: the value column decodes at the cursor
+  const surface = await cdp.eval(`window.__qa.rect('#wave-surface')`);
+  await cdp.clickAt(surface.x + 120, surface.y + 15);
+  await sleep(700);
+  const values = await cdp.eval(`window.__qa.texts('.wave-name-cell .wave-value')`);
+  note('restored value column', values);
+  check('session: the restored rows show decoded values',
+    values.length === 2 && values.filter((text) => !!text).length >= 1, values);
+  check('session: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-session.png');
 };
 
 // --- Wave 3: accessibility, keyboard and modal focus -----------------------

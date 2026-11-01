@@ -769,9 +769,14 @@ impl App {
                     .pending_load
                     .as_ref()
                     .map(|report| report.file_name.clone());
+                // the name and the size together are the identity the remembered
+                // row list is keyed by (the report is emitted before the handle,
+                // so it is already here)
+                let dump_bytes = self.pending_load.as_ref().map(|report| report.bytes);
                 self.store.dispatch(Action::DumpOpened {
                     waveform: waveform.clone(),
                     name: dump_name,
+                    bytes: dump_bytes,
                 });
                 // GHW has no cheap time-range hint: the store fell back to one
                 // body scan, so say where the ruler's numbers came from instead
@@ -795,6 +800,16 @@ impl App {
                     (Some(note), None) => note,
                     (None, Some(report)) => report.status(),
                     (None, None) => "waveform loaded".to_string(),
+                };
+                // a remembered session may contain rows this dump does not have
+                // (a signal was renamed, or the file is not quite the same one);
+                // say so once, next to the load line, instead of failing the open
+                let status = match self.store.select(|state| state.dump.session_restore) {
+                    Some(restore) if restore.skipped > 0 => format!(
+                        "{status} — {} remembered row(s) are not in this dump",
+                        restore.skipped
+                    ),
+                    _ => status,
                 };
                 self.note(Status::info(status));
                 true

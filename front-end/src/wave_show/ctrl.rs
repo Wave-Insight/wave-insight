@@ -104,6 +104,8 @@ pub enum Msg {
     ExportRowCsv,
     /// Download this row's values as TXT.
     ExportRowTxt,
+    /// Download this row's values as a MATLAB level-5 file.
+    ExportRowMat,
     /// Download every row's values as long-format CSV.
     ExportAllRowsCsv,
     /// A key pressed inside the dialog: Escape closes it, Tab stays inside.
@@ -170,6 +172,10 @@ impl Component for Ctrl {
             }
             Msg::ExportRowTxt => {
                 props.onexport.emit((ExportFormat::Txt, ExportScope::Row));
+                true
+            }
+            Msg::ExportRowMat => {
+                props.onexport.emit((ExportFormat::Mat, ExportScope::Row));
                 true
             }
             Msg::ExportAllRowsCsv => {
@@ -409,6 +415,9 @@ impl Component for Ctrl {
                             <button type="button" class="btn"
                                 title="Download this row's changes as plain text, one line per change"
                                 onclick={link.callback(|_| Msg::ExportRowTxt)}>{"TXT (row)"}</button>
+                            <button type="button" class="btn"
+                                title="Download this row's changes as a MATLAB level-5 file (NaN for x/z)"
+                                onclick={link.callback(|_| Msg::ExportRowMat)}>{"MAT (row)"}</button>
                             <button type="button" class="btn"
                                 title="Download every row's changes as a time,signal,value CSV"
                                 onclick={link.callback(|_| Msg::ExportAllRowsCsv)}>{"CSV (all rows)"}</button>

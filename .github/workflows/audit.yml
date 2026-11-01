@@ -1,0 +1,43 @@
+name: Audit
+
+# Supply-chain gate: cargo-deny over Cargo.lock with the policy in deny.toml
+# (advisories + licenses + bans + sources).
+#
+# It runs weekly on purpose: a new RustSec advisory must surface even when the
+# tree has not changed. deny.toml carries the reasoned ignores for the three
+# unmaintained tauri-1.x crates; vulnerabilities are never ignored there.
+on:
+  schedule:
+    # weekly, Monday 04:23 UTC
+    - cron: '23 4 * * 1'
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v4
+
+    # The action ships a pinned cargo-deny and refreshes the RustSec advisory
+    # database; the checks and the ignore list live in deny.toml, not here.
+    # It is a hard gate: a real advisory (like RUSTSEC-2026-0384 on tokio
+    # 1.54.0) must turn this red, not be papered over with continue-on-error.
+    - name: cargo deny check
+      uses: EmbarkStudios/cargo-deny-action@v2
+      with:
+        command: check
+        # cargo-deny's global flag: the action passes it before the command.
+        # Same result as the plain `cargo deny check` verified locally.
+        arguments: --all-features
+        log-level: warn
+      continue-on-error: false

@@ -71,10 +71,13 @@ pub enum Action {
     /// A dump was opened; the store owns the handle and derives the time
     /// range. `name` is the file the user picked, when there was one (a dump
     /// can also arrive as raw bytes with no name), and is what exports are
-    /// named after.
+    /// named after. `bytes` is the size the loader reported, when it did: the
+    /// pair is the identity the remembered row list is keyed by, so reopening
+    /// the same file restores its rows and a different file does not.
     DumpOpened {
         waveform: DumpHandle,
         name: Option<String>,
+        bytes: Option<u64>,
     },
     /// The zoom/pan was committed (one dispatch per gesture, never per move).
     ViewCommitted(View),

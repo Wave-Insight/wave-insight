@@ -1,0 +1,61 @@
+name: Benchmarks
+
+#ADVISORY ON PURPOSE: this workflow has no push/pull_request trigger, so it can
+#never become a required check - a noisy runner shows up in the report, it does
+#not block a merge. The weekly schedule only compiles the suite: a regression
+#needs two runs to compare, and that is what the dispatch trigger is for.
+on:
+  workflow_dispatch:
+  schedule:
+    #every Monday 06:00 UTC
+    - cron: '0 6 * * 1'
+
+#a new dispatch supersedes the run that is still benchmarking
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@v4
+
+    #the toolchain version lives in rust-toolchain.toml, do not repeat it here:
+    #`rustup show` downloads it and every later cargo call uses it
+    - name: Install the pinned toolchain
+      run: rustup show
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: benches
+
+    #always: `cargo test` never builds the bench profile, so without this step
+    #a dev-dependency bump or a `waveform` API change would break the suite
+    #silently until someone ran it by hand
+    - name: Build the benchmark suite
+      run: cargo bench -p wave-insight-lib --no-run --locked
+
+    #the groups users feel (open, decode, the time axis, the cursor readout);
+    #a full local run also has `window` and `render`
+    - name: Run the hot path benchmarks
+      if: github.event_name == 'workflow_dispatch'
+      timeout-minutes: 20
+      #criterion takes one positional FILTER (a regex), not a list of names
+      run: cargo bench -p wave-insight-lib --locked -- 'open|decode|time_range_hint|value_at'
+
+    #`html_reports` writes the plots and the summary table under target/criterion
+    - name: Upload the criterion report
+      if: always() && github.event_name == 'workflow_dispatch'
+      uses: actions/upload-artifact@v4
+      with:
+        name: criterion-report
+        path: target/criterion
+        retention-days: 14

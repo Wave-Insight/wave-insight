@@ -18,10 +18,12 @@
 //!
 //! Client notifications: `initialized`, `textDocument/didOpen`, `didChange`,
 //! `didSave`, `didClose`.  After every document notification the server queues a
-//! `textDocument/publishDiagnostics` carrying the design database's diagnostics
-//! for that document (parse errors, skipped constructs, unresolved names); the
-//! queue is drained with [`LspServer::take_notifications`].  Completion is still
-//! out of scope.
+//! `textDocument/publishDiagnostics` for that document merging the design
+//! database diagnostics (parse errors, skipped constructs) with the elaboration
+//! diagnostics (unresolved names, width mismatches, non-constant generate
+//! bounds); `set_top` republishes every open document because a different root
+//! can change those warnings.  The queue is drained with
+//! [`LspServer::take_notifications`].  Completion is still out of scope.
 //!
 //! # Which signal does a position mean?
 //!
@@ -144,9 +146,14 @@ impl LspServer {
     /// Force the elaboration root, e.g. the top module the waveform UI picked.
     /// `None` restores automatic root detection (a module no other module
     /// instantiates).
+    ///
+    /// Changing the root can change every elaboration diagnostic (unresolved
+    /// names, width mismatches, ...), so the diagnostics of every open document
+    /// are republished.
     pub fn set_top(&mut self, top: Option<String>) {
         self.top = top;
         self.design_dirty = true;
+        self.publish_all_document_diagnostics();
     }
 
     /// Override the hover markup preference (the client's `initialize`
@@ -474,29 +481,60 @@ impl LspServer {
 
     /// Queue a `textDocument/publishDiagnostics` notification for `uri`.
     ///
-    /// The design database keeps diagnostics for every file it parsed; only the
-    /// ones whose span is in *this* document are published (diagnostics from an
-    /// included file belong to a different document and are published when that
-    /// file is opened).  Diagnostics without a span cannot be placed in an
-    /// editor; they are skipped rather than pinned to line 0.  The document's
-    /// version travels with the notification so a client can drop stale answers.
+    /// Two sources are merged, both filtered to spans in *this* document:
+    ///
+    /// 1. the design database diagnostics (parse errors, skipped constructs,
+    ///    duplicate declarations) and
+    /// 2. the elaboration diagnostics ([`ElaboratedDesign::diagnostics`]:
+    ///    unresolved names, width mismatches, non-constant generate bounds, ...).
+    ///
+    /// Elaboration is the same lazily cached one the hover/definition requests
+    /// use: the first publication after a change pays for the elaboration that
+    /// the next query would run anyway, later publications reuse the cache.  A
+    /// diagnostic that both sources report on the same span/kind/message is
+    /// published once.  Diagnostics without a span cannot be placed in an
+    /// editor and are skipped rather than pinned to line 0; diagnostics whose
+    /// span is in another file are published when that file is opened.  The
+    /// document version travels with the notification so a client can drop
+    /// stale answers.
     fn publish_document_diagnostics(&mut self, uri: &str) {
+        self.ensure_design();
         let diagnostics: Vec<Json> = {
             let Some(document) = self.documents.iter().find(|document| document.uri == uri) else {
                 return;
             };
             let path = document.path.as_path();
-            self.db
-                .diagnostics()
-                .iter()
-                .filter_map(|diagnostic| {
-                    let span = diagnostic.span.as_ref()?;
-                    if span.file.as_path() != path {
-                        return None;
+            let mut seen = HashSet::new();
+            let mut diagnostics = Vec::new();
+            let mut add = |diagnostic: &Diagnostic, span: &Span| {
+                let key = (
+                    span.clone(),
+                    diagnostic.severity,
+                    diagnostic.kind,
+                    diagnostic.message.clone(),
+                );
+                if !seen.insert(key) {
+                    return;
+                }
+                diagnostics.push(diagnostic_json(diagnostic, document.span_range(span)));
+            };
+            for diagnostic in self.db.diagnostics() {
+                if let Some(span) = &diagnostic.span {
+                    if span.file.as_path() == path {
+                        add(diagnostic, span);
                     }
-                    Some(diagnostic_json(diagnostic, document.span_range(span)))
-                })
-                .collect()
+                }
+            }
+            if let Some(design) = self.design.as_ref() {
+                for diagnostic in design.diagnostics() {
+                    if let Some(span) = &diagnostic.span {
+                        if span.file.as_path() == path {
+                            add(diagnostic, span);
+                        }
+                    }
+                }
+            }
+            diagnostics
         };
         let Some(version) = self
             .documents
@@ -514,6 +552,21 @@ impl LspServer {
                 ("diagnostics", Json::Array(diagnostics)),
             ]),
         ));
+    }
+
+    /// Republish every open document's diagnostics.
+    ///
+    /// Called after the elaboration root changes, since a different top module
+    /// can turn elaboration warnings on or off for any open file.
+    fn publish_all_document_diagnostics(&mut self) {
+        let uris: Vec<String> = self
+            .documents
+            .iter()
+            .map(|document| document.uri.clone())
+            .collect();
+        for uri in uris {
+            self.publish_document_diagnostics(&uri);
+        }
     }
 
     /// Queue an empty `textDocument/publishDiagnostics` so the editor drops the
@@ -2205,5 +2258,184 @@ mod tests {
         assert_eq!(params.get_str("uri"), Some(uri));
         assert_eq!(params.get_i64("version"), Some(1));
         assert_eq!(params.get_array("diagnostics").map(<[Json]>::len), Some(0));
+    }
+
+    #[test]
+    fn a_preloaded_database_and_document_publish_elaboration_diagnostics() {
+        let absolute = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join("wave-insight-lib/tests/data/link_errors.sv");
+        let db = DesignDb::load_files([absolute.clone()]);
+        let mut server = LspServer::with_db(db);
+        initialize(&mut server);
+        server.set_top(Some("width_top".to_owned()));
+        let uri = uri::to_uri(&absolute);
+        let text = std::fs::read_to_string(&absolute).expect("read");
+        did_open(&mut server, &uri, &text);
+        let notifications = published(take_notifications(&mut server));
+        assert_eq!(notifications.len(), 1, "{notifications:?}");
+        let diagnostics = notifications[0]
+            .get("params")
+            .and_then(|params| params.get_array("diagnostics"))
+            .expect("diagnostics");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.get_str("code") == Some("width-mismatch")),
+            "the elaboration diagnostic of the preloaded design was not published: {diagnostics:?}"
+        );
+    }
+
+    // -- elaboration diagnostics merged into publishDiagnostics ------------
+
+    #[test]
+    fn top_module_change_republishes_elaboration_diagnostics() {
+        let mut server = LspServer::with_db(DesignDb::load_files([fixture("link_errors.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "link_errors.sv");
+        // The automatic top is the first uninstantiated module (link_top), so
+        // the first publication carries its unresolved names.
+        let _first = published(take_notifications(&mut server));
+
+        server.set_top(Some("width_top".to_owned()));
+        let notifications = published(take_notifications(&mut server));
+        assert_eq!(notifications.len(), 1, "{notifications:?}");
+        let params = notifications[0].get("params").expect("params");
+        assert_eq!(params.get_str("uri"), Some(uri.as_str()));
+        let diagnostics = params.get_array("diagnostics").expect("diagnostics array");
+
+        let width: Vec<&Json> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.get_str("code") == Some("width-mismatch"))
+            .collect();
+        assert_eq!(
+            width.len(),
+            1,
+            "expected one width mismatch: {diagnostics:?}"
+        );
+        let diagnostic = width[0];
+        assert_eq!(diagnostic.get_i64("severity"), Some(2));
+        assert_eq!(diagnostic.get_str("source"), Some("wave-insight"));
+        assert!(
+            diagnostic
+                .get_str("message")
+                .unwrap_or_default()
+                .contains("4 bits"),
+            "{diagnostic:?}"
+        );
+        // The range points at the port connection in the opened document.
+        let text = fixture_text("link_errors.sv");
+        let (start_line, start_character, end_line, end_character) = diagnostic_range(diagnostic);
+        let expected = position_of(&text, "u_short");
+        assert_eq!(start_line, i64::from(expected.line), "{diagnostic:?}");
+        assert!(start_character >= 0 && end_line >= start_line);
+        assert!(end_character < 200);
+    }
+
+    #[test]
+    fn unresolved_names_are_published_for_the_document() {
+        let mut server = LspServer::with_db(DesignDb::load_files([fixture("link_errors.sv")]));
+        initialize(&mut server);
+        // The top is configured before the file is opened, like a host that
+        // knows the root from the waveform view.
+        server.set_top(Some("link_top".to_owned()));
+        let uri = open_fixture(&mut server, "link_errors.sv");
+        let notifications = published(take_notifications(&mut server));
+        assert_eq!(notifications.len(), 1, "{notifications:?}");
+        let params = notifications[0].get("params").expect("params");
+        assert_eq!(params.get_str("uri"), Some(uri.as_str()));
+        let diagnostics = params.get_array("diagnostics").expect("diagnostics");
+        let unresolved: Vec<&str> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.get_str("code") == Some("unresolved-name"))
+            .filter_map(|diagnostic| diagnostic.get_str("message"))
+            .collect();
+        assert!(
+            unresolved
+                .iter()
+                .any(|message| message.contains("missing_load")),
+            "{unresolved:?}"
+        );
+        assert!(
+            unresolved
+                .iter()
+                .any(|message| message.contains("missing_driver")),
+            "{unresolved:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.get_i64("severity") == Some(2)),
+            "elaboration diagnostics are warnings: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_are_attributed_to_their_own_document() {
+        let mut server = LspServer::with_db(DesignDb::load_files([fixture("link_errors.sv")]));
+        initialize(&mut server);
+        server.set_top(Some("link_top".to_owned()));
+
+        // Two documents in one server: a parse error and an elaboration warning.
+        let broken_uri = uri::to_uri(&fixture("malformed.sv"));
+        did_open(&mut server, &broken_uri, &fixture_text("malformed.sv"));
+        let link_uri = open_fixture(&mut server, "link_errors.sv");
+        let notifications = published(take_notifications(&mut server));
+        assert_eq!(notifications.len(), 2, "{notifications:?}");
+
+        let codes = |uri: &str| -> Vec<String> {
+            let notification = notifications
+                .iter()
+                .find(|notification| {
+                    notification
+                        .get("params")
+                        .and_then(|params| params.get_str("uri"))
+                        == Some(uri)
+                })
+                .unwrap_or_else(|| panic!("no diagnostics for {uri}"));
+            notification
+                .get("params")
+                .and_then(|params| params.get_array("diagnostics"))
+                .expect("diagnostics")
+                .iter()
+                .filter_map(|diagnostic| diagnostic.get_str("code").map(str::to_owned))
+                .collect()
+        };
+        assert!(
+            codes(&broken_uri).iter().any(|code| code == "parse"),
+            "{:?}",
+            codes(&broken_uri)
+        );
+        assert!(
+            !codes(&link_uri).iter().any(|code| code == "parse"),
+            "the clean file must not inherit another document's parse error: {:?}",
+            codes(&link_uri)
+        );
+        assert!(
+            codes(&link_uri)
+                .iter()
+                .any(|code| code == "unresolved-name"),
+            "{:?}",
+            codes(&link_uri)
+        );
+    }
+
+    #[test]
+    fn a_clean_top_publishes_an_empty_array_after_the_top_is_set() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("top.sv"), fixture("cpu.sv")]));
+        initialize(&mut server);
+        server.set_top(Some("top".to_owned()));
+        let uri = open_fixture(&mut server, "top.sv");
+        let notifications = published(take_notifications(&mut server));
+        assert_eq!(notifications.len(), 1, "{notifications:?}");
+        let params = notifications[0].get("params").expect("params");
+        assert_eq!(params.get_str("uri"), Some(uri.as_str()));
+        assert_eq!(
+            params.get_array("diagnostics").map(<[Json]>::len),
+            Some(0),
+            "{params:?}"
+        );
     }
 }

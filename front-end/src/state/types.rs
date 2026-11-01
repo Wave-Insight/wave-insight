@@ -72,6 +72,53 @@ impl std::fmt::Debug for DumpHandle {
     }
 }
 
+/// The identity a remembered row list is keyed by.
+///
+/// The loader reports the file name it read and, through `LoadReport.bytes`, its
+/// size; two different dumps can share a name, so the size is part of the key
+/// when it is known. A dump that arrives as raw bytes with no name has no
+/// identity and nothing is remembered for it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DumpId {
+    pub name: String,
+    pub bytes: Option<u64>,
+}
+
+impl DumpId {
+    pub fn new(name: impl Into<String>, bytes: Option<u64>) -> Self {
+        Self {
+            name: name.into(),
+            bytes,
+        }
+    }
+
+    /// Whether two identities describe the same dump.
+    ///
+    /// The name must match. When both sides know the byte size it must match
+    /// too; a size one side does not know (a transport that hands the bytes over
+    /// directly, or a payload written before sizes were recorded) is not a
+    /// mismatch.
+    pub fn matches(&self, other: &Self) -> bool {
+        self.name == other.name
+            && match (self.bytes, other.bytes) {
+                (Some(mine), Some(theirs)) => mine == theirs,
+                _ => true,
+            }
+    }
+}
+
+/// What the last `DumpOpened` restored from the remembered session.
+///
+/// The reducer only reports it; the app turns it into one line of status text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionRestore {
+    /// Rows that were put back on the wave.
+    pub restored: usize,
+    /// Remembered rows whose signal is not in the dump (or whose bit does not
+    /// fit the bus). They are skipped, never an error.
+    pub skipped: usize,
+}
+
 /// The opened dump, as the store holds it.
 ///
 /// The handle is the source of truth (`State.dump`); the time range is derived
@@ -87,6 +134,22 @@ pub struct Dump {
     /// cheap header hint: true for GHW, and for a dump whose header the hint
     /// cannot parse.
     pub range_from_body: bool,
+    /// Size of the file the loader read, when it reported one; part of the
+    /// identity the remembered row list is keyed by.
+    pub bytes: Option<u64>,
+    /// What opening this dump restored from the remembered session, for the
+    /// status line. `None` when the dump had no remembered session.
+    pub session_restore: Option<SessionRestore>,
+}
+
+impl Dump {
+    /// The identity the remembered row list is keyed by; `None` for a dump that
+    /// arrived as raw bytes with no name (nothing is remembered for it).
+    pub fn identity(&self) -> Option<DumpId> {
+        self.name
+            .as_ref()
+            .map(|name| DumpId::new(name.clone(), self.bytes))
+    }
 }
 
 /// Width of the sidebar when nothing else was chosen.

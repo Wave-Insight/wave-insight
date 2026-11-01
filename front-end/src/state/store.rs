@@ -58,8 +58,9 @@ impl Store {
         Self::with_persister(None)
     }
 
-    /// The store, with the layout and the per-signal settings restored from the
-    /// last session and written back when they change.
+    /// The store, with the layout, the per-signal settings and the remembered
+    /// row lists restored from the last session and written back when they
+    /// change.
     ///
     /// `persister` is `None` when the browser has no usable `localStorage`
     /// (private mode) — the app then starts with its defaults, exactly like
@@ -69,6 +70,7 @@ impl Store {
         if let Some(persister) = &persister {
             state.layout = persister.restored_layout().clamped();
             state.row_prefs = persister.restored_rows();
+            state.sessions = persister.restored_sessions();
         }
         Self(Rc::new(Inner {
             state: RefCell::new(state),
@@ -325,6 +327,69 @@ mod tests {
         let c = Store::new();
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn a_persisted_store_remembers_the_rows_of_the_open_dump() {
+        use crate::state::persist::{MemoryStorage, Persister, SESSIONS_KEY};
+        use crate::state::DumpHandle;
+
+        let bytes = include_bytes!("../../../qa/fixtures/wave.vcd").to_vec();
+
+        fn open(store: &Store, bytes: &[u8], size: u64) {
+            let waveform = wave_insight_lib::waveform::Waveform::open_bytes(bytes.to_vec())
+                .expect("the vcd fixture opens");
+            store.dispatch(Action::DumpOpened {
+                waveform: DumpHandle::new(waveform),
+                name: Some("wave.vcd".to_string()),
+                bytes: Some(size),
+            });
+        }
+
+        let storage = MemoryStorage::new();
+        {
+            let persister = StdRc::new(Persister::load(Box::new(storage.clone())));
+            let store = Store::with_persister(Some(persister));
+            open(&store, &bytes, bytes.len() as u64);
+            for path in ["top.pc", "top.clk"] {
+                store.dispatch(Action::RowAdded {
+                    path: path.to_string(),
+                    name: path.to_string(),
+                    width: 8,
+                    load: Vec::new(),
+                    drive: Vec::new(),
+                    bit: None,
+                });
+            }
+        }
+        let stored = storage
+            .raw(SESSIONS_KEY)
+            .expect("the sessions key is written");
+        assert!(
+            stored.contains("wave.vcd") && stored.contains("top.pc"),
+            "{stored}"
+        );
+
+        // a reload: opening the same dump puts the rows back, in order
+        let persister = StdRc::new(Persister::load(Box::new(storage.clone())));
+        let store = Store::with_persister(Some(persister));
+        open(&store, &bytes, bytes.len() as u64);
+        let names = |store: &Store| -> Vec<String> {
+            store.select(|state| {
+                state
+                    .rows
+                    .items
+                    .iter()
+                    .map(|row| row.path.clone())
+                    .collect::<Vec<String>>()
+            })
+        };
+        assert_eq!(names(&store), vec!["top.pc", "top.clk"]);
+
+        // a file with the same name but another size is not this dump: the
+        // current list is left alone
+        open(&store, &bytes, bytes.len() as u64 + 1);
+        assert_eq!(names(&store), vec!["top.pc", "top.clk"]);
     }
 
     #[test]

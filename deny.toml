@@ -1,0 +1,96 @@
+# Supply-chain policy for cargo deny check (CI: .github/workflows/audit.yml).
+#
+# Verified locally with cargo-deny 0.20.2 against Cargo.lock on 2026-11-02:
+#   cargo deny check advisories licenses bans sources
+# The advisory DB is the RustSec repository; the audit workflow refreshes it.
+
+[graph]
+# No target filter: the tree ships for wasm32, windows, linux and macos, so the
+# platform-specific crates (gtk/webkit, windows-sys, ...) are audited too.
+targets = []
+
+[output]
+feature-depth = 1
+
+[advisories]
+# Lint level for crates that have been yanked from crates.io.
+yanked = "deny"
+
+# Ignored advisories. All three are "unmaintained", build-time or transitive in
+# the tauri 1.x desktop stack; none is a vulnerability and none has a safe
+# upgrade inside the 1.x line. They are re-checked when tauri 2 lands, which
+# removes every one of them.
+#
+# Vulnerabilities are NEVER ignored here: RUSTSEC-2026-0384 (tokio 1.54.0, a
+# race condition in tokio::time::Interval, crate yanked) was found by this
+# policy and is fixed by the lockfile bump
+#   cargo update -p tokio --precise 1.54.1
+# not by an entry in this list.
+ignore = [
+  # proc-macro-error 1.0.4 -> glib-macros/gtk3-macros, i.e. the Linux GTK build
+  # of tauri 1.x. Build-time proc-macro code; it is not shipped in the app or
+  # the wasm bundle.
+  { id = "RUSTSEC-2024-0370", reason = "unmaintained, build-time only (gtk3-macros via tauri 1.x); removed by the tauri 2 migration" },
+  # instant 0.1.13 -> tao/wry/tauri-runtime-wry (tauri 1.x). No safe upgrade in
+  # the 1.x line; removed by the tauri 2 migration.
+  { id = "RUSTSEC-2024-0384", reason = "unmaintained, only reachable through tauri 1.x (tao/wry); no 1.x replacement, removed by the tauri 2 migration" },
+  # fxhash 0.2.1 -> selectors/kuchikiki, which tauri-utils uses at build time to
+  # rewrite HTML. Build-time only; removed by the tauri 2 migration.
+  { id = "RUSTSEC-2025-0057", reason = "unmaintained, build-time only (tauri-utils -> kuchikiki); removed by the tauri 2 migration" },
+]
+
+[licenses]
+# Every license the tree actually carries (cargo deny list, 2026-11-02). Keep
+# this list explicit: a new dependency with a new license must be a review
+# decision, not a surprise.
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.8
+
+# r-efi is the only LGPL crate in the tree: getrandom 0.4 pulls it for UEFI
+# targets only. It is not compiled for any target this project ships, so it is
+# allowed per-crate instead of opening LGPL up globally.
+[[licenses.exceptions]]
+crate = "r-efi"
+allow = ["LGPL-2.1-or-later"]
+
+[licenses.private]
+# Workspace crates are not published; they are licensed through
+# [workspace.package] license = "Apache-2.0" in the root Cargo.toml.
+ignore = false
+
+[bans]
+# The tauri 1.x / yew 0.19 tree legitimately carries duplicate major versions
+# (syn 1/2/3, windows-sys, base64, ...). Report them, do not fail on them: the
+# dependency graph is the tauri 2 migration's job, not the audit gate's.
+multiple-versions = "warn"
+# The only wildcard hits are the internal path dependencies
+# (wave-insight-lib = { path = "..." } without a version key in back-end,
+# front-end and src-tauri). That is a manifest question owned by another
+# change: once those carry `version = "0.7.0"`, flip this to "deny".
+wildcards = "warn"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# No crate is banned today. To ban one, add:
+#   deny = [{ crate = "some-crate", reason = "why" }]
+
+[sources]
+# Everything comes from crates.io; a git or unknown-registry dependency must be
+# a deliberate change (and a review decision), so fail on it.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

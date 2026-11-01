@@ -36,6 +36,10 @@ pub enum ExportFormat {
     Csv,
     /// `<time> <value>` per line; one row only.
     Txt,
+    /// MATLAB level 5 binary: two double columns (`wave_time` and the
+    /// signal) for one row. `x`/`z` bits become `NaN`, because a MAT double
+    /// cannot carry an unknown bit.
+    Mat,
 }
 
 impl ExportFormat {
@@ -43,6 +47,7 @@ impl ExportFormat {
         match self {
             ExportFormat::Csv => "csv",
             ExportFormat::Txt => "txt",
+            ExportFormat::Mat => "mat",
         }
     }
 
@@ -50,7 +55,14 @@ impl ExportFormat {
         match self {
             ExportFormat::Csv => "text/csv;charset=utf-8",
             ExportFormat::Txt => "text/plain;charset=utf-8",
+            ExportFormat::Mat => "application/x-matlab-data",
         }
+    }
+
+    /// `true` when the file is binary (the caller then downloads bytes, not
+    /// a string).
+    pub fn is_binary(self) -> bool {
+        matches!(self, ExportFormat::Mat)
     }
 }
 
@@ -94,6 +106,139 @@ pub struct ExportRow<'a> {
     pub width: usize,
     /// The decoded history, sorted by time.
     pub changes: &'a [Change],
+}
+
+// -- MATLAB level 5 -------------------------------------------------------
+
+/// Numeric value of one change for the MAT export.
+///
+/// MAT has no unknown bit: an `x`/`z` bit, a string or an event becomes `NaN`.
+/// A signed row is sign-extended like the screen readout and an active
+/// fixed-point exponent divides by `2^exp`, so the numbers match the value
+/// column.
+fn mat_value(value: &WaveValue, format: &ValueFormat) -> f64 {
+    let number = match value {
+        WaveValue::Real(number) => *number,
+        other => {
+            let Some(bits) = other.as_bits() else {
+                return f64::NAN;
+            };
+            let Some(raw) = bits.as_u64() else {
+                return f64::NAN;
+            };
+            let width = bits.width();
+            let signed = format.show == wave_insight_lib::data_struct::ShowType::SInt
+                && (1..=63).contains(&width);
+            if signed {
+                let modulus = 1i64 << width;
+                let value = if raw & (1u64 << (width - 1)) != 0 {
+                    raw as i64 - modulus
+                } else {
+                    raw as i64
+                };
+                value as f64
+            } else {
+                raw as f64
+            }
+        }
+    };
+    match format.fixed_point {
+        Some(exponent) => number / 2f64.powi(exponent.min(63) as i32),
+        None => number,
+    }
+}
+
+/// One MAT-file data element: `[u32 type][u32 size][payload padded to 8]`.
+///
+/// The small-data-element form (payload of 4 bytes or fewer folded into the
+/// tag) is never produced here: every payload this writer emits is larger than
+/// that, including the variable names (see [`mat_variable_name`]).
+fn mat_element(out: &mut Vec<u8>, kind: u32, payload: &[u8]) {
+    out.extend_from_slice(&kind.to_le_bytes());
+    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(payload);
+    let padding = (8 - payload.len() % 8) % 8;
+    out.extend(std::iter::repeat_n(0u8, padding));
+}
+
+/// One MATLAB variable: an `n x 1` `double` matrix inside a MAT v5 file.
+fn mat_matrix(out: &mut Vec<u8>, name: &str, values: &[f64]) {
+    let mut content = Vec::new();
+    // array flags: mxDOUBLE_CLASS (6) in the high byte, nzmax 0
+    let mut flags = Vec::with_capacity(8);
+    flags.extend_from_slice(&(6u32 << 8).to_le_bytes());
+    flags.extend_from_slice(&0u32.to_le_bytes());
+    mat_element(&mut content, 6, &flags);
+    // dimensions
+    let mut dimensions = Vec::with_capacity(8);
+    dimensions.extend_from_slice(&(values.len() as u32).to_le_bytes());
+    dimensions.extend_from_slice(&1u32.to_le_bytes());
+    mat_element(&mut content, 5, &dimensions);
+    // array name (miINT8)
+    mat_element(&mut content, 1, name.as_bytes());
+    // the real part
+    let mut data = Vec::with_capacity(values.len() * 8);
+    for value in values {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+    mat_element(&mut content, 9, &data);
+    // the matrix element itself
+    out.extend_from_slice(&14u32.to_le_bytes());
+    out.extend_from_slice(&(content.len() as u32).to_le_bytes());
+    out.extend_from_slice(&content);
+}
+
+/// A MATLAB-safe variable name for a signal display name.
+///
+/// Letters, digits and `_` only, starting with a letter, at most 63 characters
+/// (`top.pc[7:0]` becomes `sig_top_pc_7_0`). It is always longer than four bytes
+/// so the writer never has to use the small-element tag form.
+pub fn mat_variable_name(display: &str) -> String {
+    let mut name = String::with_capacity(display.len() + 4);
+    name.push_str("sig_");
+    for character in display.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            name.push(character);
+        } else {
+            name.push('_');
+        }
+        if name.len() >= 63 {
+            break;
+        }
+    }
+    name
+}
+
+/// One row as a MATLAB level-5 `.mat` file.
+///
+/// Two variables: `wave_time` (double, seconds as written by the dump) and the
+/// sanitized signal name (double, see [`mat_value`]); both are `n x 1` so
+/// `plot(wave_time, sig_top_pc_7_0)` works in MATLAB/Octave. The file is written
+/// little-endian (`IM`) with version `0x0100`.
+pub fn row_mat(row: &ExportRow<'_>) -> Result<Vec<u8>, ExportError> {
+    let estimated = row.changes.len().saturating_mul(16).saturating_add(1024);
+    if estimated > MAX_EXPORT_BYTES {
+        return Err(ExportError::TooLarge {
+            limit: MAX_EXPORT_BYTES,
+        });
+    }
+    let mut out = vec![0u8; 128];
+    let header = b"MATLAB 5.0 MAT-file, Wave Insight";
+    out[..header.len()].copy_from_slice(header);
+    // subsystem data offset stays 0; version 0x0100 little endian, then `IM`
+    out[124] = 0x00;
+    out[125] = 0x01;
+    out[126] = b'I';
+    out[127] = b'M';
+    let times: Vec<f64> = row.changes.iter().map(|(time, _)| *time as f64).collect();
+    let values: Vec<f64> = row
+        .changes
+        .iter()
+        .map(|(_, value)| mat_value(value, &row.format))
+        .collect();
+    mat_matrix(&mut out, "wave_time", &times);
+    mat_matrix(&mut out, &mat_variable_name(&row.name), &values);
+    Ok(out)
 }
 
 /// One row as `time,value` CSV, one line per change.
@@ -268,16 +413,33 @@ pub fn rows_status(rows: usize, changes: usize, bytes: usize) -> String {
 /// by the host tests (there is no `window` there); the browser QA run is the
 /// only place this path is exercised.
 pub fn download(file_name: &str, mime: &str, text: &str) -> Result<(), String> {
-    let window = web_sys::window().ok_or("the browser window is gone")?;
-    let document = window.document().ok_or("the page has no document")?;
-
     let options = web_sys::BlobPropertyBag::new();
     options.set_type(mime);
     let parts = js_sys::Array::new();
     parts.push(&wasm_bindgen::JsValue::from_str(text));
     let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &options)
         .map_err(|_| "the browser refused to build the file".to_string())?;
-    let url = web_sys::Url::create_object_url_with_blob(&blob)
+    save_blob(file_name, &blob)
+}
+
+/// Download raw bytes (the MAT writer produces a binary file).
+pub fn download_bytes(file_name: &str, mime: &str, bytes: &[u8]) -> Result<(), String> {
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(mime);
+    let array = js_sys::Uint8Array::new_with_length(bytes.len() as u32);
+    array.copy_from(bytes);
+    let parts = js_sys::Array::new();
+    parts.push(&array.buffer());
+    let blob = web_sys::Blob::new_with_buffer_source_sequence_and_options(&parts, &options)
+        .map_err(|_| "the browser refused to build the file".to_string())?;
+    save_blob(file_name, &blob)
+}
+
+/// Attach a blob to a temporary `<a download>` and click it.
+fn save_blob(file_name: &str, blob: &web_sys::Blob) -> Result<(), String> {
+    let window = web_sys::window().ok_or("the browser window is gone")?;
+    let document = window.document().ok_or("the page has no document")?;
+    let url = web_sys::Url::create_object_url_with_blob(blob)
         .map_err(|_| "the browser refused to create a download link".to_string())?;
 
     let anchor = document
@@ -510,6 +672,119 @@ mod tests {
         let changes = [(3u64, WaveValue::String("a,b".into()))];
         let csv = row_csv(&row("top.msg", &changes)).expect("fits");
         assert_eq!(csv, "time,value\n3,\"a,b\"\n");
+    }
+
+    // -- MATLAB export -----------------------------------------------------
+
+    /// Minimal MAT v5 reader for the bytes [`row_mat`] writes: `(name, values)`
+    /// for every top-level matrix.
+    fn read_mat(bytes: &[u8]) -> Vec<(String, Vec<f64>)> {
+        fn tag(bytes: &[u8], offset: &mut usize) -> (u32, usize) {
+            let kind = u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().expect("tag"));
+            let size =
+                u32::from_le_bytes(bytes[*offset + 4..*offset + 8].try_into().expect("size"));
+            *offset += 8;
+            (kind, size as usize)
+        }
+        fn pad(size: usize) -> usize {
+            (8 - size % 8) % 8
+        }
+        assert_eq!(&bytes[124..126], &[0x00, 0x01], "version 0x0100");
+        assert_eq!(&bytes[126..128], b"IM", "little endian");
+        let mut offset = 128;
+        let mut out = Vec::new();
+        while offset < bytes.len() {
+            let (kind, size) = tag(bytes, &mut offset);
+            assert_eq!(kind, 14, "miMATRIX");
+            let end = offset + size;
+            let (flags_kind, flags_size) = tag(bytes, &mut offset);
+            assert_eq!((flags_kind, flags_size), (6, 8));
+            let class =
+                u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("class")) >> 8;
+            assert_eq!(class, 6, "mxDOUBLE_CLASS");
+            offset += 8;
+            let (dims_kind, dims_size) = tag(bytes, &mut offset);
+            assert_eq!((dims_kind, dims_size), (5, 8));
+            let rows =
+                u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("rows")) as usize;
+            offset += 8;
+            let (name_kind, name_size) = tag(bytes, &mut offset);
+            assert_eq!(name_kind, 1, "miINT8 name");
+            let name =
+                String::from_utf8(bytes[offset..offset + name_size].to_vec()).expect("utf-8 name");
+            offset += name_size + pad(name_size);
+            let (data_kind, data_size) = tag(bytes, &mut offset);
+            assert_eq!(data_kind, 9, "miDOUBLE data");
+            let mut values = Vec::with_capacity(data_size / 8);
+            for index in 0..data_size / 8 {
+                let start = offset + index * 8;
+                values.push(f64::from_le_bytes(
+                    bytes[start..start + 8].try_into().expect("value"),
+                ));
+            }
+            offset += data_size + pad(data_size);
+            assert_eq!(offset, end, "the element size covers its payload");
+            assert_eq!(values.len(), rows);
+            out.push((name, values));
+        }
+        out
+    }
+
+    #[test]
+    fn a_row_exports_as_a_mat_v5_file_with_time_and_value() {
+        let changes = [
+            (0u64, bits(0x00, 8)),
+            (10, bits(0x2a, 8)),
+            (20, bits(0xff, 8)),
+        ];
+        let bytes = row_mat(&row("top.pc[7:0]", &changes)).expect("fits");
+        assert!(
+            bytes.len() > 128 && bytes.len().is_multiple_of(8),
+            "padded to 8 bytes"
+        );
+        let variables = read_mat(&bytes);
+        assert_eq!(variables.len(), 2);
+        assert_eq!(
+            variables[0],
+            ("wave_time".to_string(), vec![0.0, 10.0, 20.0])
+        );
+        assert_eq!(variables[1].0, "sig_top_pc_7_0_");
+        assert_eq!(variables[1].1, vec![0.0, 42.0, 255.0]);
+    }
+
+    #[test]
+    fn mat_values_are_signed_and_scaled_like_the_screen_and_unknown_bits_are_nan() {
+        let x = WaveValue::Bits(Bits::new_msb_first(vec![BitValue::X, BitValue::X]));
+        let changes = [(0u64, bits(0xf0, 8)), (5, x)];
+        let mut signed = row("top.q", &changes);
+        signed.format = ValueFormat {
+            show: ShowType::SInt,
+            fixed_point: None,
+        };
+        let bytes = row_mat(&signed).expect("fits");
+        let variables = read_mat(&bytes);
+        assert_eq!(variables[1].1[0], -16.0, "0xf0 as a signed 8 bit value");
+        assert!(variables[1].1[1].is_nan(), "an unknown bit has no number");
+        // fixed point scales the number, like the value column
+        let changes = [(0u64, bits(0x10, 8))];
+        let mut fixed = row("top.q", &changes);
+        fixed.format = ValueFormat {
+            show: ShowType::Hex,
+            fixed_point: Some(4),
+        };
+        let bytes = row_mat(&fixed).expect("fits");
+        let variables = read_mat(&bytes);
+        assert_eq!(variables[1].1, vec![1.0]);
+    }
+
+    #[test]
+    fn mat_variable_names_are_valid_matlab_identifiers() {
+        assert_eq!(mat_variable_name("top.pc[7:0]"), "sig_top_pc_7_0_");
+        assert_eq!(mat_variable_name("clk"), "sig_clk");
+        let long = mat_variable_name(&"x".repeat(200));
+        assert_eq!(long.len(), 63);
+        assert!(long.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        assert!(long.starts_with("sig_"));
     }
 
     #[test]

@@ -1223,16 +1223,28 @@ impl WaveShow {
                     width,
                     changes: decoded.changes(),
                 };
+                let file = export::file_name(&stem, Some(&name), format);
+                if format.is_binary() {
+                    let bytes = export::row_mat(&row).map_err(|error| error.message())?;
+                    export::download_bytes(&file, format.mime(), &bytes)?;
+                    return Ok(export::row_status(&name, row.changes.len(), bytes.len()));
+                }
                 let text = match format {
                     ExportFormat::Csv => export::row_csv(&row),
                     ExportFormat::Txt => export::row_txt(&row),
+                    ExportFormat::Mat => unreachable!("binary formats return above"),
                 }
                 .map_err(|error| error.message())?;
-                let file = export::file_name(&stem, Some(&name), format);
                 export::download(&file, format.mime(), &text)?;
                 Ok(export::row_status(&name, row.changes.len(), text.len()))
             }
             ExportScope::AllRows => {
+                if format.is_binary() {
+                    return Err(
+                        "MAT export is one row at a time — open a row's settings and export it there"
+                            .to_string(),
+                    );
+                }
                 // rows in row order; a row that is not in the dump contributes
                 // nothing instead of aborting the whole export
                 let mut decoded_rows: Vec<DecodedSignal> = Vec::new();
