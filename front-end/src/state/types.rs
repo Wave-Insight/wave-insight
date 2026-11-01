@@ -72,6 +72,35 @@ impl std::fmt::Debug for DumpHandle {
     }
 }
 
+/// A request to bring one source position into view.
+///
+/// Moved here from `nav::Goto` in R2 step 3: the store owns the pending jump
+/// (`State.nav.goto`), so the type it holds is plain state data. `nav` re-exports
+/// it for the panes and the language server, which keep their old spelling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Goto {
+    /// File name exactly as it was handed to `DesignState::add_source`, which is
+    /// also the label of the editor tab.
+    pub file: String,
+    /// 1 based line.
+    pub line: u32,
+    /// 1 based column; `0` means "no column, just the line".
+    pub col: u32,
+    /// Bumped for every request, so clicking the same declaration twice still
+    /// scrolls the editor.
+    pub token: u32,
+}
+
+/// The inspector selection.
+///
+/// `signal` is the hierarchical path selected in the wave view (the inspector
+/// shows its declaration, drivers and loads). Step 3b adds `instance`, the
+/// module-tree selection; it stays in `App`/`ModuleStruct` until then.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Focus {
+    pub signal: Option<String>,
+}
+
 /// The identity a remembered row list is keyed by.
 ///
 /// The loader reports the file name it read and, through `LoadReport.bytes`, its

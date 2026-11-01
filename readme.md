@@ -68,11 +68,15 @@ schedule and, on manual dispatch, runs the hot-path groups (`open`, `decode`,
 so a broken benchmark is noticed without letting a noisy runner block a merge.
 Indicative `--quick` numbers from one developer machine (measurements, not
 budgets): opening a small inline VCD 7.3 us / 1.7 MB 410 us / 8.3 MB 1.75 ms;
-the first trace-range scan 13.5 ms and 6.4 ns when cached; decoding 11.6 ms for
-one signal / 12.1 ms batched / 38 ns when cached; `value_at` 306 ns packed and
-147 ns decoded; a streamed window 9.1 / 13.2 / 46.2 ms; formatting 148 ns for a
-32-bit hex value and 271 us for a 2500-change row. The old `nightly-bench`
-feature gate still enables nothing and is not used by these benchmarks.
+the first trace-range scan 0.68 ms and 6.4 ns when cached (the VCD range is now
+read from the header plus a bounded tail scan, O(header + tail) instead of the
+whole body, which took it down from 13.5 ms on the 8.3 MB synthetic dump);
+decoding 11.6 ms for one signal / 11.8 ms sequentially / 12.1 ms batched / 38 ns
+when cached (the sequential decode got ~10% faster by reserving its allocation
+up front); `value_at` 306 ns packed and 147 ns decoded; a streamed window 9.1 /
+13.2 / 46.2 ms; formatting 148 ns for a 32-bit hex value and 271 us for a
+2500-change row. The old `nightly-bench` feature gate still enables nothing and
+is not used by these benchmarks.
 
 ### supply chain
 
@@ -96,7 +100,7 @@ a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
-and asserts the user-visible behaviour (the current matrix has 45 scenarios;
+and asserts the user-visible behaviour (the current matrix has 46 scenarios;
 `--list` prints them). Build the front end first, then run:
 
 ```bash
@@ -149,6 +153,16 @@ library, so installing it gives you no `cargo tauri` subcommand). The pinned
 `trunk build --features tauri` first (see `beforeBuildCommand` in
 `src-tauri/tauri.conf.json`) and then bundles the desktop app.
 
+### planned dependency migrations
+
+Two concrete migration plans live in `docs/migrations/` and are the next
+dependency step (Wave 6 in [`docs/roadmap.md`](docs/roadmap.md)):
+[`yew-0.21.md`](docs/migrations/yew-0.21.md) (yew 0.19 -> 0.21: the 12 class
+components, 74 `html!` sites and the breaking-change list) and
+[`tauri-2.md`](docs/migrations/tauri-2.md) (Tauri 1.x -> 2.x: the five commands,
+the config schema, webkit2gtk-4.1 and the CI/deny.toml consequences). Each lists
+the breaker list, the steps and the verification to run.
+
 ## Usage
 
 Load a `.vcd`, `.fst` or `.ghw` dump and any `.v`/`.sv` sources it came from.
@@ -186,6 +200,14 @@ placed.
   and published into the editor as monaco markers (squiggles); the top bar keeps
   an `N problem(s)` chip visible even when the source pane is collapsed. The
   merged diagnostics are republished when the top module changes.
+- **Find a value**: the ruler box (`time / value`) accepts either kind of query.
+  Type an integer and press Enter to move cursor 1 to that time (the old goto
+  behaviour); type anything else and press Enter to jump to the *next* change of
+  the selected row whose formatted value matches (Shift+Enter searches backwards).
+  Matching uses the same formatting as the value column, fixed point and x/z
+  included, and is case-insensitive. The status line reports
+  `found <value> in <row> at t=... (n/total)`; a miss is an error status. This is
+  the Verdi find-value flow.
 - **Big designs**: the sidebar module tree and signal list are virtualized above
   80 rows - only the rows inside the scroll viewport exist in the DOM, with
   spacers keeping the scrollbar the real length - so a dump with thousands of
@@ -274,7 +296,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 45 scenarios, own fixtures) with an advisory CI smoke job
+- [x] browser QA suite moved into the repository (`qa/`, 46 scenarios, own fixtures) with an advisory CI smoke job
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
@@ -286,6 +308,9 @@ Done in the next release (unreleased at the time of writing):
 - [x] session restore: the row list is remembered per dump identity (name + byte size; 20 dumps / 200 rows, LRU) and skipped rows are reported in one status line
 - [x] criterion benchmarks for the waveform hot paths (six groups / twenty benchmarks) with an advisory bench workflow that compiles weekly and runs the hot-path groups on dispatch
 - [x] supply-chain gate: `deny.toml` policy plus a weekly/push `cargo deny` audit workflow (it caught the yanked tokio 1.54.0)
+- [x] find a value in the selected row: type a value in the ruler box and press Enter (Shift+Enter searches backwards) to walk the changes with that formatted value (Verdi find-value flow)
+- [x] fast dump open: the VCD time range is found from the header plus a bounded tail scan instead of the whole body (~20x cheaper on the 8.3 MB benchmark)
+- [x] migration plans for yew 0.21 and Tauri 2 added under `docs/migrations/` (breaker lists, steps, verification)
 
 Still open:
 

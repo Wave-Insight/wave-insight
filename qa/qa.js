@@ -2765,6 +2765,44 @@ scenarios.a11y = async (cdp) => {
   check('a11y: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   await cdp.shot('qa-a11y.png');
 };
+// --- Wave 5: find a value in the selected row ------------------------------
+// The ruler box accepts a time (integer) or a value (anything else): Enter
+// finds the next change with that value, Shift+Enter the previous one.
+scenarios.findValue = async (cdp) => {
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(700);
+  await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(800);
+  // find-value works on the *selected* row: a plain click on the wave name
+  await cdp.eval('window.__qa.click(".wave-name-text", 0)');
+  await sleep(500);
+  // put cursor 1 at t=0 through the same box (the integer path) first
+  await cdp.eval('(function(){ var i = document.querySelector(".timebar-goto"); var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; set.call(i, "0"); i.dispatchEvent(new Event("input", {bubbles: true})); i.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true})); })()');
+  await sleep(700);
+  const before = await cdp.eval('window.__qa.debug().cursor1');
+  // type a value that exists later in wave.vcd (pc is 0x01 at t=10) and Enter
+  const typed = await cdp.eval('(function(){ var i = document.querySelector(".timebar-goto"); if (!i) return "no-input"; var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; set.call(i, "\'h01"); i.dispatchEvent(new Event("input", {bubbles: true})); i.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true})); return "ok"; })()');
+  await sleep(900);
+  const after = await cdp.eval('window.__qa.debug().cursor1');
+  let s = await state(cdp);
+  note('find value', { before: before, after: after, status: s.status });
+  check('findValue: the ruler box accepts a value', typed === 'ok', typed);
+  check('findValue: the cursor jumps to the next change with that value',
+    before === 0 && after === 10, { before: before, after: after });
+  check('findValue: the status line reports the match', /found/i.test(s.status || ''), s.status);
+  // an unknown value reports no match and does not move the cursor
+  await cdp.eval('(function(){ var i = document.querySelector(".timebar-goto"); var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; set.call(i, "no_such_value"); i.dispatchEvent(new Event("input", {bubbles: true})); i.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true})); })()');
+  await sleep(700);
+  const missed = await cdp.eval('window.__qa.debug().cursor1');
+  s = await state(cdp);
+  const tone = await cdp.eval('window.__qa.statusTone()');
+  note('find miss', { cursor: missed, status: s.status, tone: tone });
+  check('findValue: an unknown value reports no match', missed === after, { after: after, missed: missed });
+  check('findValue: the miss is an error status', /no match/i.test(s.status || '') && tone === 'error', { status: s.status, tone: tone });
+  check('findValue: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+};
 (async () => {
   const wanted = process.argv.slice(2);
   const names = wanted.length ? wanted : Object.keys(scenarios);

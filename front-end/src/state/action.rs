@@ -9,7 +9,7 @@
 //! multi-selection are owned by the reducer. The pane dispatches them and then
 //! renders from the resulting snapshot; it never mutates its own copy.
 
-use super::types::{Cursors, DumpHandle, Layout, Settings, Status, View};
+use super::types::{Cursors, DumpHandle, Focus, Layout, Settings, Status, View};
 
 // `Layout`, `SetEditorRatio` and `ClearStatus` are the rest of the surface the
 // later R2 steps use; keeping the enum stable makes those steps additive.
@@ -83,11 +83,47 @@ pub enum Action {
     ViewCommitted(View),
     /// The cursors were set or cleared by a click.
     CursorsChanged(Cursors),
+
+    /// A source file was read: it becomes an open editor document (and an LSP
+    /// document). Re-opening a file that is already open replaces its text.
+    SourceOpened { file: String, text: String },
+    /// An already open source was read again (the picker re-read the file).
+    SourceReloaded { file: String, text: String },
+    /// A tab was closed: the document leaves the editor and the LSP table, but
+    /// stays in the design database, so declarations keep resolving.
+    SourceClosed { index: usize },
+    /// A tab was clicked.
+    TabActivated { index: usize },
+    /// The inspector selection changed (the signal selected in the wave view).
+    FocusChanged { focus: Focus },
+    /// A position was asked for (a declaration, a driver/load, an LSP answer).
+    /// The reducer validates the file is open and assigns the token.
+    JumpRequested { file: String, line: u32, col: u32 },
+    /// The editor applied jump `token`; a matching pending request is cleared.
+    JumpHandled { token: u32 },
+    /// The elaborated top module changed (the app reads it from the design).
+    TopChanged { top: Option<String> },
 }
 
 /// Work the reducer may not do itself: I/O, the LSP, the editor.
 ///
-/// Empty until the later steps (row actions only touch the store); steps 3-4 add
-/// the variants that decode and keep the language server in sync.
-#[derive(Debug)]
-pub enum Effect {}
+/// `reduce` returns these and `App` drains them after the dispatch
+/// (docs/state-store.md §2.5). The store is the single owner of the open
+/// documents; the bridge's document table is a *mirror* kept in sync by the
+/// first three variants, which is what keeps
+/// `window.__waveInsightLsp.stats().documents` reporting the open-document
+/// count (the QA matrix asserts it: two after two sources, one after a close).
+#[derive(Debug, PartialEq)]
+pub enum Effect {
+    /// `textDocument/didOpen` for a document that just became open.
+    LspOpen { file: String, text: String },
+    /// `textDocument/didChange` for a document whose buffer changed.
+    LspChange { file: String, text: String },
+    /// `textDocument/didClose` for a document that is no longer open.
+    LspClose { file: String },
+    /// The server is told which module to elaborate from.
+    LspTop { top: Option<String> },
+    /// A jump was requested. The `nav.goto` slice already drives the editor; this
+    /// variant is the seam step 4 uses to focus the editor window explicitly.
+    MonacoShow { file: String, line: u32, col: u32 },
+}

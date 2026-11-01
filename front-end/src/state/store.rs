@@ -464,4 +464,31 @@ mod tests {
         assert_eq!(reloaded.restored_layout().sidebar_w, 420.0);
         assert_eq!(reloaded.restored_rows().setting_for("top.pc"), setting);
     }
+
+    #[test]
+    fn a_source_action_returns_the_lsp_effects_the_app_executes() {
+        let store = Store::new();
+        let effects = store.dispatch(Action::SourceOpened {
+            file: "top.sv".into(),
+            text: "// top\n".into(),
+        });
+        // the store owns the document; the bridge mirror is updated by the effect
+        assert_eq!(
+            effects,
+            vec![crate::state::Effect::LspOpen {
+                file: "top.sv".into(),
+                text: "// top\n".into()
+            }]
+        );
+        assert_eq!(store.select(|state| state.sources.len()), 1);
+        // closing it asks for the didClose, and the document is gone
+        let effects = store.dispatch(Action::SourceClosed { index: 0 });
+        assert_eq!(
+            effects,
+            vec![crate::state::Effect::LspClose {
+                file: "top.sv".into()
+            }]
+        );
+        assert_eq!(store.select(|state| state.sources.len()), 0);
+    }
 }

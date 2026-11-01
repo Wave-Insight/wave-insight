@@ -15,6 +15,11 @@ env:
 permissions:
   contents: read
 
+#a new manual dispatch supersedes the build that is still running
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:

@@ -26,11 +26,24 @@
 //! reducer restores it in `DumpOpened` and records it on every row change, the
 //! store persists it under a versioned key and the app mentions skipped rows in
 //! the status line.
+//!
+//! Wave 5 (R2 step 3) moves the open **sources**, the inspector **focus** and
+//! the **jump request** into the store ([`sources`], `State.focus`,
+//! `State.nav.goto`), and the language server's document calls become
+//! [`Effect`]s executed by `App` (`LspOpen`/`LspChange`/`LspClose`/`LspTop`/
+//! `MonacoShow`). The bridge keeps a mirror of the document table so
+//! `window.__waveInsightLsp.stats().documents` still counts the open documents.
+//!
+//! Scope decision for this step: the **design slice**, `focus.instance` and the
+//! module-tree/instance selection stay in `App`/`ModuleStruct` until step 3b
+//! (`module_struct/**` belongs to another agent this wave); the reducer never
+//! reads the elaborated design.
 
 pub mod action;
 pub mod persist;
 pub mod reduce;
 pub mod select;
+pub mod sources;
 //the module that defines the State struct lives in state/state.rs, the name the design doc uses
 #[allow(clippy::module_inception)]
 pub mod state;
@@ -46,12 +59,14 @@ pub use persist::{Persister, RowPrefs, Session, SessionRow, Sessions, Storage};
 #[allow(unused_imports)]
 pub use reduce::reduce;
 #[allow(unused_imports)]
+pub use sources::{Source, Sources, SourcesSlice};
+#[allow(unused_imports)]
 pub use state::{Nav, Rows, State};
 #[allow(unused_imports)]
 pub use store::{Store, Subscription};
 #[allow(unused_imports)]
 pub use types::{
-    Cursors, Dump, DumpHandle, DumpId, Row, RowsSlice, SessionRestore, Settings, StatusTone, View,
-    Viewport,
+    Cursors, Dump, DumpHandle, DumpId, Focus, Goto, Row, RowsSlice, SessionRestore, Settings,
+    StatusTone, View, Viewport,
 };
 pub use types::{Layout, Status};

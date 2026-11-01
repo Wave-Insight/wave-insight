@@ -10,6 +10,61 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.9.0] - 2026-11-02
+
+### Added
+
+- Find value on the time ruler: the box accepts an integer (jump cursor 1 to that
+  time, the old goto) or any other text (a Verdi-style value search). Enter jumps
+  to the next change of the selected row whose formatted value matches,
+  Shift+Enter to the previous one; matching uses the value column's formatting
+  (fixed point and x/z included) and is case-insensitive. The status line reports
+  `found <value> in <row> at t=... (n/total)`, and a miss is an error status.
+  Covered by a new `findValue` QA scenario; the matrix now has 46 scenarios and the
+full run is green: **330 passed, 0 failed** with the R2 layout rules required.
+- Fast dump open: the VCD time range is now O(header + tail) - a bounded forward
+  scan for the first timestamp (16 KiB chunks, 1 MiB budget) and a growing tail
+  scan for the last one (16 KiB up to 4 MiB), each falling back to the exhaustive
+  scan when the bounded window cannot decide. The 8.3 MB synthetic benchmark
+  dropped from 13.602 ms to 684.5 us for the first `time_range_hint` call
+  (~19.9x); the exhaustive fallback keeps the answer exact.
+- R2 step 3 (architecture, no user-visible change): the store now owns the open
+  sources (name/text/language/version/active tab, a versioned slice), the
+  inspector focus (`focus.signal`) and jump requests (`nav.goto` +
+  `jump_token`). The `Effect` enum is real (`LspOpen`, `LspChange`,
+  `LspClose`, `LspTop`, `MonacoShow`) and `App` executes it through
+  `LspBridge`; `App.verilog_source`, the selected signal and the shell-owned goto
+  token are gone (the shell only mirrors the store's `focus.signal` and
+  `nav.goto` for rendering). The language server's document table is a mirror of
+  `State.sources` kept in step by the open/change/close effects, so
+  `window.__waveInsightLsp.stats().documents` still reports the open-document
+  count the QA matrix asserts.
+- Migration plans for the two dependency jumps: `docs/migrations/yew-0.21.md`
+  and `docs/migrations/tauri-2.md` (current/target versions, what the app
+  actually uses, breaker list, steps, files and verification).
+
+### Changed
+
+- The ruler box is now `time / value`: an integer still goes to that time, any
+  other text starts a value search on the selected row (see Added).
+- Opening a dump no longer scans the whole VCD body for the time range (header
+  scan plus the growing tail scan above, exhaustive fallback below).
+- Decoding a batch of signals reserves the change buffer up front: the
+  `decode/sequential_8` benchmark went from 13.142 ms to 11.759 ms (-10.5%).
+- The lockfile got a semver-compatible `cargo update` (~35 bumps, e.g.
+  wasm-bindgen 0.2.130, js-sys/web-sys 0.3.107, tokio 1.54.1, icu 2.4) while yew
+  and tauri stay put for their planned migrations; the audit gate and the
+  release-profile test job stay green.
+- CI: publishing to gh-pages moved out of the build job into its own deploy job
+  that is the only one with a write token (the build job is read-only and uploads
+  the bundle as an artifact); `tauri_pre` got a concurrency group; the action
+  pinning policy is documented in the workflow.
+
+### Fixed
+
+- VCD timestamps that share a line with a value (a "#" token mid-line) are now
+  accepted by the time-range scanner instead of being missed.
+
 ## [0.8.0] - 2026-11-02
 
 ### Added

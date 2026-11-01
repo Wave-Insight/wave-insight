@@ -9,7 +9,8 @@
 use std::rc::Rc;
 
 use super::persist::{RowPrefs, SessionRow, Sessions};
-use super::types::{Dump, Layout, Row, RowsSlice, Status, Viewport};
+use super::sources::{Source, Sources};
+use super::types::{Dump, Focus, Goto, Layout, Row, RowsSlice, Status, Viewport};
 
 /// The wave rows, versioned so a subscriber compares one integer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -38,6 +39,14 @@ pub struct Nav {
     /// chip when it is non-zero. Kept out of `status` so the two cannot
     /// overwrite each other.
     pub problems: u32,
+    /// The pending (or last) jump request. The token makes a repeat observable.
+    pub goto: Option<Goto>,
+    /// Counter the next jump token is taken from; the store owns it so the shell
+    /// no longer keeps one.
+    pub jump_token: u32,
+    /// The module the language server elaborates from, mirrored to it through
+    /// [`super::action::Effect::LspTop`].
+    pub top: Option<String>,
 }
 
 /// The single source of truth.
@@ -56,6 +65,10 @@ pub struct State {
     /// reducer restores one when the same file is opened again and records the
     /// current list on every row change; the store persists it.
     pub sessions: Sessions,
+    /// The open source documents, their buffer text and the active tab.
+    pub sources: Sources,
+    /// The inspector selection (the signal selected in the wave view).
+    pub focus: Focus,
 }
 
 impl State {
@@ -68,6 +81,15 @@ impl State {
         self.rows.items = Rc::new(items);
         self.rows.version = self.rows.version.wrapping_add(1);
         self.remember_rows();
+    }
+
+    /// Replace the open source documents and the active tab, bumping the
+    /// version: every source action funnels through here, so a subscription
+    /// sees exactly one change per action.
+    pub(crate) fn set_sources(&mut self, items: Vec<Source>, active: usize) {
+        self.sources.items = Rc::new(items);
+        self.sources.active = active;
+        self.sources.version = self.sources.version.wrapping_add(1);
     }
 
     /// Record the current row list under the open dump's identity, so reopening

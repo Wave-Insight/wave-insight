@@ -7,7 +7,8 @@
 use super::state::State;
 use wave_insight_lib::waveform::TimeRange;
 
-use super::types::{Cursors, DumpHandle, Layout, RowsSlice, Status, View, Viewport};
+use super::sources::SourcesSlice;
+use super::types::{Cursors, DumpHandle, Focus, Goto, Layout, RowsSlice, Status, View, Viewport};
 
 /// The two CSS variables and the drawer flag. Subscribed by `App` only.
 pub fn layout(state: &State) -> Layout {
@@ -47,6 +48,22 @@ pub fn editor_ratio(state: &State) -> f32 {
 pub fn rows(state: &State) -> RowsSlice {
     state.rows.slice()
 }
+
+/// The open source documents and the active tab. Subscribed by the editor.
+pub fn sources(state: &State) -> SourcesSlice {
+    state.sources.slice()
+}
+
+/// The inspector selection.
+pub fn focus(state: &State) -> Focus {
+    state.focus.clone()
+}
+
+/// The pending (or last) jump request. Subscribed by the editor.
+pub fn goto(state: &State) -> Option<Goto> {
+    state.nav.goto.clone()
+}
+
 /// The committed viewport and cursors (one subscription for both: the wave pane
 /// mirrors them for drawing, the time bar renders from them).
 pub fn viewport(state: &State) -> Viewport {

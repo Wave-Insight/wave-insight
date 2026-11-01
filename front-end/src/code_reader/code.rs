@@ -4,11 +4,13 @@ use yew::prelude::*;
 use crate::code_reader::code_block::CodeBlock;
 use crate::lsp::LspBridge;
 use crate::nav::{Goto, SourceClick};
+use crate::state::SourcesSlice;
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct CodeReaderProps {
-    /// `(file name, text)` of every loaded source file, in load order.
-    pub file: Vec<(String, String)>,
+    /// The open documents and the active tab. Both are store state now (R2
+    /// step 3): the component renders the slice and dispatches the intents.
+    pub sources: SourcesSlice,
     /// A request to bring one position into view; the token makes repeats work.
     #[prop_or_default]
     pub goto: Option<Goto>,
@@ -17,9 +19,15 @@ pub struct CodeReaderProps {
     pub onwordclick: Callback<SourceClick>,
     /// The page's language server client; the editor opens its documents here.
     pub lsp: LspBridge,
-    /// A tab was closed; the app drops the source and the LSP gets `didClose`.
+    /// A tab was clicked.
+    #[prop_or_default]
+    pub ontab: Callback<usize>,
+    /// A tab was closed.
     #[prop_or_default]
     pub onclose: Callback<usize>,
+    /// The editor applied jump `token` (the store then clears the request).
+    #[prop_or_default]
+    pub onshown: Callback<u32>,
 }
 
 pub enum Msg {
@@ -30,10 +38,6 @@ pub enum Msg {
 }
 
 pub struct CodeReader {
-    activate_index: usize,
-    /// Token of the jump request that was already applied, so a re-render that
-    /// keeps the same request does not steal the tab back from the user.
-    shown_token: Option<u32>,
     /// The window keydown listener (created once, dropped in `destroy`).
     keydown: Option<wasm_bindgen::closure::Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
 }
@@ -43,11 +47,7 @@ impl Component for CodeReader {
     type Properties = CodeReaderProps;
 
     fn create(ctx: &Context<Self>) -> Self {
-        let mut this = Self {
-            activate_index: 0,
-            shown_token: None,
-            keydown: None,
-        };
+        let mut this = Self { keydown: None };
         this.attach_key_listener(ctx);
         this
     }
@@ -62,8 +62,9 @@ impl Component for CodeReader {
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Msg::SetActive(idx) => {
-                self.activate_index = idx;
-                true
+                // the store owns the active tab; the subscription re-renders us
+                ctx.props().ontab.emit(idx);
+                false
             }
             Msg::KeyDown(event) => {
                 // Ctrl+W / Ctrl+F4: close the active tab, unless the user is
@@ -74,67 +75,39 @@ impl Component for CodeReader {
                 }
                 let key = event.key();
                 let closes = event.ctrl_key() && (key == "w" || key == "W" || key == "F4");
-                if closes && !ctx.props().file.is_empty() {
+                if closes && !ctx.props().sources.is_empty() {
                     event.prevent_default();
-                    let active = self
-                        .activate_index
-                        .min(ctx.props().file.len().saturating_sub(1));
-                    ctx.props().onclose.emit(active);
-                    if self.activate_index >= ctx.props().file.len().saturating_sub(1) {
-                        self.activate_index = self.activate_index.saturating_sub(1);
-                    }
-                    return true;
+                    ctx.props().onclose.emit(ctx.props().sources.active_index());
+                    return false;
                 }
                 false
             }
             Msg::Close(idx) => {
                 ctx.props().onclose.emit(idx);
-                // the parent re-renders with one tab less; keep the index sane
-                // even if it does not
-                if self.activate_index >= ctx.props().file.len().saturating_sub(1) {
-                    self.activate_index = self.activate_index.saturating_sub(1);
-                }
-                true
+                false
             }
         }
-    }
-
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
-        if let Some(goto) = &ctx.props().goto {
-            if self.shown_token != Some(goto.token) {
-                self.shown_token = Some(goto.token);
-                // activate the tab that contains the requested position; a file
-                // that is not open is filtered out by the app
-                if let Some(index) = ctx
-                    .props()
-                    .file
-                    .iter()
-                    .position(|(name, _)| name == &goto.file)
-                {
-                    self.activate_index = index;
-                }
-            }
-        }
-        true
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
         let props = ctx.props();
 
-        // the tab list can shrink under us when a tab is closed
-        let active = self.activate_index.min(props.file.len().saturating_sub(1));
+        // the store owns the active tab; a closed tab can leave the index one
+        // render behind, so clamp it
+        let active = props.sources.active_index();
         let (file_name, text) = props
-            .file
-            .get(active)
-            .map(|(name, text)| (name.clone(), text.clone()))
+            .sources
+            .active_source()
+            .map(|source| (source.name.clone(), source.text.clone()))
             .unwrap_or_else(|| (String::new(), String::new()));
 
         html! {
             <>
                 <nav class="tabs" role="tablist" aria-label="Open sources">
                 {
-                    for props.file.iter().enumerate().map(|(idx,(name,_text))| {
+                    for props.sources.items.iter().enumerate().map(|(idx,source)| {
+                        let name = &source.name;
                         let class = if idx == active {"tab active"} else {"tab"};
                         html! {
                             // A div, not a button: the closer is a real button,
@@ -164,6 +137,7 @@ impl Component for CodeReader {
                     <CodeBlock file={file_name} text={text}
                         goto={props.goto.clone()}
                         onwordclick={props.onwordclick.clone()}
+                        onshown={props.onshown.clone()}
                         lsp={props.lsp.clone()} />
                 </div>
             </>

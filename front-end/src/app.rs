@@ -8,11 +8,12 @@ use crate::code_reader::CodeReader;
 use crate::lsp::LspBridge;
 use crate::module_struct::ModuleStruct;
 use crate::nav::{
-    match_dump_candidates, DesignState, Goto, PathPicker, SharedDesign, SidebarTree,
-    SignalInspector, SourceClick,
+    match_dump_candidates, DesignState, PathPicker, SharedDesign, SidebarTree, SignalInspector,
+    SourceClick,
 };
 use crate::state::{
-    self, Action, Cursors, DumpHandle, Layout, RowsSlice, Status, Store, Subscription,
+    self, Action, Cursors, DumpHandle, Effect, Focus, Goto, Layout, RowsSlice, SourcesSlice,
+    Status, Store, Subscription,
 };
 use crate::wave_show::WaveShow;
 
@@ -42,6 +43,16 @@ pub enum Msg {
     Action(Action),
     /// The store's layout slice changed (the app subscribes to it).
     Layout(Layout),
+    /// The store's sources slice changed (the app subscribes to it).
+    Sources(SourcesSlice),
+    /// The store's focus slice changed (the app subscribes to it).
+    Focus(Focus),
+    /// The store's pending jump request changed (the app subscribes to it).
+    GotoChanged(Option<Goto>),
+    /// A source tab was clicked.
+    TabActivated(usize),
+    /// The editor applied a jump request; the store clears the pending one.
+    JumpHandled(u32),
     /// `.main-pane` was measured; the editor height is derived from it.
     MainMeasured(f64),
     /// The window was resized: measure again.
@@ -175,13 +186,17 @@ pub struct App {
     /// page-wide hint context without rendering anything.
     _cursors_sub: Subscription,
     _rows_sub: Subscription,
-    verilog_source: Vec<(String, String)>,
-    /// Hierarchical path of the signal selected in the wave view.
-    selected: Option<String>,
+    /// The open sources and the active tab, mirrored from the store.
+    sources: SourcesSlice,
+    /// Kept so the subscriptions live exactly as long as the component.
+    _sources_sub: Subscription,
+    _focus_sub: Subscription,
+    _goto_sub: Subscription,
+    /// The inspector selection, mirrored from the store.
+    focus: Focus,
     picker: Option<Picker>,
-    /// Last jump request handed to the source pane.
+    /// The pending jump request, mirrored from the store.
     goto: Option<Goto>,
-    goto_token: u32,
     ///(mouse x, sidebar width) while the splitter is dragged
     splitter_start: Option<(f64, f64)>,
     /// Width written straight to the DOM while the splitter is being dragged;
@@ -278,6 +293,15 @@ impl Component for App {
             state::select::rows,
             Callback::from(|_rows: RowsSlice| crate::lsp::inlay::refresh()),
         );
+        // R2 step 3: the store owns the open sources, the inspector focus and the
+        // jump request; the shell mirrors the slices it renders with.
+        let sources = store.select(state::select::sources);
+        let sources_sub =
+            store.subscribe(state::select::sources, ctx.link().callback(Msg::Sources));
+        let focus = store.select(state::select::focus);
+        let focus_sub = store.subscribe(state::select::focus, ctx.link().callback(Msg::Focus));
+        let goto = store.select(state::select::goto);
+        let goto_sub = store.subscribe(state::select::goto, ctx.link().callback(Msg::GotoChanged));
         let mut this = Self {
             store,
             layout,
@@ -292,11 +316,13 @@ impl Component for App {
             lsp,
             _cursors_sub: cursors_sub,
             _rows_sub: rows_sub,
-            verilog_source: vec![],
-            selected: None,
+            sources,
+            _sources_sub: sources_sub,
+            _focus_sub: focus_sub,
+            _goto_sub: goto_sub,
+            focus,
             picker: None,
-            goto: None,
-            goto_token: 0,
+            goto,
             splitter_start: None,
             sidebar_preview: None,
             wave_splitter_start: None,
@@ -344,10 +370,10 @@ impl Component for App {
         // while the splitter is dragged the preview is authoritative (it was
         // written straight to the DOM); otherwise the store's layout is
         let sidebar_w = self.sidebar_preview.unwrap_or(self.layout.sidebar_w);
-        let empty = self.dump().is_none() && self.verilog_source.is_empty() && self.tree.is_none();
+        let empty = self.dump().is_none() && self.sources.is_empty() && self.tree.is_none();
         // R2 step 2/4: with no sources the editor collapses to the tab strip and
         // the wave pane takes the rest (design doc §3.1, constants §3.4)
-        let collapsed = self.verilog_source.is_empty();
+        let collapsed = self.sources.is_empty();
         let editor_h = self
             .editor_preview
             .unwrap_or_else(|| self.editor_height(collapsed));
@@ -399,10 +425,12 @@ impl Component for App {
                         }}
                         <div class={if collapsed {"code-pane collapsed"} else {"code-pane"}}>
                             <CodeReader
-                                file={self.verilog_source.clone()}
+                                sources={self.sources.clone()}
                                 goto={self.goto.clone()}
                                 lsp={self.lsp.clone()}
+                                ontab={link.callback(Msg::TabActivated)}
                                 onclose={link.callback(Msg::CloseSource)}
+                                onshown={link.callback(Msg::JumpHandled)}
                                 onwordclick={link.callback(Msg::SourceClick)} />
                         </div>
                         <div class={if self.wave_splitter_start.is_some() {"wave-splitter dragging"} else {"wave-splitter"}}
@@ -439,7 +467,7 @@ impl Component for App {
                                     hidden={self.wave_tab != WaveFrameTab::LoadDrive}
                                     design={self.design.clone()}
                                     version={design_version}
-                                    path={self.selected.clone()}
+                                    path={self.focus.signal.clone()}
                                     ongoto={link.callback(Msg::Goto)} />
                             </div>
                         </div>
@@ -619,8 +647,29 @@ impl App {
             Msg::Action(action) => {
                 // A dispatch never re-renders by itself: subscribers only enqueue
                 // Yew messages, so the shell only renders if *its* slice moved.
-                let effects = self.store.dispatch(action);
-                debug_assert!(effects.is_empty(), "R2 step 1 has no effects yet");
+                // The reducer returns the outside work (LSP, editor) as effects;
+                // this is the one place they are executed (docs/state-store.md §2.5).
+                self.apply(action);
+                false
+            }
+            Msg::Sources(sources) => {
+                self.sources = sources;
+                true
+            }
+            Msg::Focus(focus) => {
+                self.focus = focus;
+                true
+            }
+            Msg::GotoChanged(goto) => {
+                self.goto = goto;
+                true
+            }
+            Msg::TabActivated(index) => {
+                self.apply(Action::TabActivated { index });
+                false
+            }
+            Msg::JumpHandled(token) => {
+                self.apply(Action::JumpHandled { token });
                 false
             }
             Msg::Layout(layout) => {
@@ -815,38 +864,22 @@ impl App {
                 true
             }
             Msg::GetVerilog((file, text)) => {
+                // the design database stays in the app until step 3b; the open
+                // documents move into the store, which asks for the LSP
+                // didOpen/didChange through the effects the dispatch returns
                 self.design.borrow_mut().add_source(&file, &text);
-                match self
-                    .verilog_source
-                    .iter_mut()
-                    .find(|(name, _)| name == &file)
-                {
-                    Some(entry) => entry.1 = text.clone(),
-                    None => self.verilog_source.push((file.clone(), text.clone())),
-                }
-                // every loaded source is an open LSP document, not only the
-                // visible tab, so a definition can point into any of them
-                self.lsp.open(&file, &text);
+                self.apply(Action::SourceOpened { file, text });
                 self.refresh_tree();
                 self.sync_lsp_top();
                 // names that resolved to nothing before may resolve now
                 crate::lsp::inlay::refresh();
-                self.note(Status::info(format!("parsed {file}")));
                 true
             }
             Msg::CloseSource(index) => {
-                if let Some((file, _text)) = self
-                    .verilog_source
-                    .get(index)
-                    .map(|(file, text)| (file.clone(), text.clone()))
-                {
-                    self.verilog_source.remove(index);
-                    // the buffer goes away; the source stays in the design and
-                    // in the language server's database, so declaration targets
-                    // in the closed file keep resolving
-                    self.lsp.close(&file);
-                    self.note(Status::info(format!("closed {file}")));
-                }
+                // the store drops the document and asks for the didClose; the
+                // source stays in the design database, so declaration targets in
+                // the closed file keep resolving
+                self.apply(Action::SourceClosed { index });
                 true
             }
             Msg::Error(message) => {
@@ -894,21 +927,29 @@ impl App {
                 true
             }
             Msg::WaveSelect(path) => {
-                self.selected = path;
-                true
+                self.apply(Action::FocusChanged {
+                    focus: Focus { signal: path },
+                });
+                false
             }
             Msg::WaveJump(path) => {
                 self.jump_to_declaration(&path);
                 true
             }
             Msg::Locate((load, index, path)) => {
-                self.selected = Some(path.clone());
+                self.apply(Action::FocusChanged {
+                    focus: Focus {
+                        signal: Some(path.clone()),
+                    },
+                });
                 self.locate_reference(&path, load, index);
                 true
             }
             Msg::Goto((file, line, col)) => {
-                self.goto_to(file, line, col);
-                true
+                // an LSP answer or the inspector asked for a position: the store
+                // validates it and owns the request from here
+                self.apply(Action::JumpRequested { file, line, col });
+                false
             }
             Msg::PickPath(index) => {
                 if let Some(picker) = self.picker.take() {
@@ -933,11 +974,42 @@ impl App {
         self.store.dispatch(Action::Status(status));
     }
 
+    /// Dispatch one action and run the outside work it asked for.
+    ///
+    /// Every change goes through the store; the effects (LSP document sync, the
+    /// top module, the editor seam) are executed here, the one place that owns
+    /// the bridge (docs/state-store.md §2.5).
+    fn apply(&self, action: Action) {
+        let effects = self.store.dispatch(action);
+        self.run_effects(effects);
+    }
+
+    /// Execute the reducer's effects through the language server bridge.
+    ///
+    /// The bridge's document table is a mirror of `State.sources`: keeping it in
+    /// step here is what makes `window.__waveInsightLsp.stats().documents` report
+    /// the open-document count the QA matrix asserts.
+    fn run_effects(&self, effects: Vec<Effect>) {
+        for effect in effects {
+            match effect {
+                Effect::LspOpen { file, text } | Effect::LspChange { file, text } => {
+                    self.lsp.open(&file, &text);
+                }
+                Effect::LspClose { file } => self.lsp.close(&file),
+                Effect::LspTop { top } => self.lsp.set_top(top.as_deref()),
+                // the jump itself rides on the `nav.goto` slice the editor
+                // subscribes to; this effect is the seam a later step uses to
+                // focus the editor window explicitly
+                Effect::MonacoShow { .. } => {}
+            }
+        }
+    }
+
     /// The editor height the shell currently shows: the live drag preview while
     /// the editor/wave splitter moves, the derived height otherwise.
     fn current_editor_height(&self) -> f64 {
         self.editor_preview
-            .unwrap_or_else(|| self.editor_height(self.verilog_source.is_empty()))
+            .unwrap_or_else(|| self.editor_height(self.sources.is_empty()))
     }
 
     /// Write the two pane variables straight to the DOM while a splitter is
@@ -1007,7 +1079,8 @@ impl App {
             let state = self.design.borrow();
             state.top().map(str::to_owned)
         };
-        self.lsp.set_top(top.as_deref());
+        // the store owns the mirrored top; the LspTop effect tells the server
+        self.apply(Action::TopChanged { top });
     }
 
     /// Where `path` is declared, when the design knows it.
@@ -1022,24 +1095,11 @@ impl App {
     }
 
     /// Ask the source pane to show one position.
-    fn goto_to(&mut self, file: String, line: u32, col: u32) {
-        if line == 0 {
-            return;
-        }
-        if !self.verilog_source.iter().any(|(name, _)| name == &file) {
-            self.note(Status::error(format!(
-                "{file} is not open in the source pane — open it from the file picker again"
-            )));
-            return;
-        }
-        self.goto_token = self.goto_token.wrapping_add(1);
-        self.note(Status::info(format!("{file}:{line}:{col}")));
-        self.goto = Some(Goto {
-            file,
-            line,
-            col,
-            token: self.goto_token,
-        });
+    ///
+    /// The store validates the request (the file must be open) and owns the
+    /// token; the editor follows the resulting `nav.goto` slice.
+    fn goto_to(&self, file: String, line: u32, col: u32) {
+        self.apply(Action::JumpRequested { file, line, col });
     }
 
     /// Build the legacy signal row for a hierarchical path.
@@ -1136,13 +1196,17 @@ impl App {
             drive: signal.drive.clone(),
             bit: None,
         });
-        self.selected = Some(row_path.clone());
+        self.apply(Action::FocusChanged {
+            focus: Focus {
+                signal: Some(row_path.clone()),
+            },
+        });
         self.note(Status::info(format!("added {row_path} to the waveform")));
         if show_declaration {
             // only jump when the source pane can show the file: a closed tab
             // would otherwise turn a successful add into an error status
             if let Some((file, line, col)) = self.declare_target(&row_path) {
-                if self.verilog_source.iter().any(|(name, _)| name == &file) {
+                if self.sources.index_of(&file).is_some() {
                     self.goto_to(file, line, col);
                 }
             }
@@ -1242,7 +1306,7 @@ impl App {
         }
         let chosen = index.min(count - 1);
         let (file, line, col) = targets[chosen].clone();
-        if !self.verilog_source.iter().any(|(name, _)| name == &file) {
+        if self.sources.index_of(&file).is_none() {
             self.note(Status::error(format!(
                 "{file} is not open in the source pane — open it from the file picker again"
             )));

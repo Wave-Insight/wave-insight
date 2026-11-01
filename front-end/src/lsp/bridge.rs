@@ -39,7 +39,10 @@ use super::shim::DesignLsp;
 
 /// The monaco language the providers are registered on and the `languageId` a
 /// `didOpen` announces.
-pub const LANGUAGE_ID: &str = "systemverilog";
+///
+/// The value lives with the sources slice (the store owns the documents now);
+/// this alias keeps the editor and the providers spelling it the old way.
+pub const LANGUAGE_ID: &str = crate::state::sources::SOURCE_LANGUAGE;
 
 /// Prefix of the URI (and therefore of the database key) of one design source.
 const DOCUMENT_URI_PREFIX: &str = "wave-insight://source/";

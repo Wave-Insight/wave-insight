@@ -32,12 +32,18 @@ jobs:
     # database; the checks and the ignore list live in deny.toml, not here.
     # It is a hard gate: a real advisory (like RUSTSEC-2026-0384 on tokio
     # 1.54.0) must turn this red, not be papered over with continue-on-error.
+    #
+    # `arguments` is the global-flag slot, not a subcommand flag: action.yml
+    # (v2.1.1) builds
+    #   cargo-deny --log-level warn --manifest-path ./Cargo.toml <arguments> <command>
+    # and the action's Dockerfile bundles cargo-deny 0.20.2, whose CLI accepts
+    # `cargo-deny --all-features check` and rejects `cargo-deny check --all-features`.
+    # So this placement is correct for the action; verified against the action's
+    # action.yml/Dockerfile/entrypoint and by running the same command locally.
     - name: cargo deny check
       uses: EmbarkStudios/cargo-deny-action@v2
       with:
         command: check
-        # cargo-deny's global flag: the action passes it before the command.
-        # Same result as the plain `cargo deny check` verified locally.
         arguments: --all-features
         log-level: warn
       continue-on-error: false

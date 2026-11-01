@@ -1,5 +1,13 @@
 name: Rust
 
+#Action pinning policy: the workflows use floating major tags (actions/checkout@v4,
+#Swatinem/rust-cache@v2, taiki-e/install-action@v2, ...), kept current by
+#.github/dependabot.yml (github-actions ecosystem, weekly). SHA pins would defend
+#against a re-pointed tag, but every bump becomes an opaque hash change in review
+#and dependabot has to rewrite it anyway; the residual risk is accepted for these
+#first-party/well-known actions, and the only write token is confined to the
+#deploy job at the bottom. Revisit if the project starts signing/releasing more
+#artifacts than the tauri tag workflow does.
 on:
   push:
     branches: [ main ]
@@ -126,9 +134,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    #only the deploy step needs to write (gh-pages branch)
-    permissions:
-      contents: write
     steps:
     - uses: actions/checkout@v4
 
@@ -176,9 +181,28 @@ jobs:
         path: front-end/dist
         retention-days: 3
 
+  #the only job with a write token: it publishes the artifact the build job
+  #uploaded to gh-pages. Split out on purpose, so the compile steps and every
+  #third-party action they run see the read-only workflow token, and so the
+  #publish only happens after a successful build (needs: build).
+  deploy:
+    needs: build
+    #a dispatch from a feature branch must not overwrite the public demo
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download the built web bundle
+      uses: actions/download-artifact@v4
+      with:
+        name: web-dist
+        path: front-end/dist
+
     - name: Deploy
-      #a dispatch from a feature branch must not overwrite the public demo
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}

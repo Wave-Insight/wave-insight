@@ -30,20 +30,10 @@ use wasm_bindgen::JsCast;
 use wave_insight_lib::data_struct::ShowType;
 use wave_insight_lib::waveform::{WaveValue, Waveform};
 
-/// A request to bring one source position into view.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Goto {
-    /// File name exactly as it was handed to `DesignDb::add_source`, which is
-    /// also the label of the editor tab.
-    pub file: String,
-    /// 1 based line.
-    pub line: u32,
-    /// 1 based column; `0` means "no column, just the line".
-    pub col: u32,
-    /// Bumped for every request, so clicking the same declaration twice still
-    /// scrolls the editor.
-    pub token: u32,
-}
+// R2 step 3 moved the jump request into the store (`State.nav.goto`); the type
+// is state data now and is re-exported here so the panes and the language server
+// keep their old spelling.
+pub use crate::state::types::Goto;
 
 /// A click on an identifier inside the source editor.
 #[derive(Clone, Debug, PartialEq, Eq)]

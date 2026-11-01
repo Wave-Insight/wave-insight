@@ -30,9 +30,14 @@
 //! draw the first frame. [`Waveform::time_range_hint`] answers that cheaply and
 //! is memoized:
 //!
-//! * **VCD** - the body text is scanned for its first and last `#<number>` line
-//!   (`$date`/`$version`/`$comment` blocks are skipped because they may contain
-//!   anything). No value is decoded, no per-signal allocation happens.
+//! * **VCD** - the first `#<number>` token is found with a bounded forward scan
+//!   (the header is a few KiB in practice) and the last one by reading only the
+//!   tail of the file, so the cost is `O(header + tail)` instead of `O(file)`
+//!   no matter how big the dump is.  `$date`/`$version`/`$comment` blocks are
+//!   skipped because they may contain anything; a `#` after whitespace is
+//!   accepted (VCD is a token format).  No value is decoded, no per-signal
+//!   allocation happens.  Anything the bounded scans cannot decide falls back to
+//!   a full scan, so the hint is never worse than before.
 //! * **FST** - the header already carries the time table, so the body handle is
 //!   opened (hierarchy + time table only, no signal data) and kept for later.
 //! * **GHW** - `None`: wellen only knows the time range after reading the whole
@@ -341,11 +346,13 @@ impl Waveform {
     /// This is what a viewer needs to draw its first frame: the ruler and the
     /// fit-to-trace zoom. It is memoized, and its cost depends on the format:
     ///
-    /// * **VCD**: the body text is scanned for its first and last `#<number>`
-    ///   line. `$date`/`$version`/`$comment` blocks are skipped (they are free
-    ///   text and may contain anything), nothing is decoded and nothing is
-    ///   allocated per signal. A 16 MB / 500k change dump takes a few
-    ///   milliseconds.
+    /// * **VCD**: a bounded forward scan finds the first `#<number>` token and a
+    ///   tail read finds the last one, so the cost is `O(header + tail)` and
+    ///   independent of the body size (8.3 MB / 500k changes: ~0.7 ms, was
+    ///   ~13.6 ms when the whole body was scanned). `$date`/`$version`/
+    ///   `$comment` blocks are skipped (they are free text and may contain
+    ///   anything); if the bounded scans cannot decide, the exhaustive scan is
+    ///   used instead.
     /// * **FST**: the header carries the time table, so the body handle is
     ///   opened (hierarchy + time table, no signal data) and kept; later value
     ///   queries reuse it.
@@ -421,7 +428,9 @@ impl Waveform {
         let packed = body.packed(signal_ref).ok_or_else(|| {
             WaveformError::Backend(format!("signal `{}` did not decode", self.path_of(signal)))
         })?;
-        let mut changes = Vec::new();
+        // One change per packed element: reserve up front so a 100k change
+        // history does not reallocate and copy its way to the final size.
+        let mut changes = Vec::with_capacity(packed.time_indices().len());
         for (time_index, value) in packed.iter_changes() {
             changes.push((
                 change_time(format, time_table, time_index)?,
@@ -895,7 +904,7 @@ impl EagerBody {
             WaveformError::Backend(format!("signal #{} is not cached", signal.index()))
         })?;
         if cached.decoded.is_none() {
-            let mut changes: Vec<Change> = Vec::new();
+            let mut changes: Vec<Change> = Vec::with_capacity(cached.packed.time_indices().len());
             for (time_index, value) in cached.packed.iter_changes() {
                 changes.push((
                     change_time(format, time_table, time_index)?,

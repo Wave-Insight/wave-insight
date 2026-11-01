@@ -10,8 +10,9 @@
 //! modes) so moving them into the store does not move behaviour.
 
 use super::action::{Action, Effect};
+use super::sources::Source;
 use super::state::State;
-use super::types::{clamp_ratio, clamp_sidebar, Dump, Row, SessionRestore};
+use super::types::{clamp_ratio, clamp_sidebar, Dump, Goto, Row, SessionRestore, Status};
 
 pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
     match action {
@@ -197,6 +198,100 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             // reopening a dump puts its remembered row list back (a different
             // dump leaves the current list alone)
             restore_session_rows(state);
+        }
+        Action::SourceOpened { file, text } | Action::SourceReloaded { file, text } => {
+            if file.is_empty() {
+                return Vec::new();
+            }
+            let mut items = (*state.sources.items).clone();
+            let effects = match items.iter().position(|source| source.name == file) {
+                Some(index) => {
+                    // the same file was read again: replace the buffer and keep
+                    // the tab where it is (a reload must not steal the active tab)
+                    let source = &mut items[index];
+                    source.text = text.clone();
+                    source.version = source.version.wrapping_add(1);
+                    state.set_sources(items, index);
+                    vec![Effect::LspChange {
+                        file: file.clone(),
+                        text,
+                    }]
+                }
+                None => {
+                    items.push(Source::new(file.clone(), text.clone()));
+                    let index = items.len() - 1;
+                    state.set_sources(items, index);
+                    vec![Effect::LspOpen {
+                        file: file.clone(),
+                        text,
+                    }]
+                }
+            };
+            state.nav.status = Some(Status::info(format!("parsed {file}")));
+            return effects;
+        }
+        Action::SourceClosed { index } => {
+            let mut items = (*state.sources.items).clone();
+            if index >= items.len() {
+                return Vec::new();
+            }
+            let closed = items.remove(index);
+            let mut active = state.sources.active;
+            if items.is_empty() {
+                active = 0;
+            } else {
+                if index < active {
+                    active = active.saturating_sub(1);
+                }
+                active = active.min(items.len() - 1);
+            }
+            state.set_sources(items, active);
+            state.nav.status = Some(Status::info(format!("closed {}", closed.name)));
+            return vec![Effect::LspClose { file: closed.name }];
+        }
+        Action::TabActivated { index } => {
+            if index < state.sources.items.len() && index != state.sources.active {
+                let items = (*state.sources.items).clone();
+                state.set_sources(items, index);
+            }
+        }
+        Action::FocusChanged { focus } => {
+            state.focus = focus;
+        }
+        Action::JumpRequested { file, line, col } => {
+            if line == 0 {
+                return Vec::new();
+            }
+            let Some(index) = state.sources.index_of(&file) else {
+                state.nav.status = Some(Status::error(format!(
+                    "{file} is not open in the source pane — open it from the file picker again"
+                )));
+                return Vec::new();
+            };
+            state.nav.jump_token = state.nav.jump_token.wrapping_add(1);
+            let token = state.nav.jump_token;
+            state.nav.goto = Some(Goto {
+                file: file.clone(),
+                line,
+                col,
+                token,
+            });
+            state.nav.status = Some(Status::info(format!("{file}:{line}:{col}")));
+            // the tab that contains the position must be the visible one
+            if state.sources.active != index {
+                let items = (*state.sources.items).clone();
+                state.set_sources(items, index);
+            }
+            return vec![Effect::MonacoShow { file, line, col }];
+        }
+        Action::JumpHandled { token } => {
+            if state.nav.goto.as_ref().map(|goto| goto.token) == Some(token) {
+                state.nav.goto = None;
+            }
+        }
+        Action::TopChanged { top } => {
+            state.nav.top = top.clone();
+            return vec![Effect::LspTop { top }];
         }
         Action::ViewCommitted(view) => {
             state.viewport.view = view;
@@ -486,6 +581,244 @@ mod tests {
             },
         );
         assert_eq!(state.layout.sidebar_w, SIDEBAR_MIN);
+    }
+
+    // --- R2 step 3: sources, focus and the jump request ---------------------
+
+    fn open(state: &mut State, file: &str) -> Vec<Effect> {
+        reduce(
+            state,
+            Action::SourceOpened {
+                file: file.to_string(),
+                text: format!("// {file}\n"),
+            },
+        )
+    }
+
+    #[test]
+    fn opening_a_source_adds_a_document_and_emits_did_open() {
+        let mut state = state();
+        let effects = open(&mut state, "top.sv");
+        assert_eq!(
+            effects,
+            vec![Effect::LspOpen {
+                file: "top.sv".to_string(),
+                text: "// top.sv\n".to_string()
+            }]
+        );
+        assert_eq!(state.sources.len(), 1);
+        assert_eq!(state.sources.active, 0);
+        let source = &state.sources.items[0];
+        assert_eq!(source.name, "top.sv");
+        assert_eq!(source.language, crate::state::sources::SOURCE_LANGUAGE);
+        assert_eq!(source.version, 1);
+        // the status line reports it (the shell no longer does)
+        assert!(state
+            .nav
+            .status
+            .as_ref()
+            .is_some_and(|status| status.text.contains("top.sv")));
+        // a second document becomes the active tab
+        let effects = open(&mut state, "cpu.sv");
+        assert!(matches!(effects.as_slice(), [Effect::LspOpen { .. }]));
+        assert_eq!(state.sources.len(), 2);
+        assert_eq!(state.sources.active, 1);
+    }
+
+    #[test]
+    fn opening_the_same_file_again_replaces_its_text_and_emits_did_change() {
+        let mut state = state();
+        open(&mut state, "top.sv");
+        let effects = reduce(
+            &mut state,
+            Action::SourceReloaded {
+                file: "top.sv".to_string(),
+                text: "// edited\n".to_string(),
+            },
+        );
+        assert_eq!(
+            effects,
+            vec![Effect::LspChange {
+                file: "top.sv".to_string(),
+                text: "// edited\n".to_string()
+            }]
+        );
+        // one tab, new text, bumped version: the editor keeps the same document
+        assert_eq!(state.sources.len(), 1);
+        assert_eq!(state.sources.items[0].text, "// edited\n");
+        assert_eq!(state.sources.items[0].version, 2);
+    }
+
+    #[test]
+    fn closing_a_tab_drops_the_document_and_emits_did_close() {
+        let mut state = state();
+        open(&mut state, "a.sv");
+        open(&mut state, "b.sv");
+        let effects = reduce(&mut state, Action::SourceClosed { index: 0 });
+        assert_eq!(
+            effects,
+            vec![Effect::LspClose {
+                file: "a.sv".to_string()
+            }]
+        );
+        assert_eq!(state.sources.len(), 1);
+        assert_eq!(state.sources.items[0].name, "b.sv");
+        // the active tab shifted left with the closed one
+        assert_eq!(state.sources.active, 0);
+        // an out-of-range close is a no-op (no effect, no version bump)
+        let version = state.sources.version;
+        assert!(reduce(&mut state, Action::SourceClosed { index: 9 }).is_empty());
+        assert_eq!(state.sources.version, version);
+        // closing the last tab empties the slice
+        reduce(&mut state, Action::SourceClosed { index: 0 });
+        assert!(state.sources.is_empty());
+    }
+
+    #[test]
+    fn activating_a_tab_is_clamped_and_versioned() {
+        let mut state = state();
+        open(&mut state, "a.sv");
+        open(&mut state, "b.sv");
+        assert_eq!(state.sources.active, 1);
+        reduce(&mut state, Action::TabActivated { index: 0 });
+        assert_eq!(state.sources.active, 0);
+        // out of range is ignored
+        let version = state.sources.version;
+        reduce(&mut state, Action::TabActivated { index: 9 });
+        assert_eq!(state.sources.active, 0);
+        assert_eq!(state.sources.version, version);
+    }
+
+    #[test]
+    fn the_focus_slice_holds_the_inspector_selection() {
+        let mut state = state();
+        assert_eq!(state.focus.signal, None);
+        reduce(
+            &mut state,
+            Action::FocusChanged {
+                focus: crate::state::types::Focus {
+                    signal: Some("top.pc".to_string()),
+                },
+            },
+        );
+        assert_eq!(state.focus.signal.as_deref(), Some("top.pc"));
+    }
+
+    #[test]
+    fn a_jump_request_needs_an_open_file_and_emits_monaco_show() {
+        let mut state = state();
+        // nothing open: the request is refused with an error, no effect
+        let effects = reduce(
+            &mut state,
+            Action::JumpRequested {
+                file: "top.sv".to_string(),
+                line: 3,
+                col: 1,
+            },
+        );
+        assert!(effects.is_empty());
+        assert!(state.nav.goto.is_none());
+        assert!(state
+            .nav
+            .status
+            .as_ref()
+            .is_some_and(|status| status.is_error()));
+
+        open(&mut state, "top.sv");
+        open(&mut state, "cpu.sv");
+        let effects = reduce(
+            &mut state,
+            Action::JumpRequested {
+                file: "top.sv".to_string(),
+                line: 12,
+                col: 4,
+            },
+        );
+        assert_eq!(
+            effects,
+            vec![Effect::MonacoShow {
+                file: "top.sv".to_string(),
+                line: 12,
+                col: 4
+            }]
+        );
+        let goto = state.nav.goto.clone().expect("the request is pending");
+        assert_eq!((goto.file.as_str(), goto.line, goto.col), ("top.sv", 12, 4));
+        assert_eq!(goto.token, 1);
+        // the tab with the position is the active one
+        assert_eq!(state.sources.active, 0);
+        // a second request gets a new token, so a repeat still scrolls
+        reduce(
+            &mut state,
+            Action::JumpRequested {
+                file: "top.sv".to_string(),
+                line: 12,
+                col: 4,
+            },
+        );
+        assert_eq!(state.nav.goto.as_ref().map(|goto| goto.token), Some(2));
+        // line 0 is not a position
+        let effects = reduce(
+            &mut state,
+            Action::JumpRequested {
+                file: "top.sv".to_string(),
+                line: 0,
+                col: 0,
+            },
+        );
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn a_handled_jump_clears_only_the_matching_request() {
+        let mut state = state();
+        open(&mut state, "top.sv");
+        reduce(
+            &mut state,
+            Action::JumpRequested {
+                file: "top.sv".to_string(),
+                line: 2,
+                col: 1,
+            },
+        );
+        let token = state.nav.goto.as_ref().map(|goto| goto.token).unwrap();
+        // a stale token (the request was replaced) does not clear the new one
+        reduce(&mut state, Action::JumpHandled { token: token + 7 });
+        assert!(state.nav.goto.is_some());
+        reduce(&mut state, Action::JumpHandled { token });
+        assert!(state.nav.goto.is_none());
+    }
+
+    #[test]
+    fn a_top_change_is_mirrored_to_the_language_server() {
+        let mut state = state();
+        let effects = reduce(
+            &mut state,
+            Action::TopChanged {
+                top: Some("top".to_string()),
+            },
+        );
+        assert_eq!(
+            effects,
+            vec![Effect::LspTop {
+                top: Some("top".to_string())
+            }]
+        );
+        assert_eq!(state.nav.top.as_deref(), Some("top"));
+        let effects = reduce(&mut state, Action::TopChanged { top: None });
+        assert_eq!(effects, vec![Effect::LspTop { top: None }]);
+    }
+
+    #[test]
+    fn the_sources_slice_compares_by_version() {
+        let mut state = state();
+        open(&mut state, "a.sv");
+        let before = state.sources.slice();
+        // an action that changes nothing must not move the version
+        reduce(&mut state, Action::TabActivated { index: 0 });
+        assert_eq!(before, state.sources.slice());
+        open(&mut state, "b.sv");
+        assert_ne!(before, state.sources.slice());
     }
 
     #[test]

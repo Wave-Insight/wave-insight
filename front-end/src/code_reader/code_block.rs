@@ -20,6 +20,9 @@ pub struct CodeBlockProps {
     /// A plain left click on an identifier.
     #[prop_or_default]
     pub onwordclick: Callback<SourceClick>,
+    /// The jump request was applied; the app clears the pending one.
+    #[prop_or_default]
+    pub onshown: Callback<u32>,
     /// The page's language server client: every document the editor shows is
     /// opened (and kept in sync) here, and the monaco providers answer from it.
     pub lsp: LspBridge,
@@ -102,6 +105,8 @@ impl Component for CodeBlock {
                 // the target is visible instead of merely scrolled to.
                 editor.select_word_at(goto.line, goto.col);
                 self.shown_token = Some(goto.token);
+                // the store owns the request now; tell it the editor is there
+                ctx.props().onshown.emit(goto.token);
             }
         }
     }
@@ -173,6 +178,7 @@ impl CodeBlock {
         if let Some(goto) = &props.goto {
             editor.reveal_position_in_center(goto.line, goto.col);
             self.shown_token = Some(goto.token);
+            props.onshown.emit(goto.token);
         }
 
         self.editor = Some(editor);

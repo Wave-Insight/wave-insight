@@ -285,7 +285,8 @@ fn bench_open(c: &mut Criterion) {
 fn bench_time_range_hint(c: &mut Criterion) {
     let mut group = c.benchmark_group("time_range_hint");
 
-    //the first call scans the whole VCD body for its first and last time stamp
+    //the first call scans the header for the first time stamp and the tail for
+    //the last one (bounded, independent of the body size)
     let large = Synthetic::new(LARGE_STEPS);
     group.bench_function("vcd_first_call", |b| {
         b.iter_batched(

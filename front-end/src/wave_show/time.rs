@@ -61,8 +61,9 @@ pub enum Msg {
     RulerMove(MouseEvent),
     /// The button came up: either the pan is finished or it was a click.
     RulerUp(MouseEvent),
-    /// The goto box: a time was typed and Enter was pressed.
-    Goto(String),
+    /// The ruler box was submitted: an integer is a time to go to, anything
+    /// else is a value to find. `backward` is the Shift+Enter direction.
+    Goto { text: String, backward: bool },
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
@@ -189,8 +190,16 @@ impl Component for Time {
                 self.store.dispatch(state::Action::CursorsChanged(cursors));
                 true
             }
-            Msg::Goto(text) => {
+            Msg::Goto { text, backward } => {
+                // an integer is a time (the old goto), anything else is a value
+                // to find in the selected row (Verdi's find-value box)
                 let Ok(time) = text.trim().parse::<i64>() else {
+                    let direction = if backward {
+                        super::find::Direction::Previous
+                    } else {
+                        super::find::Direction::Next
+                    };
+                    super::find::find_value(&self.store, &text, direction, self.width);
                     return false;
                 };
                 let time = time.max(0);
@@ -257,6 +266,7 @@ impl Component for Time {
                     return;
                 }
                 let value = input.value();
+                let backward = e.shift_key();
                 input.set_value("");
                 // the wave pane listens for keys page wide; a digit typed into
                 // this box must not reach it
@@ -265,16 +275,19 @@ impl Component for Time {
                 // and give the keyboard back to the wave area: after a goto the
                 // next key (n, del, ctrl+a) is a waveform shortcut, not typing
                 let _ = input.blur();
-                link.send_message(Msg::Goto(value));
+                link.send_message(Msg::Goto {
+                    text: value,
+                    backward,
+                });
             })
         };
         html! {
             <div class="timebar">
                 <div class="timebar-readout">
-                    <input class="timebar-goto" type="text" inputmode="numeric"
-                        placeholder="go to"
-                        aria-label="Go to time: type a time and press Enter to put cursor 1 there"
-                        title="Type a time and press Enter: cursor 1 goes there"
+                    <input class="timebar-goto" type="text"
+                        placeholder="time / value"
+                        aria-label="Go to time or find a value: type an integer to move cursor 1 there, or a signal value and press Enter to jump to the next change with that value (Shift+Enter for the previous one)"
+                        title="Type a time and press Enter: cursor 1 goes there. Type a value (e.g. 'h2a) and press Enter: jump to the next change with that value; Shift+Enter for the previous one"
                         onkeydown={goto} />
                     <code>{
                         match delta {
