@@ -99,6 +99,7 @@
 mod const_eval;
 mod elaborate;
 mod frontend;
+mod span_index;
 mod types;
 
 pub use types::*;
@@ -326,6 +327,26 @@ impl DesignDb {
         &self.modules
     }
 
+    /// All module definitions declared in `file`, in insertion order.
+    ///
+    /// This is the indexed form of "iterate `modules()` and filter by span
+    /// file" used by `textDocument/documentSymbol`; a deserialized database
+    /// whose per-file index is not rebuilt yet falls back to the scan.
+    pub fn modules_in_file(&self, file: impl AsRef<Path>) -> Vec<&ModuleDef> {
+        let file = file.as_ref();
+        if self.file_modules.is_empty() && !self.modules.is_empty() {
+            return self
+                .modules
+                .iter()
+                .filter(|module| module.span.file.as_path() == file)
+                .collect();
+        }
+        self.file_modules
+            .get(file)
+            .map(|names| names.iter().filter_map(|name| self.module(name)).collect())
+            .unwrap_or_default()
+    }
+
     /// Find a module definition by name.
     pub fn module(&self, name: &str) -> Option<&ModuleDef> {
         if let Some(index) = self.module_index.get(name) {
@@ -424,6 +445,9 @@ impl DesignDb {
         col: u32,
     ) -> Vec<String> {
         let file = file.as_ref();
+        if let Some(index) = design.span_index() {
+            return index.signals_at(file, line, col);
+        }
         let mut paths = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for signal in design.signals() {
@@ -446,6 +470,14 @@ impl DesignDb {
         col: u32,
         scope: Option<usize>,
     ) -> Option<SourceItem> {
+        // Unscoped position queries are the LSP hot path: answer from the span
+        // index when the design was built in this process.  The instance-scoped
+        // query still needs the scanner (its scope filter is not positional).
+        if scope.is_none() {
+            if let Some(index) = design.span_index() {
+                return index.item_at(file, line, col);
+            }
+        }
         let scope_instance = scope.map(|index| &design.instances()[index]);
         let mut best: Option<(u64, SourceItem)> = None;
         let mut consider = |span: &Span, item: SourceItem| {

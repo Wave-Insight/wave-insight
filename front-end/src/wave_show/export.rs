@@ -127,7 +127,7 @@ fn mat_value(value: &WaveValue, format: &ValueFormat) -> f64 {
                 return f64::NAN;
             };
             let width = bits.width();
-            let signed = format.show == wave_insight_lib::data_struct::ShowType::SInt
+            let signed = format.show == wave_insight_lib::waveform::ShowType::SInt
                 && (1..=63).contains(&width);
             if signed {
                 let modulus = 1i64 << width;
@@ -590,7 +590,7 @@ pub fn decoded_or(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wave_insight_lib::data_struct::ShowType;
+    use wave_insight_lib::waveform::ShowType;
     use wave_insight_lib::waveform::{BitValue, Bits};
 
     #[test]

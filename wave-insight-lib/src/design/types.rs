@@ -475,6 +475,12 @@ pub struct ElaboratedDesign {
     /// falls back to a scan when it is empty.
     #[serde(skip)]
     pub(crate) signal_index: std::collections::HashMap<String, usize>,
+    /// Sorted source-span index for the position queries.  Built together with
+    /// the design (so it is keyed by the elaboration "version") and skipped when
+    /// the model crosses the wasm boundary; missing indexes fall back to the
+    /// brute-force scan in [`super::DesignDb::item_at`].
+    #[serde(skip)]
+    pub(crate) span_index: Option<super::span_index::SpanIndex>,
 }
 
 /// Two elaborated designs are equal when their transported data is equal; the
@@ -546,6 +552,11 @@ impl ElaboratedDesign {
     /// ports, recursion limits, ...).
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// The source-span index of this design, when it was built in-process.
+    pub(crate) fn span_index(&self) -> Option<&super::span_index::SpanIndex> {
+        self.span_index.as_ref()
     }
 }
 

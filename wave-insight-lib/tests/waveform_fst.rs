@@ -16,7 +16,7 @@
 //! (the reader path is the same wellen code for both formats, but the fixture
 //! has no unknown bits).
 
-use wave_insight_lib::data_struct::ShowType;
+use wave_insight_lib::waveform::ShowType;
 use wave_insight_lib::waveform::{
     BitValue, SignalKind, TimeRange, TimeUnit, ValueQuery, WaveFormat, WaveValue, Waveform,
 };

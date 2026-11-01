@@ -36,3 +36,8 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "waveform"
 harness = false
+
+#the language server query hot paths on a synthetic large design
+[[bench]]
+name = "lsp"
+harness = false

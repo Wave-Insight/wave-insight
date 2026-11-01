@@ -28,7 +28,7 @@ use js_sys::{Array, Function, Object, Reflect};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
-use wave_insight_lib::data_struct::ShowType;
+use wave_insight_lib::waveform::ShowType;
 use wave_insight_lib::waveform::Waveform;
 
 use crate::code_reader::monaco_glue::model_uri;

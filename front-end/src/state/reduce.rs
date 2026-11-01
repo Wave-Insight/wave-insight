@@ -12,7 +12,9 @@
 use super::action::{Action, Effect};
 use super::sources::Source;
 use super::state::State;
-use super::types::{clamp_ratio, clamp_sidebar, Dump, Goto, Row, SessionRestore, Status};
+use super::types::{
+    clamp_ratio, clamp_sidebar, Dialog, Dump, Goto, Picker, Row, SessionRestore, Status,
+};
 
 pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
     match action {
@@ -293,6 +295,33 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             state.nav.top = top.clone();
             return vec![Effect::LspTop { top }];
         }
+        Action::PickerOpened { title, paths } => {
+            if paths.is_empty() {
+                return Vec::new();
+            }
+            state.nav.picker = Some(Picker { title, paths });
+        }
+        Action::PickerChosen { index } => {
+            // the choice itself is the app's work (it resolves the path); the
+            // store only owns whether the dialog is open
+            if let Some(picker) = &state.nav.picker {
+                if index < picker.paths.len() {
+                    state.nav.picker = None;
+                }
+            }
+        }
+        Action::PickerCancelled => {
+            state.nav.picker = None;
+        }
+        Action::DialogOpened { indices } => {
+            if indices.is_empty() {
+                return Vec::new();
+            }
+            state.nav.dialog = Some(Dialog { indices });
+        }
+        Action::DialogClosed => {
+            state.nav.dialog = None;
+        }
         Action::ViewCommitted(view) => {
             state.viewport.view = view;
         }
@@ -447,7 +476,7 @@ mod tests {
     use crate::state::types::{
         DumpHandle, DumpId, Layout, Settings, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN,
     };
-    use wave_insight_lib::data_struct::ShowType;
+    use wave_insight_lib::waveform::ShowType;
 
     fn state() -> State {
         State::default()
@@ -810,6 +839,71 @@ mod tests {
     }
 
     #[test]
+    fn the_picker_is_store_state_and_the_choice_closes_it() {
+        let mut state = state();
+        reduce(
+            &mut state,
+            Action::PickerOpened {
+                title: "2 signals match `pc`".to_string(),
+                paths: vec!["top.pc".to_string(), "top.u_cpu.pc".to_string()],
+            },
+        );
+        let picker = state.nav.picker.clone().expect("the picker is open");
+        assert_eq!(picker.paths.len(), 2);
+        // an out-of-range choice is ignored, the picker stays open
+        reduce(&mut state, Action::PickerChosen { index: 9 });
+        assert!(state.nav.picker.is_some());
+        // a real choice closes it (the app resolves the path itself)
+        reduce(&mut state, Action::PickerChosen { index: 0 });
+        assert!(state.nav.picker.is_none());
+        // and an empty picker is not opened at all
+        reduce(
+            &mut state,
+            Action::PickerOpened {
+                title: "none".to_string(),
+                paths: Vec::new(),
+            },
+        );
+        assert!(state.nav.picker.is_none());
+    }
+
+    #[test]
+    fn the_settings_dialog_is_store_state() {
+        let mut state = state();
+        assert!(state.nav.dialog.is_none());
+        reduce(
+            &mut state,
+            Action::DialogOpened {
+                indices: vec![0, 2],
+            },
+        );
+        assert_eq!(
+            state
+                .nav
+                .dialog
+                .as_ref()
+                .map(|dialog| dialog.indices.clone()),
+            Some(vec![0, 2])
+        );
+        // an empty target set is not a dialog
+        reduce(
+            &mut state,
+            Action::DialogOpened {
+                indices: Vec::new(),
+            },
+        );
+        assert_eq!(
+            state
+                .nav
+                .dialog
+                .as_ref()
+                .map(|dialog| dialog.indices.clone()),
+            Some(vec![0, 2])
+        );
+        reduce(&mut state, Action::DialogClosed);
+        assert!(state.nav.dialog.is_none());
+    }
+    #[test]
     fn the_sources_slice_compares_by_version() {
         let mut state = state();
         open(&mut state, "a.sv");
@@ -981,7 +1075,7 @@ mod tests {
         let mut state = state();
         add(&mut state, "top.pc");
         let mut setting = Settings::new();
-        setting.show_type = wave_insight_lib::data_struct::ShowType::Bin;
+        setting.show_type = wave_insight_lib::waveform::ShowType::Bin;
         setting.analog_active = true;
         reduce(
             &mut state,

@@ -162,7 +162,7 @@ pub fn find_value(store: &Store, query: &str, direction: Direction, width: f64) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wave_insight_lib::data_struct::ShowType;
+    use wave_insight_lib::waveform::ShowType;
     use wave_insight_lib::waveform::{BitValue, Bits, WaveValue};
 
     fn bits(raw: u64, width: usize) -> WaveValue {

@@ -5,7 +5,7 @@
 //! values, non uniform time stamps and a value that does *not* change in the
 //! last time step.
 
-use wave_insight_lib::data_struct::ShowType;
+use wave_insight_lib::waveform::ShowType;
 use wave_insight_lib::waveform::{
     BitValue, SignalKind, TimeRange, TimeUnit, ValueQuery, WaveFormat, WaveValue, Waveform,
 };

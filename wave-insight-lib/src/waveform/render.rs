@@ -11,7 +11,7 @@
 //! byte width and panicked with "attempt to subtract with overflow" when a dump
 //! was narrower than the design width.
 
-use crate::data_struct::ShowType;
+use super::ShowType;
 
 /// Render one packed value: `chunk` is the `(xz, num)` byte layout, `bitcount`
 /// the number of significant bits.

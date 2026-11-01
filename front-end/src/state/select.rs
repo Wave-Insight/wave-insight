@@ -8,7 +8,9 @@ use super::state::State;
 use wave_insight_lib::waveform::TimeRange;
 
 use super::sources::SourcesSlice;
-use super::types::{Cursors, DumpHandle, Focus, Goto, Layout, RowsSlice, Status, View, Viewport};
+use super::types::{
+    Cursors, Dialog, DumpHandle, Focus, Goto, Layout, Picker, RowsSlice, Status, View, Viewport,
+};
 
 /// The two CSS variables and the drawer flag. Subscribed by `App` only.
 pub fn layout(state: &State) -> Layout {
@@ -57,6 +59,16 @@ pub fn sources(state: &State) -> SourcesSlice {
 /// The inspector selection.
 pub fn focus(state: &State) -> Focus {
     state.focus.clone()
+}
+
+/// The path picker, when it is open. Subscribed by the shell.
+pub fn picker(state: &State) -> Option<Picker> {
+    state.nav.picker.clone()
+}
+
+/// The settings dialog, when it is open. Subscribed by the wave pane.
+pub fn dialog(state: &State) -> Option<Dialog> {
+    state.nav.dialog.clone()
 }
 
 /// The pending (or last) jump request. Subscribed by the editor.

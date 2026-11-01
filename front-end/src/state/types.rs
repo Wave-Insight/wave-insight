@@ -9,7 +9,7 @@
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
-use wave_insight_lib::data_struct::ShowType;
+use wave_insight_lib::waveform::ShowType;
 use wave_insight_lib::waveform::{TimeRange, Waveform};
 
 /// Identity-comparing handle on the opened dump.
@@ -89,6 +89,28 @@ pub struct Goto {
     /// Bumped for every request, so clicking the same declaration twice still
     /// scrolls the editor.
     pub token: u32,
+}
+
+/// The path picker: several signals cover the clicked position, the user must
+/// choose one.
+///
+/// The store owns the dialog data (R2 step 3b) so the shell only renders it; the
+/// *choice* is still performed by the app, which is the only place that can
+/// resolve the picked path against the dump/design before dispatching a row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Picker {
+    pub title: String,
+    pub paths: Vec<String>,
+}
+
+/// The settings dialog: which rows it is open for.
+///
+/// Same split as [Picker]: the store owns the open/closed state, the wave pane
+/// renders the dialog and dispatches the row-setting change.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Dialog {
+    /// Indices of the rows the dialog was opened for.
+    pub indices: Vec<usize>,
 }
 
 /// The inspector selection.

@@ -27,7 +27,7 @@ use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
 
-use wave_insight_lib::data_struct::ShowType;
+use wave_insight_lib::waveform::ShowType;
 use wave_insight_lib::waveform::{WaveValue, Waveform};
 
 // R2 step 3 moved the jump request into the store (`State.nav.goto`); the type
@@ -232,7 +232,7 @@ pub fn match_dump_candidates(waveform: &Waveform, path: &str) -> Vec<String> {
 /// order:
 ///
 /// 1. the exact hierarchical path;
-/// 2. the same depth with the root scope replaced (`tb_top.clk` ↔ `top.clk`);
+/// 2. the same depth with the root scope replaced (`tb_top.clk` → `top.clk`);
 /// 3. a candidate with extra leading scopes (`tb_top.dut.clk` for `dut.clk`);
 /// 4. a candidate whose tail equals the query tail after dropping the query's
 ///    leading scopes (`tb_top.u_cpu.pc` for `top.u_cpu.pc`);
@@ -263,7 +263,7 @@ pub(crate) fn resolve_candidates<'a, T>(
     }
 
     // the root scope is spelled differently: compare everything below it at the
-    // same depth (`tb_top.clk` ↔ `top.clk`)
+    // same depth (`tb_top.clk` → `top.clk`)
     if query.len() > 1 {
         let query_tail = query[1..].join(".");
         let same_depth: Vec<&T> = items

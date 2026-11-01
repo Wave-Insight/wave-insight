@@ -10,6 +10,49 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.10.0] - 2026-11-02
+
+### Added
+
+- An indexed span structure for the design database, built with each
+  elaboration. `DesignDb::item_at`/`signals_at` no longer walk every module,
+  signal and driver/load reference on each request, and `documentSymbol` uses a
+  per-file module index. On the synthetic 100-module / ~3.5k-signal design the
+  benchmarks went from `design/item_at` 174.51 ms to 20.13 us (~8,670x) and
+  `design/signals_at` 52.52 ms to 19.44 us, with `lsp/definition` 2.048 ms ->
+  12.42 us (~165x), `lsp/references` 2.095 ms -> 58.28 us and `documentSymbol`
+  -11.6%. Answers are byte-identical to the brute-force scan (differential test
+  at every fixture position plus the deserialized-design fallback).
+- A second criterion suite, `benches/lsp.rs`, for the language-server query hot
+  paths (groups `design` and `lsp`); `.github/workflows/bench.yml` now runs the
+  `lsp|design` groups on manual dispatch as well.
+- R2 step 3b (partial, architecture): the path picker and the settings dialog are
+  store slices now (`nav.picker`/`nav.dialog` with `PickerOpened`/`PickerChosen`/
+  `PickerCancelled` and `DialogOpened`/`DialogClosed`); the wave pane no longer
+  owns `menu_show`/`on_setting_idx`. The app and the wave pane subscribe to
+  those slices and pass the data to the existing components.
+- Three browser QA scenarios - `elaboration` (generated/arrayed design tree in
+  the sidebar), `diagnostics` (elaboration unresolved-name diagnostics as
+  Monaco markers plus the top-bar chip) and `exportTxt` (the TXT download equals
+  the CSV of the same row) - bringing the matrix to 49 scenarios / 356 assertions,
+  and the full run is green with the R2 layout rules required (356 passed, 0
+  failed).
+- A multi-dump and split-view design note (`docs/design/multi-dump.md`): the
+  target per-dump model, the UI, migration steps, verification and risks.
+
+### Changed
+
+- R3 legacy deletion (internal, no user-visible change): the library's
+  `data_struct` module is gone. `ShowType` moved to
+  `wave_insight_lib::waveform::ShowType`; `Signal`/`CodeLocation` were deleted
+  and the app's locate/jump path uses a small local `ResolvedSignal` instead.
+  The acceptance grep for `data_struct` over the front end, the library and its
+  tests/benches returns nothing.
+- LSP position queries and `documentSymbol` are answered from the index built
+  once per elaboration instead of rescanning the design per request.
+- The bench workflow's dispatch filter grew from the waveform hot paths to
+  `open|decode|time_range_hint|value_at|lsp|design`.
+
 ## [0.9.0] - 2026-11-02
 
 ### Added

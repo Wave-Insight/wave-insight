@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use super::persist::{RowPrefs, SessionRow, Sessions};
 use super::sources::{Source, Sources};
-use super::types::{Dump, Focus, Goto, Layout, Row, RowsSlice, Status, Viewport};
+use super::types::{Dialog, Dump, Focus, Goto, Layout, Picker, Row, RowsSlice, Status, Viewport};
 
 /// The wave rows, versioned so a subscriber compares one integer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -47,6 +47,10 @@ pub struct Nav {
     /// The module the language server elaborates from, mirrored to it through
     /// [`super::action::Effect::LspTop`].
     pub top: Option<String>,
+    /// The path picker, when the user has to choose between candidates.
+    pub picker: Option<Picker>,
+    /// The settings dialog, when it is open.
+    pub dialog: Option<Dialog>,
 }
 
 /// The single source of truth.

@@ -743,7 +743,7 @@ scenarios.cursors = async (cdp) => {
   const hashWithCursor1 = await cdp.eval('window.__qa.surfaceHash()');
   check('cursor1: the renderer records the cursor', typeof cursor1 === 'number', cursor1);
   check('cursor1: the canvas repainted for it', hashWithCursor1 !== hashBeforeCursor, { same: hashWithCursor1 === hashBeforeCursor });
-  retired('cursor1: value shown next to the cursor', 'canvas label; covered by the formats hash checks and the data_struct formatter tests');
+  retired('cursor1: value shown next to the cursor', 'canvas label; covered by the formats hash checks and the value formatter unit tests');
   await cdp.clickAt(canvas.x + 320, canvas.y + 15, 'right');
   await sleep(700);
   readout = await cdp.eval(`window.__qa.text('.timebar-readout')`);
@@ -990,7 +990,7 @@ scenarios.deepWave = async (cdp) => {
   const unknownInk = await cdp.eval('window.__qa.surfaceInk(0, 60)');
   note('z/x row', { debug: unknownDebug, ink: unknownInk });
   check('deep: the z/x rows are drawn', !!unknownDebug && unknownDebug.changes > 0 && unknownInk > 0, { changes: unknownDebug && unknownDebug.changes, ink: unknownInk });
-  retired('deep: unknown values are shown (z/x)', 'canvas labels are not DOM readable; z/x formatting is covered by the data_struct unit tests and the format-hash assertions');
+  retired('deep: unknown values are shown (z/x)', 'canvas labels are not DOM readable; z/x formatting is covered by the value formatter unit tests and the format-hash assertions');
 
   // cursor time must not change when the trace is zoomed.
   // A cursor on the very first time step sits at x = 0 forever (0 - x_axis is
@@ -2802,6 +2802,145 @@ scenarios.findValue = async (cdp) => {
   check('findValue: an unknown value reports no match', missed === after, { after: after, missed: missed });
   check('findValue: the miss is an error status', /no match/i.test(s.status || '') && tone === 'error', { status: s.status, tone: tone });
   check('findValue: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+};
+
+// --- Wave 6: elaboration in the UI, elaboration diagnostics, TXT export -----
+// The elaborated design (no dump open) drives the sidebar module tree. The tree
+// rows are already expanded for a design hierarchy, so no clicking is needed;
+// the seam carries the logical names and the row `title` attributes carry the
+// full elaborated paths.
+scenarios.elaboration = async (cdp) => {
+  const tree = async () => {
+    const seam = await cdp.eval('window.__qa.sidebar()');
+    const titles = await cdp.eval('window.__qa.qa(".tree-row").map(function(r){ return r.getAttribute("title"); })');
+    const s = await state(cdp);
+    return { seam: seam, titles: titles, modules: s.modules, tabs: s.tabs };
+  };
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'generate.sv')]);
+  await waitTabs(cdp, 1);
+  await sleep(2500);
+  let t = await tree();
+  note('generate tree', t);
+  check('elaboration: a source alone opens no dump', t.tabs.length === 1, t.tabs);
+  check('elaboration: the generated hierarchy is in the sidebar',
+    t.titles.includes('gen_top.g[0].u_leaf') && t.titles.includes('gen_top.g[3].u_leaf'), t.titles);
+  check('elaboration: every generate-for element is a row',
+    ['gen_top.g[0].u_leaf', 'gen_top.g[1].u_leaf', 'gen_top.g[2].u_leaf', 'gen_top.g[3].u_leaf'].every((path) => t.titles.includes(path)), t.titles);
+  check('elaboration: the seam reports the four leaf rows',
+    !!t.seam && t.seam.modules.length === 4 && t.seam.modules.every((name) => name === 'u_leaf'), t.seam && t.seam.modules);
+  check('elaboration: the seam counts the generate scopes too',
+    !!t.seam && t.seam.modules_total === 5, t.seam && t.seam.modules_total);
+  // the other fixture is a different top: start from a clean page so the
+  // scenario does not depend on which root the elaborator picks first
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'arrayed.sv')]);
+  await waitTabs(cdp, 1);
+  await sleep(2500);
+  t = await tree();
+  note('arrayed tree', t);
+  check('elaboration: arrayed instances expand into element rows',
+    t.titles.includes('arrayed_top.u[0]') && t.titles.includes('arrayed_top.u[1]') && t.titles.includes('arrayed_top.v[3]'), t.titles);
+  check('elaboration: both arrays contribute their elements',
+    t.titles.filter((path) => /^arrayed_top\.u\[\d\]$/.test(path)).length === 2
+      && t.titles.filter((path) => /^arrayed_top\.v\[\d\]$/.test(path)).length === 4, t.titles);
+  check('elaboration: the seam counts the top plus six elements',
+    !!t.seam && t.seam.modules_total === 7, t.seam && t.seam.modules_total);
+  check('elaboration: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-elaboration.png');
+};
+
+// --- Wave 6: elaboration diagnostics reach the editor and the top bar -------
+// link_errors.sv has unresolved names in link_top, which the elaborator picks
+// as the top when no dump is open. (The port-width mismatch in width_top is
+// not surfaced: only the picked top is elaborated - documented in README.)
+scenarios.diagnostics = async (cdp) => {
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'link_errors.sv')]);
+  await waitTabs(cdp, 1);
+  await sleep(3000);
+  const raw = await cdp.eval('window.__waveInsightLsp && window.__waveInsightLsp.diagnostics ? window.__waveInsightLsp.diagnostics() : null');
+  const diagnostics = raw ? JSON.parse(raw) : null;
+  note('elaboration diagnostics', diagnostics);
+  const files = diagnostics && diagnostics.files ? Object.keys(diagnostics.files) : [];
+  const entry = files.length ? diagnostics.files[files[0]] : null;
+  const items = entry && Array.isArray(entry.items) ? entry.items : [];
+  check('diagnostics: the elaborator reports unresolved names',
+    !!entry && entry.count >= 2 && items.filter((item) => item.code === 'unresolved-name').length >= 2, entry);
+  check('diagnostics: both missing names are reported',
+    items.some((item) => /missing_load/.test(item.message || '')) && items.some((item) => /missing_driver/.test(item.message || '')), items.map((item) => item.message));
+  check('diagnostics: the diagnostics point at the source lines',
+    items.every((item) => typeof item.line === 'number' && item.line >= 0), items.map((item) => item.line));
+  const stats = await cdp.eval('window.__waveInsightLsp ? window.__waveInsightLsp.stats() : null');
+  const statsObj = stats ? JSON.parse(stats) : null;
+  note('lsp stats', statsObj);
+  check('diagnostics: the server elaborated link_top as the top',
+    !!statsObj && statsObj.top === 'link_top', statsObj && statsObj.top);
+  const markers = await cdp.eval('window.monaco && window.monaco.editor ? window.monaco.editor.getModelMarkers({}).length : -1');
+  note('monaco markers', markers);
+  check('diagnostics: the editor receives markers for the elaborated file', markers >= 2, markers);
+  const chip = await cdp.eval('window.__qa.text(".problems-tag")');
+  note('problems chip', chip);
+  check('diagnostics: the top bar shows the problem count', /^[1-9]\d* problem/.test(chip || ''), chip);
+  check('diagnostics: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-diagnostics.png');
+};
+
+// --- Wave 6: TXT export is <time> <value> lines, no header -------------------
+scenarios.exportTxt = async (cdp) => {
+  await boot(cdp);
+  const downloads = path.join(QA, 'artifacts', 'downloads');
+  fs.rmSync(downloads, { recursive: true, force: true });
+  fs.mkdirSync(downloads, { recursive: true });
+  await cdp.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads });
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(700);
+  const added = await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(800);
+  check('exportTxt: a row is on the wave', added === 'ok', added);
+  const waitForFile = async (ext) => {
+    for (let i = 0; i < 50; i++) {
+      await sleep(300);
+      const names = fs.existsSync(downloads) ? fs.readdirSync(downloads).filter((n) => n.endsWith(ext)) : [];
+      for (const name of names) {
+        const full = path.join(downloads, name);
+        try { const stat = fs.statSync(full); if (stat.size > 0) return { name: name, text: fs.readFileSync(full, 'utf8') }; } catch (error) { /* still downloading */ }
+      }
+    }
+    return null;
+  };
+  // the CSV is the reference: same row, same values, one header line
+  await cdp.eval('window.__qa.click(".wave-more", 1)');
+  await sleep(500);
+  const csvClicked = await cdp.eval('window.__qa.clickText(".modal .btn", "CSV (row)")');
+  const csv = await waitForFile('.csv');
+  note('csv export', csv && { name: csv.name, bytes: csv.text.length });
+  check('exportTxt: the csv export produced a file', csvClicked === 'ok' && !!csv, csv && csv.name);
+  const csvLines = csv ? csv.text.split('\n').filter((line) => line.length > 0) : [];
+  check('exportTxt: the csv has the header and data', csvLines.length > 3 && csvLines[0] === 'time,value', csvLines.slice(0, 2));
+  // the TXT export of the same row
+  await cdp.eval('window.__qa.click(".wave-more", 1)');
+  await sleep(500);
+  const txtClicked = await cdp.eval('window.__qa.clickText(".modal .btn", "TXT (row)")');
+  const txt = await waitForFile('.txt');
+  note('txt export', txt && { name: txt.name, bytes: txt.text.length, first: txt.text.split('\n').slice(0, 3) });
+  check('exportTxt: the settings dialog offers a TXT export', txtClicked === 'ok', txtClicked);
+  check('exportTxt: the export produced a txt file', !!txt, txt && txt.name);
+  const txtLines = txt ? txt.text.split('\n').filter((line) => line.length > 0) : [];
+  check('exportTxt: the txt has no header', txtLines.length > 3 && /^\d+ \S+$/.test(txtLines[0]), txtLines.slice(0, 2));
+  check('exportTxt: the txt has the same number of lines as the csv data',
+    !!csv && txtLines.length === csvLines.length - 1, { txt: txtLines.length, csv: csvLines.length });
+  const csvData = csvLines.slice(1).map((line) => { const comma = line.indexOf(','); return [line.slice(0, comma), line.slice(comma + 1)]; });
+  const txtData = txtLines.map((line) => { const space = line.indexOf(' '); return [line.slice(0, space), line.slice(space + 1)]; });
+  check('exportTxt: every line is <time> <value> with the csv values',
+    csvData.length === txtData.length && csvData.every((pair, i) => pair[0] === txtData[i][0] && pair[1] === txtData[i][1]),
+    { csv: csvData.slice(0, 3), txt: txtData.slice(0, 3) });
+  const s = await state(cdp);
+  note('export status', s.status);
+  check('exportTxt: the export reports success in the status line', /export/i.test(s.status || ''), s.status);
+  check('exportTxt: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-export-txt.png');
 };
 (async () => {
   const wanted = process.argv.slice(2);

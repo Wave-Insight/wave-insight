@@ -9,7 +9,7 @@
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-use wave_insight_lib::data_struct::ShowType;
+use wave_insight_lib::waveform::ShowType;
 use wave_insight_lib::waveform::{BitValue, WaveValue};
 
 use crate::wave_show::geometry::{Time, View, ROW_HEIGHT};

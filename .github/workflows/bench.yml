@@ -43,13 +43,14 @@ jobs:
     - name: Build the benchmark suite
       run: cargo bench -p wave-insight-lib --no-run --locked
 
-    #the groups users feel (open, decode, the time axis, the cursor readout);
-    #a full local run also has `window` and `render`
+    #the groups users feel (open, decode, the time axis, the cursor readout) plus
+    #the LSP/design queries that used to scan the whole elaboration; a full local
+    #run also has `window` and `render`
     - name: Run the hot path benchmarks
       if: github.event_name == 'workflow_dispatch'
       timeout-minutes: 20
       #criterion takes one positional FILTER (a regex), not a list of names
-      run: cargo bench -p wave-insight-lib --locked -- 'open|decode|time_range_hint|value_at'
+      run: cargo bench -p wave-insight-lib --locked -- 'open|decode|time_range_hint|value_at|lsp|design'
 
     #`html_reports` writes the plots and the summary table under target/criterion
     - name: Upload the criterion report

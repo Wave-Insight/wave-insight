@@ -4,29 +4,32 @@ Design for the R2 step of [`rebuild-plan.md`](rebuild-plan.md): replace the
 props-and-`Rc<RefCell<_>>` plumbing with one store, and use the same move to fix
 the pane layout.
 
-Status: **steps 1-3 implemented; step 3b and step 4 are open.** The store
-lives in `front-end/src/state/` (nine modules, about 4.0k lines of Rust with 62
+Status: **steps 1-3 implemented; step 3b is mostly in, step 4 is open.** The
+store lives in `front-end/src/state/` (nine modules, about 4.2k lines of Rust with 64
 native `#[test]`s): layout, status, wave rows, viewport/cursors, the open sources
-and active tab, the inspector signal, jump requests, the per-signal preferences
-and the per-dump sessions are slices; `WaveShow`, the time bar, the top bar and
-the source editor are subscribers, and pointer gestures re-render nothing. The
-`Effect` enum is real: the reducer emits `LspOpen`/`LspChange`/`LspClose`/
-`LspTop`/`MonacoShow` and `App` executes them through `LspBridge`, whose
-document table is now a mirror of `State.sources` (so
+and active tab, the inspector signal, jump requests, the path picker, the
+settings dialog, the per-signal preferences and the per-dump sessions are slices;
+`WaveShow`, the time bar, the top bar and the source editor are subscribers, and
+pointer gestures re-render nothing. The `Effect` enum is real: the reducer emits
+`LspOpen`/`LspChange`/`LspClose`/`LspTop`/`MonacoShow` and `App` executes them through
+`LspBridge`, whose document table is a mirror of `State.sources` (so
 `window.__waveInsightLsp.stats().documents` still reports the open-document
 count). The elaboration-diagnostics merge is deliberately **not** store state: it
 happens in the language server and only `nav.problems` reaches the store.
-**Step 3b remains**: the `design` slice (`DesignState`/`SharedDesign`), the
-`focus.instance` + module-tree selection, the picker/dialog slices, and
-dispatching editor edits as `SourceReloaded` (the action exists, the editor does
-not emit it yet). **Step 4 is partial**: the layout rules of §3.4 are in and the
-`Rc<ModuleValue>`/`Rc<Module>` plumbing is gone, but the legacy component
-shells, `SharedDesign` and the local drag-preview fields remain (the old
-`goto_token` is now the store-owned `nav.jump_token`).
-R1 (canvas renderer) and the self-hosted editor are in; R3 is deleting
-`data_struct::Module`/`ModuleValue` in the library, `file_load/`, `nav/` and
-`wave_show/` — so this document deliberately touches only `app.rs`, the
-component boundaries and a new `state/` module.
+**Step 3b is partial**: the picker and the settings dialog are store slices now
+(`nav.picker`/`nav.dialog`), but the `design` slice
+(`DesignState`/`SharedDesign`), `focus.instance` + module-tree selection and
+dispatching editor edits as `SourceReloaded` (the action exists, the editor
+does not emit it yet) remain. **Step 4 is partial**: the layout rules of §3.4 are
+in, the `Rc<ModuleValue>`/`Rc<Module>` plumbing is gone and the R3 deletion removed the
+library's `data_struct` model (`ShowType` is now
+`wave_insight_lib::waveform::ShowType`), but the legacy component shells,
+`SharedDesign` and the local drag-preview fields remain (the old `goto_token` is
+now the store-owned `nav.jump_token`).
+R1 (canvas renderer) and the self-hosted editor are in, and R3 deleted the
+library's `data_struct` model; the remaining component-shell/`SharedDesign`
+teardown is tracked in step 4, so this document deliberately touches only
+`app.rs`, the component boundaries and a new `state/` module.
 
 ---
 
@@ -245,18 +248,20 @@ propagation, so an unrelated dispatch simply never reaches it.
 | `CodeReader` | `sources`, `nav.goto` | open/close tab, jump |
 | `CodeBlock` | `nav.goto` (+ `sources` version for a re-read) | jump, file reload |
 | `Inspector` | `focus.signal`, `design.version` | selection, new source parsed |
-| `PathPicker` | `nav.picker` | candidates appear/disappear |
+| `PathPicker` | `nav.picker` (via `App`, which mirrors it) | candidates appear/disappear |
 | `WaveShow` shell | `rows`, `dump`, `focus.signal` | row added/removed/reordered/selected |
 | `WaveSurface` (canvas) | `rows`, `dump` → `Msg::Redraw`; reads `view` via `select` | structural changes only |
 | `TimeBar` | `view`, `view.cursors` | zoom/pan/cursor |
-| `Ctrl` (settings dialog) | `nav.dialog` | dialog opened/closed/edited |
+| `Ctrl` (settings dialog) | `nav.dialog` (via `WaveShow`, which mirrors it) | dialog opened/closed/edited |
 
 `App` *renders* only for `layout`; its other subscriptions are mirrors it re-reads
 when they change (`sources`, `focus`, `nav.goto`) plus the inlay-hint context.
 Everything else is a leaf subscription, so a zoom no longer walks the sidebar or
-the editor. `Sidebar`/`SignalList`, `PathPicker` and the settings `Ctrl` still
-take their data through `App` props; moving them to these subscriptions is
-step 3b.
+the editor. The picker and the settings dialog are store state now (`nav.picker`/`nav.dialog`),
+but their components are still prop-driven: `App` mirrors the picker and
+`WaveShow` mirrors the dialog, then renders `PathPicker`/`Ctrl` with props.
+`Sidebar`/`SignalList` still take their data through `App` props; moving them to
+these subscriptions is the remaining step-3b work.
 
 **Debug seams for the render counts.** `App` owns a `Cell<u32>` that is bumped at
 the end of every `update` that returns `true`, and `rendered()` copies it into
@@ -288,7 +293,7 @@ Stored (source of truth, survives everything):
 | `layout` | `sidebar_w`, `editor_ratio`, `drawer_open` |
 | `row_prefs` / `sessions` | remembered per-signal settings / per-dump row lists (persisted, see below) |
 | `focus` | `signal: Option<String>` (inspector) - **in**; `instance: Option<String>` (sidebar) - **step 3b** |
-| `nav` | `goto`, `jump_token`, `top`, `status`, `problems` - **in**; `picker`, `dialog` - **step 3b** |
+| `nav` | `goto`, `jump_token`, `top`, `status`, `problems`, `picker`, `dialog` - **in** |
 
 Derived (recomputed or cached with a version key, never serialized):
 
@@ -625,7 +630,7 @@ Delete (obsolete by construction): the `added_seq` note inside
 
 ### Step 3 — documents, design and LSP effects
 
-**Status: step 3 implemented; step 3b open.** Done: `sources` (name, text,
+**Status: step 3 implemented; step 3b mostly in.** Done: `sources` (name, text,
 language, version, active tab; a versioned slice) is the only document list;
 `App.verilog_source`, the selected signal and `App.goto`/`goto_token` are gone
 from the shell (the shell mirrors the store's `focus.signal` and `nav.goto` for
@@ -634,9 +639,13 @@ rendering); the `Effect` enum is real and `App::run_effects` executes it through
 jumps are `Action::JumpRequested` with a store-owned `jump_token`;
 `didOpen`/`didChange`/`didClose` and top-module changes are effects, so the
 bridge's document table is a mirror and the QA matrix's `lsp` document counts
-still hold. Remaining (step 3b): `State.design` (`DesignState`/`SharedDesign`
-still in `App` and the module tree), `focus.instance` + module-tree selection,
-the `picker`/`dialog` slices, and dispatching editor edits as
+still hold. The path picker and the settings dialog are store slices now
+(`nav.picker`/`nav.dialog` with `PickerOpened`/`PickerChosen`/`PickerCancelled`
+and `DialogOpened`/`DialogClosed`), and the wave pane no longer owns
+`menu_show`/`on_setting_idx`; `App`/`WaveShow` mirror the slices and pass props
+to the existing components. Remaining (step 3b): `State.design`
+(`DesignState`/`SharedDesign` still in `App` and the module tree),
+`focus.instance` + module-tree selection, and dispatching editor edits as
 `Action::SourceReloaded` (the reducer handles the action; the monaco edit path
 does not emit it yet).
 
@@ -666,9 +675,13 @@ New assertion: `design: adding a source re-parses exactly once` (version seam).
 **Status: partial.** The layout rules of §3.4 (collapsed editor, 120 px minimum,
 75 % ratio clamp, four-row wave minimum, the wave-frame tab strip) are
 implemented and asserted by the browser matrix; `Rc<ModuleValue>`, `Rc<Module>`,
-`signal_value`, `added_seq` and `SharedWaveform` are gone. The legacy component
-shells (`module_struct/`, `nav/`), `SharedDesign`, `goto_token` and the local
-drag-preview fields (`splitter_start`) remain.
+`signal_value`, `added_seq` and `SharedWaveform` are gone, and R3 deleted the
+library's `data_struct` model (`ShowType` now lives in
+`wave_insight_lib::waveform`, `Signal`/`CodeLocation` are gone and the app's
+locate/jump path uses a small local `ResolvedSignal`). The legacy component
+shells (`module_struct/`, `nav/`), `SharedDesign` and the local drag-preview
+fields (`splitter_start`) remain (the old `goto_token` is the store-owned
+`nav.jump_token`).
 
 - `--editor-h`, `.wave-splitter`, collapse rule and the wave frame's tab strip
   (the load/drive view shares the frame with the waveform, §3);
@@ -691,6 +704,8 @@ the editor and the waveform)`.
 
 The task-10 wording, made checkable, with the status at the time of writing:
 
+- `grep -R "data_struct" front-end/src wave-insight-lib/src wave-insight-lib/tests wave-insight-lib/benches`
+  → nothing; **done (R3)**
 - `grep -R "RefCell<ModuleValue>" front-end/src` → nothing; **done**
 - `grep -R "Rc<Module>" front-end/src` → nothing; **done**
 - `SharedDesign`, `SharedWaveform`, `signal_add`, `signal_add_seq`, `added_seq`,
@@ -702,18 +717,21 @@ The task-10 wording, made checkable, with the status at the time of writing:
 - each pane component has a `Subscription` field, and no `struct` field that
   duplicates a `State` field (the table in §2.2 is the checklist); **done for the
   panes migrated so far** (`TopBar`, `WaveShow`, the time bar, `CodeReader`/
-  `CodeBlock`) — the sidebar tree (`ModuleStruct`) still migrates in step 3b
+  `CodeBlock`); the picker/dialog state is in the store but `PathPicker`/`Ctrl`
+  are still prop-driven through `App`/`WaveShow`, and the sidebar tree
+  (`ModuleStruct`) still migrates in step 3b
 - the layout constants of §3.4 hold, and `window.__waveDebug.render_count` does
   not move during a splitter drag (it counts shell re-renders only); **done** —
   asserted by the browser matrix's `layoutRules` scenario
 - `cargo test -p front-end --bins` covers `reduce` (row add/remove/reorder,
-  document open/close, dump switch, jump, picker); **partially** — 62 native
-  tests cover layout, rows, sources, jump, viewport/cursors, sessions and
-  persistence; the design/picker/dialog reducers do not exist yet (step 3b)
+  document open/close, dump switch, jump, picker, dialog); **mostly** — 64
+  native tests cover layout, rows, sources, jump, viewport/cursors, sessions,
+  persistence, picker and dialog; the design reducer does not exist yet
+  (step 3b)
 - the browser matrix passes, with the rewires listed above; **the gate** — it has
-  grown from the 140 assertions of the original task to 46 scenarios (the
-  `findValue` scenario is the latest), and the Lead re-measures the baseline
-  after each wave.
+  grown from the 140 assertions of the original task to 49 scenarios / 356
+  assertions (the latest are `findValue`, `elaboration`, `diagnostics` and
+  `exportTxt`), and the Lead re-measures the baseline after each wave.
 
 ---
 

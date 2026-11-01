@@ -54,7 +54,7 @@ use std::fmt::Write as _;
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use wave_insight_lib::data_struct::ShowType;
+use wave_insight_lib::waveform::ShowType;
 use wave_insight_lib::waveform::{ValueQuery, Waveform};
 
 /// The checked-in FST fixture (a real `fstWriter` dump, 1625 bytes).

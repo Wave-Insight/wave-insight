@@ -136,6 +136,7 @@ mod format;
 mod hierarchy;
 mod query;
 mod render;
+mod show_type;
 mod source;
 mod timescan;
 mod value;
@@ -152,6 +153,9 @@ pub use error::{Result, WaveformError};
 pub use format::{TimeUnit, Timescale, WaveFormat};
 pub use hierarchy::{HierarchyView, ScopeNode, SignalInfo, SignalKind};
 pub use query::ValueQuery;
+// R3: the display preference lives with the waveform types now (the render API
+// needs it); the legacy shared-types module it used to live in is gone.
+pub use show_type::ShowType;
 pub use source::WaveformSource;
 pub use value::{BitValue, Bits, WaveValue};
 

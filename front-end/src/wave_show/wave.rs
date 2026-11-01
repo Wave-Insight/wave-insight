@@ -10,7 +10,9 @@ use crate::state::DumpHandle;
 use std::cell::Cell;
 
 use crate::nav::ValueFormat;
-use crate::state::{self, select, Cursors, RowsSlice, Status, Store, Subscription, View, Viewport};
+use crate::state::{
+    self, select, Cursors, Dialog, RowsSlice, Status, Store, Subscription, View, Viewport,
+};
 
 use super::canvas;
 use super::ctrl::Ctrl;
@@ -69,6 +71,8 @@ pub struct WaveShowProps {
 pub enum Msg {
     /// The store's rows changed (add/remove/reorder/settings/selection).
     Rows(RowsSlice),
+    /// The store's settings-dialog state changed (open/closed).
+    Dialog(Option<Dialog>),
     /// The committed viewport/cursors changed (this is where a gesture lands).
     Viewport(Viewport),
     /// The opened dump's time range changed.
@@ -195,8 +199,11 @@ pub struct WaveShow {
     names_drag: Option<(f64, f64)>,
     names_preview: Cell<f64>,
 
-    menu_show: bool,
-    on_setting_idx: Vec<usize>,
+    /// The settings dialog, mirrored from the store (which owns whether it is
+    /// open and for which rows).
+    dialog: Option<Dialog>,
+    /// Kept so the subscription lives exactly as long as the component.
+    _dialog_sub: Subscription,
 
     key_press: Rc<RefCell<Vec<bool>>>,
 
@@ -248,6 +255,9 @@ impl Component for WaveShow {
         // the canvas keeps its old backing store size and the drawing is drawn
         // squashed until something else forces a redraw.
         let layout_sub = store.subscribe(select::layout, ctx.link().callback(|_| Msg::Resize));
+        // the settings dialog is store state now (R2 step 3b)
+        let dialog = store.select(select::dialog);
+        let dialog_sub = store.subscribe(select::dialog, ctx.link().callback(Msg::Dialog));
         let mut this = Self {
             store: store.clone(),
             signal_things: SignalThings::new(),
@@ -271,8 +281,8 @@ impl Component for WaveShow {
             fit_committed: false,
             scroll_top: 0.0,
 
-            menu_show: false,
-            on_setting_idx: Vec::new(),
+            dialog,
+            _dialog_sub: dialog_sub,
 
             key_press: Rc::new(RefCell::new(vec![false; 256])),
 
@@ -406,8 +416,12 @@ impl Component for WaveShow {
 
         let rows_height = format!("{:.1}px", content_height(rows));
         // the settings dialog can expand a bus into its bits
-        let bits_idx = self.on_setting_idx.first().copied().unwrap_or(0);
+        let dialog_indices = self.dialog_indices();
+        let bits_idx = dialog_indices.first().copied().unwrap_or(0);
         let (bit_width, bits_expanded) = self.bits_state(bits_idx);
+        let dialog_row = dialog_indices
+            .first()
+            .and_then(|index| self.signal_things.iter().nth(*index));
 
         html! {
             <div class={if ctx.props().hidden {"wave-pane hidden"} else {"wave-pane"}} id="wave-pane"
@@ -416,12 +430,13 @@ impl Component for WaveShow {
                 // adjustable: the splitter writes it during the drag and it is
                 // committed here on mouseup.
                 style={format!("--names-w: {:.0}px", self.names_w)}>
-                if self.menu_show && !self.on_setting_idx.is_empty() {
-                    <Ctrl name={self.signal_things[self.on_setting_idx[0]].name.clone()}
-                        path={self.signal_things[self.on_setting_idx[0]].path.clone()}
-                        setting={self.signal_things[self.on_setting_idx[0]].setting.clone()}
-                        load={self.signal_things[self.on_setting_idx[0]].load.clone()}
-                        drive={self.signal_things[self.on_setting_idx[0]].driver.clone()}
+                {if let Some(row) = &dialog_row {
+                    html!{
+                    <Ctrl name={row.name.clone()}
+                        path={row.path.clone()}
+                        setting={row.setting.clone()}
+                        load={row.load.clone()}
+                        drive={row.driver.clone()}
                         bits={bit_width}
                         expanded={bits_expanded}
                         onbits={link.callback(move |()| Msg::ToggleBits(bits_idx))}
@@ -429,7 +444,10 @@ impl Component for WaveShow {
                         onlocate={link.callback(Msg::Locate)}
                         onexport={link.callback(Msg::Export)}
                         delete={link.callback(|_| Msg::DeleteSig)} />
-                }
+                    }
+                }else {
+                    html!{}
+                }}
                 <TimeBar store={self.store.clone()} width={metrics.surface_w} />
                 // The grip for the label column. It has to be visible and to
                 // cover the seam: the old divider was an empty `<div>` with no
@@ -607,43 +625,48 @@ impl WaveShow {
                 }
                 // the dialog was the entry point; the expanded rows are the
                 // answer, so close it
-                self.menu_show = false;
+                self.dispatch(state::Action::DialogClosed);
+                true
+            }
+            Msg::Dialog(dialog) => {
+                self.dialog = dialog;
                 true
             }
             Msg::ShowMenu(idx) => {
-                self.menu_show = true;
                 let choosed_idx = self.signal_things.get_choose_idx();
                 // The button belongs to one row: unless that row is part of the
                 // selection, its settings are what the dialog must show (the
                 // dialog used to open for whatever row happened to be selected).
-                if choosed_idx.contains(&idx) {
-                    self.on_setting_idx = choosed_idx;
+                let indices = if choosed_idx.contains(&idx) {
+                    choosed_idx
                 } else {
                     self.dispatch(state::Action::RowSelected {
                         index: idx,
                         ctrl: false,
                         shift: false,
                     });
-                    self.on_setting_idx = vec![idx];
                     // the snapshot arrives through the subscription; settings read
                     // the next frame, exactly like before
                     self.sync_rows();
-                }
+                    vec![idx]
+                };
+                self.dispatch(state::Action::DialogOpened { indices });
                 true
             }
             Msg::SetSignal((close, set)) => {
+                let indices = self.dialog_indices();
                 if close {
-                    self.menu_show = false;
+                    self.dispatch(state::Action::DialogClosed);
                 }
                 self.dispatch(state::Action::RowSettingChanged {
-                    indices: self.on_setting_idx.clone(),
+                    indices,
                     setting: set,
                 });
                 true
             }
             Msg::DeleteSig => {
-                self.menu_show = false;
-                let indices = std::mem::take(&mut self.on_setting_idx);
+                let indices = self.dialog_indices();
+                self.dispatch(state::Action::DialogClosed);
                 self.dispatch(state::Action::RowsRemoved { indices });
                 ctx.props().onselect.emit(None);
                 true
@@ -711,8 +734,8 @@ impl WaveShow {
                     // esc: the settings dialog owns the key while it is open
                     // (closing it must not also clear the row selection); with
                     // no dialog it clears the selection, as before
-                    if self.menu_show {
-                        self.menu_show = false;
+                    if self.dialog.is_some() {
+                        self.dispatch(state::Action::DialogClosed);
                         return true;
                     }
                     self.dispatch(state::Action::RowsCleared);
@@ -943,12 +966,12 @@ impl WaveShow {
                 // the dialog belongs to the first row of its target set; the app
                 // resolves the driver/load span (or lists the several) from there
                 let path = self
-                    .on_setting_idx
+                    .dialog_indices()
                     .first()
                     .and_then(|idx| self.signal_things.iter().nth(*idx))
                     .map(|item| item.path.clone());
                 if let Some(path) = path {
-                    self.menu_show = false;
+                    self.dispatch(state::Action::DialogClosed);
                     ctx.props().onlocate.emit((load, index, path));
                 }
                 true
@@ -958,7 +981,7 @@ impl WaveShow {
                 // the download is the answer, so the dialog closes either way and
                 // the status line says what happened
                 let result = self.export(format, scope);
-                self.menu_show = false;
+                self.dispatch(state::Action::DialogClosed);
                 match result {
                     Ok(note) => self.dispatch(state::Action::Status(Status::info(note))),
                     Err(note) => self.dispatch(state::Action::Status(Status::error(note))),
@@ -1203,7 +1226,7 @@ impl WaveShow {
             .unwrap_or_else(|| export::dump_stem(Some(dump)));
         match scope {
             ExportScope::Row => {
-                let index = self.on_setting_idx.first().copied().ok_or_else(|| {
+                let index = self.dialog_indices().first().copied().ok_or_else(|| {
                     "no row selected — open a row's settings and try again".to_string()
                 })?;
                 let item = self
@@ -1338,6 +1361,14 @@ impl WaveShow {
             })
             .max()
             .unwrap_or(0)
+    }
+
+    /// Indices of the rows the settings dialog is open for; empty when closed.
+    fn dialog_indices(&self) -> Vec<usize> {
+        self.dialog
+            .as_ref()
+            .map(|dialog| dialog.indices.clone())
+            .unwrap_or_default()
     }
 
     /// `(width, expanded)` of the row at `index`, for the expand-bits button:

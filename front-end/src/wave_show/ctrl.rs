@@ -2,7 +2,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
-use wave_insight_lib::data_struct::ShowType;
+use wave_insight_lib::waveform::ShowType;
 
 use super::export::{ExportFormat, ExportScope};
 use super::settings::Settings;

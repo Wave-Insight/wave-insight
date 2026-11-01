@@ -1,7 +1,5 @@
 use std::cell::Cell;
 
-use wave_insight_lib::data_struct::Signal;
-
 use yew::prelude::*;
 
 use crate::code_reader::CodeReader;
@@ -12,8 +10,8 @@ use crate::nav::{
     SourceClick,
 };
 use crate::state::{
-    self, Action, Cursors, DumpHandle, Effect, Focus, Goto, Layout, RowsSlice, SourcesSlice,
-    Status, Store, Subscription,
+    self, Action, Cursors, DumpHandle, Effect, Focus, Goto, Layout, Picker, RowsSlice,
+    SourcesSlice, Status, Store, Subscription,
 };
 use crate::wave_show::WaveShow;
 
@@ -49,6 +47,8 @@ pub enum Msg {
     Focus(Focus),
     /// The store's pending jump request changed (the app subscribes to it).
     GotoChanged(Option<Goto>),
+    /// The store's path picker changed (the app subscribes to it).
+    PickerChanged(Option<Picker>),
     /// A source tab was clicked.
     TabActivated(usize),
     /// The editor applied a jump request; the store clears the pending one.
@@ -149,10 +149,12 @@ fn sidebar_max() -> f64 {
         .unwrap_or(640.0)
 }
 
-/// Candidates waiting for the user to pick one.
-struct Picker {
-    title: String,
-    paths: Vec<String>,
+/// What the shell resolved about one signal before it dispatches `RowAdded`:
+/// the width the dump/design reports and the driver/load locations.
+struct ResolvedSignal {
+    size: usize,
+    load: Vec<String>,
+    drive: Vec<String>,
 }
 
 pub struct App {
@@ -194,7 +196,11 @@ pub struct App {
     _goto_sub: Subscription,
     /// The inspector selection, mirrored from the store.
     focus: Focus,
+    /// The path picker, mirrored from the store (the store owns whether it is
+    /// open; the app still performs the choice, which needs the dump/design).
     picker: Option<Picker>,
+    /// Kept so the subscription lives exactly as long as the component.
+    _picker_sub: Subscription,
     /// The pending jump request, mirrored from the store.
     goto: Option<Goto>,
     ///(mouse x, sidebar width) while the splitter is dragged
@@ -302,6 +308,11 @@ impl Component for App {
         let focus_sub = store.subscribe(state::select::focus, ctx.link().callback(Msg::Focus));
         let goto = store.select(state::select::goto);
         let goto_sub = store.subscribe(state::select::goto, ctx.link().callback(Msg::GotoChanged));
+        let picker = store.select(state::select::picker);
+        let picker_sub = store.subscribe(
+            state::select::picker,
+            ctx.link().callback(Msg::PickerChanged),
+        );
         let mut this = Self {
             store,
             layout,
@@ -321,7 +332,8 @@ impl Component for App {
             _focus_sub: focus_sub,
             _goto_sub: goto_sub,
             focus,
-            picker: None,
+            picker,
+            _picker_sub: picker_sub,
             goto,
             splitter_start: None,
             sidebar_preview: None,
@@ -664,6 +676,10 @@ impl App {
                 self.goto = goto;
                 true
             }
+            Msg::PickerChanged(picker) => {
+                self.picker = picker;
+                true
+            }
             Msg::TabActivated(index) => {
                 self.apply(Action::TabActivated { index });
                 false
@@ -918,7 +934,7 @@ impl App {
                             candidates.len(),
                             click.word
                         )));
-                        self.picker = Some(Picker {
+                        self.apply(Action::PickerOpened {
                             title: format!("{} signals match `{}`", candidates.len(), click.word),
                             paths: candidates,
                         });
@@ -952,17 +968,23 @@ impl App {
                 false
             }
             Msg::PickPath(index) => {
-                if let Some(picker) = self.picker.take() {
-                    if let Some(path) = picker.paths.get(index).cloned() {
-                        // the picker was opened by a click in the source: same
-                        // rule, add without moving the editor
-                        self.add_path(&path, false);
-                    }
+                // the store owns the open picker; the app resolves the choice
+                // (it owns the dump/design) and dispatches the row
+                if let Some(path) = self
+                    .picker
+                    .as_ref()
+                    .and_then(|picker| picker.paths.get(index))
+                    .cloned()
+                {
+                    self.apply(Action::PickerChosen { index });
+                    // the picker was opened by a click in the source: same rule,
+                    // add without moving the editor
+                    self.add_path(&path, false);
                 }
                 true
             }
             Msg::CancelPick => {
-                self.picker = None;
+                self.apply(Action::PickerCancelled);
                 true
             }
         }
@@ -1102,17 +1124,20 @@ impl App {
         self.apply(Action::JumpRequested { file, line, col });
     }
 
-    /// Build the legacy signal row for a hierarchical path.
-    fn signal_for_path(&self, path: &str) -> Signal {
-        let mut signal = Signal::new();
-        signal.value_key = path.to_string();
-        signal.size = 1;
+    /// Resolve what a row needs to know about a hierarchical path: its width
+    /// (the dump wins when it has the signal) and where it is driven/loaded.
+    ///
+    /// The reducer has no access to the dump or the design, so the shell does
+    /// the lookup and hands it plain data. (This used to build the legacy
+    /// `Signal` row type; that type is gone in R3.)
+    fn signal_for_path(&self, path: &str) -> ResolvedSignal {
+        let mut signal = ResolvedSignal {
+            size: 1,
+            load: Vec::new(),
+            drive: Vec::new(),
+        };
         if let Some(flat) = self.design.borrow().flat_signal(path) {
             signal.size = flat.width.unwrap_or(1).max(1) as usize;
-            signal.location_define = wave_insight_lib::data_struct::CodeLocation {
-                file_name: flat.declaration.file.display().to_string(),
-                line: flat.declaration.start_line,
-            };
             signal.drive = flat
                 .drivers
                 .iter()
@@ -1126,7 +1151,7 @@ impl App {
         }
         // The dump is what gets drawn, so its width wins when the two disagree
         // (a truncated vector would otherwise be formatted at the declared
-        // width, which the legacy formatters cannot do).
+        // width, which the formatters cannot do).
         if let Some(width) = self.dump().and_then(|waveform| {
             waveform
                 .waveform()
@@ -1169,7 +1194,7 @@ impl App {
                         "{} signals in the waveform match `{path}`",
                         dump_candidates.len()
                     )));
-                    self.picker = Some(Picker {
+                    self.apply(Action::PickerOpened {
                         title: format!(
                             "{} signals in the waveform match `{path}`",
                             dump_candidates.len()

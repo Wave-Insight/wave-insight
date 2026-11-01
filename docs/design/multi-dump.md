@@ -1,0 +1,150 @@
+# Multi-dump and split view
+
+Design note for opening several dumps at once and for the later split view. It
+builds on the store described in [state-store.md](../state-store.md): today
+exactly one dump is open and the wave rows, the viewport and the derived tree
+belong to that dump implicitly. This note makes that relationship explicit so a
+second dump can be added without forking the whole UI.
+
+Status: **design, no code yet.** It follows the R2 step-3b cleanup (design
+slice, focus.instance) and the Tauri 2 migration: the roadmap schedules it for
+Wave 8, after Wave 7 finishes step 3b and the desktop-shell migration. It must
+not change the DOM contract the browser QA matrix reads on a single-dump
+session.
+
+## 1. Why
+
+Comparing two runs of the same testbench (before/after a fix, two seeds, RTL vs
+gate level) is a daily Verdi workflow: open both dumps, look at the same signals,
+switch between them, later show them side by side on one time axis. The current
+app cannot do it: opening a second dump replaces the first one, and the row list
+of the first is only recoverable by reopening the file (session restore).
+
+## 2. What is per-dump today
+
+| Slice | Today | Must become per-dump |
+|---|---|---|
+| `State.dump` (`DumpHandle`, identity, time range) | one | one entry per open dump |
+| `State.rows` (`Rc<Vec<Row>>` + version) | global | per dump |
+| `State.viewport` (zoom/pan + cursors) | global | per dump (each dump has its own time axis) |
+| sidebar tree | derived from the open dump's hierarchy | derived from the active dump |
+| `State.sessions` (remembered row lists) | keyed by `DumpId` | unchanged — it already is per dump |
+| `State.row_prefs` (display settings by signal path) | global by path | unchanged — the same signal keeps its format across dumps |
+| `State.focus.signal` | one | per dump, or global with the active dump deciding what it means |
+| LSP `top` | derived from the open dump's root | follows the active dump |
+| `window.__waveDebug` counters | active renderer | unchanged (they describe the visible surface) |
+
+## 3. Target model
+
+```rust
+pub struct Dumps {
+    pub items: Rc<Vec<DumpEntry>>,
+    pub active: usize,
+    /// Bumped on every change, like `Rows.version`, so a subscriber compares one
+    /// integer; the per-entry slices compare by their own versions.
+    pub version: u64,
+}
+
+pub struct DumpEntry {
+    pub id: DumpId,              // file name + byte size, what sessions are keyed by
+    pub handle: Rc<Waveform>,    // the only copy; decoded data stays in the library cache
+    pub time_range: Option<TimeRange>,
+    pub range_from_body: bool,
+    pub rows: Rows,              // the wave rows of this dump (order, settings, selection)
+    pub viewport: Viewport,      // committed zoom/pan + cursors of this dump
+    pub focus: Focus,            // inspector selection while this dump is active
+}
+
+State { dumps: Dumps, ... } replaces `State { dump, rows, viewport }`.
+
+Rules:
+
+- **Selectors stay the same shape**: `select::rows`, `select::viewport`,
+  `select::time_range`, `select::dump_waveform` read the *active* entry. Panes
+  subscribe exactly as they do now, so the renderer, the time bar and the wave
+  pane need no signature changes.
+- **Actions take an index when they may address a non-active dump** (`DumpClosed`,
+  `DumpTabActivated`), otherwise they act on the active one. None of the row or
+  viewport actions need an index.
+- **The row funnel changes**: `State::set_rows` becomes
+  `State::set_rows(dump: usize, items: Vec<Row>)`; every row action already goes
+  through it, so the persistence hook (`remember_rows`) stays in one place and
+  records under that dump's identity.
+- **`DumpOpened` becomes `DumpAdded { id, bytes, handle }` + activation**. A
+  second open of the same identity focuses the existing tab instead of adding a
+  duplicate (the same dedupe rule the sources slice already uses).
+
+## 4. UI
+
+1. A dump tab strip at the top of the wave frame (above the ruler, next to the
+   existing `Waveform / Drivers / loads` tabs — which stay). One tab per dump,
+   label = file name, a close button, active tab highlighted; the same
+   `role=tablist/tab` markup the source tabs use, so the accessibility rules and
+   the keyboard handling (Ctrl+W closes the active *source* tab today; with two
+   tab strips it closes the focused strip's active tab) carry over.
+2. The sidebar tree, the inspector and the wave pane always describe the active
+   dump; switching tabs re-renders those three slices only (the store does this
+   through the versioned slices it already has).
+3. Memory: every open dump keeps its file bytes in wasm memory. The status line
+   reports the summed size; opening more than a configured budget (e.g. 1.5 GiB
+   of file bytes) is refused with the same actionable message the single-dump
+   size guard uses today.
+
+## 5. Split view (second step, same model)
+
+Two wave panes side by side, each showing one dump (or the same dump with
+independent zoom). The store gains `split: Option<{ left: usize, right: usize }>`;
+each pane renders its own dump's rows from the same `Dumps` slice and owns its
+`Viewport` copy while the split is active. The time axis can be linked (one
+commit applies to both) or independent; start with linked, behind a toggle.
+
+## 6. Persistence
+
+The session store is already keyed by `DumpId`. With N tabs it becomes N
+entries (cap: the sessions cap, e.g. 20 dumps); restoring the rows of a dump
+happens when that dump's tab is created, not globally. `row_prefs` (display
+settings by signal path) stays global on purpose: the same signal keeps its
+format across runs, which is what a user comparing two runs wants.
+
+## 7. Migration order
+
+Each step is independently shippable and verified by the full QA matrix plus the
+new scenarios below.
+
+1. **State refactor, one dump**: introduce `Dumps` with a single entry, move
+   `rows`/`viewport`/`focus` into the entry, update selectors and the reducer
+   tests. No user-visible change; the DOM contract must not move.
+2. **Open more than one**: loader adds a tab instead of replacing; tab strip;
+   switching; closing (closing the active tab activates its neighbour; closing
+   the last one leaves the app in the empty state the start hint describes);
+   duplicate identity focuses the existing tab; the memory budget guard.
+3. **Split view**: two panes over the same `Dumps` slice, linked time axis first.
+
+## 8. Verification
+
+- Host tests: reducer (add/activate/close/dedupe/budget), selectors always read
+  the active entry, session restore per dump tab.
+- Browser QA: a new `multiDump` scenario — open `wave.vcd` and `mismatch.vcd`,
+  add a row to each, switch tabs and assert rows/tree/status/cursor follow the
+  active dump, close a tab and assert its neighbour becomes active, then assert
+  the memory-budget message with a faked large size if feasible. A `splitView`
+  scenario joins in step 3.
+- The existing 330 assertions must stay green; on a single-dump session nothing
+  in the DOM changes.
+
+## 9. Risks
+
+- **Memory**: two 105 MB dumps are ~1.8 GiB of wasm memory in practice (the
+  renderer cache is budgeted per signal already); the budget guard and a visible
+  size readout are not optional.
+- **Debug hooks**: `window.__waveDebug` describes the visible surface, so it
+  follows the active dump; assertions must not read it while switching tabs.
+- **LSP top**: it follows the active dump's root; a switch republishes diagnostics
+  (that path already exists for `TopChanged`).
+- **Session restore ordering**: tabs are created in open order, so the last
+  active tab should be persisted too if we want the workspace back exactly.
+
+## 10. Non-goals
+
+Multi-window, cross-dump signal comparison in one row (two histories in one
+band), and comparing dumps by content hash. They can be built on this model later.

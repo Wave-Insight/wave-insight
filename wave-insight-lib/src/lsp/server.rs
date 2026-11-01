@@ -733,10 +733,9 @@ impl LspServer {
             return Ok(Json::Null);
         };
         let mut symbols = Vec::new();
-        for module in self.db.modules() {
-            if module.span.file != path {
-                continue;
-            }
+        // Indexed by file: only the modules declared in this document are
+        // visited, not every module of the database.
+        for module in self.db.modules_in_file(&path) {
             symbols.push(self.module_symbol(module));
         }
         Ok(Json::Array(symbols))

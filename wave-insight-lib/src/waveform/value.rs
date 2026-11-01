@@ -193,8 +193,8 @@ impl Bits {
     /// design cannot underflow the formatter (it used to panic with "attempt to
     /// subtract with overflow") and a wider display does not show padding zeros.
     ///
-    /// [`ShowType`]: crate::data_struct::ShowType
-    pub fn render(&self, bitcount: usize, show: &crate::data_struct::ShowType) -> String {
+    /// [`ShowType`]: crate::waveform::ShowType
+    pub fn render(&self, bitcount: usize, show: &crate::waveform::ShowType) -> String {
         let bitcount = bitcount.min(self.bits.len());
         super::render::render_chunk(&self.to_chunk(), bitcount, show)
     }
@@ -299,8 +299,8 @@ impl WaveValue {
     /// `None` for real, string and event values: they are not bit vectors.
     /// `bitcount` is clamped to the value's width (see [`Bits::render`]).
     ///
-    /// [`ShowType`]: crate::data_struct::ShowType
-    pub fn render(&self, bitcount: usize, show: &crate::data_struct::ShowType) -> Option<String> {
+    /// [`ShowType`]: crate::waveform::ShowType
+    pub fn render(&self, bitcount: usize, show: &crate::waveform::ShowType) -> Option<String> {
         self.as_bits().map(|bits| bits.render(bitcount, show))
     }
 
@@ -363,7 +363,7 @@ mod tests {
             BitValue::Zero,
         ]);
         assert_eq!(bits.to_chunk(), vec![(0, 0b1010)]);
-        assert_eq!(bits.render(4, &crate::data_struct::ShowType::Bin), "1010");
+        assert_eq!(bits.render(4, &crate::waveform::ShowType::Bin), "1010");
 
         //nine bits: two bytes with the padding in the first one
         let mut msb_first = vec![BitValue::One];
@@ -400,7 +400,7 @@ mod tests {
     /// draws. These are the old expectations, expressed as bit vectors.
     #[test]
     fn render_matches_the_old_formatter() {
-        use crate::data_struct::ShowType;
+        use crate::waveform::ShowType;
         let two = Bits::from_chunk(&[(0, 1), (0, 23)], 10);
         assert_eq!(two.render(10, &ShowType::Bin), "0100010111");
         assert_eq!(two.render(10, &ShowType::Oct), "0427");

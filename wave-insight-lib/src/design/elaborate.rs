@@ -42,6 +42,7 @@ pub(crate) fn elaborate(modules: &[ModuleDef], top: &str) -> ElaboratedDesign {
         signals: Vec::new(),
         diagnostics: Vec::new(),
         signal_index: HashMap::new(),
+        span_index: None,
     };
 
     let Some(top_module) = module_map.get(top).copied() else {
@@ -67,6 +68,9 @@ pub(crate) fn elaborate(modules: &[ModuleDef], top: &str) -> ElaboratedDesign {
     );
 
     link_references(&mut design, &module_map);
+    // The span index is built with the design: one sort per elaboration and
+    // every later position query is a binary search instead of a full scan.
+    design.span_index = Some(super::span_index::SpanIndex::build(&design, modules));
     design
 }
 

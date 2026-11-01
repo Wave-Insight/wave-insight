@@ -618,7 +618,7 @@ impl Storage for MemoryStorage {
 mod tests {
     use super::*;
     use crate::state::types::{EDITOR_RATIO_MAX, SIDEBAR_MIN};
-    use wave_insight_lib::data_struct::ShowType;
+    use wave_insight_lib::waveform::ShowType;
 
     /// One remembered row; the load/drive lists make the round-trip meaningful.
     fn session_row(path: &str) -> SessionRow {

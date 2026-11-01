@@ -103,6 +103,18 @@ pub enum Action {
     JumpHandled { token: u32 },
     /// The elaborated top module changed (the app reads it from the design).
     TopChanged { top: Option<String> },
+
+    /// Several signals cover a click: the picker shows the candidates.
+    PickerOpened { title: String, paths: Vec<String> },
+    /// The user picked candidate `index`. The store closes the picker; the app
+    /// resolves the path and dispatches the row (it owns the dump/design).
+    PickerChosen { index: usize },
+    /// The picker was dismissed.
+    PickerCancelled,
+    /// The settings dialog opened for these rows.
+    DialogOpened { indices: Vec<usize> },
+    /// The settings dialog closed (applied, deleted or dismissed).
+    DialogClosed,
 }
 
 /// Work the reducer may not do itself: I/O, the LSP, the editor.

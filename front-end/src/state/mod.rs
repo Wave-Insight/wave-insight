@@ -66,7 +66,7 @@ pub use state::{Nav, Rows, State};
 pub use store::{Store, Subscription};
 #[allow(unused_imports)]
 pub use types::{
-    Cursors, Dump, DumpHandle, DumpId, Focus, Goto, Row, RowsSlice, SessionRestore, Settings,
-    StatusTone, View, Viewport,
+    Cursors, Dialog, Dump, DumpHandle, DumpId, Focus, Goto, Picker, Row, RowsSlice, SessionRestore,
+    Settings, StatusTone, View, Viewport,
 };
 pub use types::{Layout, Status};

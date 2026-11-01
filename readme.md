@@ -48,24 +48,27 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 ### benchmarks
 
-The waveform hot paths have criterion benchmarks in
-`wave-insight-lib/benches/waveform.rs` (six groups - `open`,
+The waveform and language-server hot paths have criterion benchmarks under
+`wave-insight-lib/benches/`: `waveform.rs` (six groups - `open`,
 `time_range_hint`, `decode`, `value_at`, `window`, `render` - twenty
-benchmarks). They build their large inputs synthetically in memory (a ~1.7 MB /
-100k-change and an ~8.3 MB / 500k-change VCD) plus the small checked-in fixtures,
-so no multi-megabyte dump is committed:
+benchmarks) and `lsp.rs` (two groups - `design`, `lsp` - position queries
+against a synthetic 100-module / ~3.5k-signal design). Large dumps are generated
+in memory (a ~1.7 MB / 100k-change and an ~8.3 MB / 500k-change VCD), so no
+multi-megabyte dump is committed:
 
 ```bash
-cargo bench -p wave-insight-lib -- --quick   # fast smoke run
-cargo bench -p wave-insight-lib              # criterion defaults
-cargo bench -p wave-insight-lib -- decode    # one group
+cargo bench -p wave-insight-lib -- --quick               # both suites, quick
+cargo bench -p wave-insight-lib -- decode                # one waveform group
+cargo bench -p wave-insight-lib --bench lsp -- --quick   # LSP/design queries
 ```
 
 The HTML report lands in `target/criterion/report/index.html`. CI never gates on
 the numbers: `.github/workflows/bench.yml` compiles the suite on a weekly
 schedule and, on manual dispatch, runs the hot-path groups (`open`, `decode`,
-`time_range_hint`, `value_at`) and uploads the criterion report as an artifact,
-so a broken benchmark is noticed without letting a noisy runner block a merge.
+`time_range_hint`, `value_at`) plus the `lsp`/`design` queries and uploads the
+criterion report as an artifact, so a broken benchmark is noticed without
+letting a noisy runner block a merge.
+
 Indicative `--quick` numbers from one developer machine (measurements, not
 budgets): opening a small inline VCD 7.3 us / 1.7 MB 410 us / 8.3 MB 1.75 ms;
 the first trace-range scan 0.68 ms and 6.4 ns when cached (the VCD range is now
@@ -75,8 +78,14 @@ decoding 11.6 ms for one signal / 11.8 ms sequentially / 12.1 ms batched / 38 ns
 when cached (the sequential decode got ~10% faster by reserving its allocation
 up front); `value_at` 306 ns packed and 147 ns decoded; a streamed window 9.1 /
 13.2 / 46.2 ms; formatting 148 ns for a 32-bit hex value and 271 us for a
-2500-change row. The old `nightly-bench` feature gate still enables nothing and
-is not used by these benchmarks.
+2500-change row. The language-server queries used to scan the whole elaboration
+on every request; the span index built with each elaboration makes them cheap:
+`design/item_at` 174.51 ms -> 20.13 us, `design/signals_at` 52.52 ms ->
+19.44 us, `lsp/definition` 2.048 ms -> 12.42 us, `lsp/references` 2.095 ms ->
+58.28 us, and `documentSymbol` -11.6% (its module index is per file now). The
+answers are byte-identical to the old scan (checked by a differential test at
+every fixture position). The old `nightly-bench` feature gate still enables
+nothing and is not used by these benchmarks.
 
 ### supply chain
 
@@ -100,8 +109,11 @@ a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
-and asserts the user-visible behaviour (the current matrix has 46 scenarios;
-`--list` prints them). Build the front end first, then run:
+and asserts the user-visible behaviour (the current matrix has 49 scenarios /
+356 assertions; `--list` prints them). The newest scenarios cover the
+generated/arrayed design tree in the sidebar, elaboration diagnostics reaching
+the editor and the top-bar chip, and the TXT export matching the CSV for the
+same row. Build the front end first, then run:
 
 ```bash
 node qa/run.mjs                 # full matrix against front-end/dist
@@ -226,6 +238,10 @@ placed.
   corrupt stored payload, or a browser that denies storage, falls back to the
   defaults.
 
+Multiple open dumps and a side-by-side split view are designed but not
+implemented yet: see [`docs/design/multi-dump.md`](docs/design/multi-dump.md)
+(the planned Wave 8 work in [`docs/roadmap.md`](docs/roadmap.md)).
+
 The keyboard and accessibility contract: `Delete` removes the selected rows,
 `ctrl+A` selects every row, the arrow keys and `Home`/`End` move the row
 selection, `Escape` closes dialogs and the `go to` box without clearing the
@@ -264,7 +280,9 @@ closer is a real button, and the wave list and candidate picker expose
   `width-mismatch`, non-constant generate bounds) merged with the parser/front-end
   ones per document, deduplicated and republished when the top module changes. A
   skipped construct may still be reported as a warning even though the source is
-  valid SystemVerilog.
+  valid SystemVerilog. One documented gap: only the picked top module is
+  elaborated, so an elaboration diagnostic that depends on another top (for
+  example the width-mismatch fixture) is not surfaced in the editor yet.
 * **Corrupt dumps are recovered on a best-effort basis.** The readers validate
   input and turn bad files into an error message instead of panicking, and the
   library wraps third-party parsing in `catch_unwind`. The release profile is
@@ -296,7 +314,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 46 scenarios, own fixtures) with an advisory CI smoke job
+- [x] browser QA suite moved into the repository (`qa/`, 49 scenarios, own fixtures) with an advisory CI smoke job
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
@@ -311,6 +329,9 @@ Done in the next release (unreleased at the time of writing):
 - [x] find a value in the selected row: type a value in the ruler box and press Enter (Shift+Enter searches backwards) to walk the changes with that formatted value (Verdi find-value flow)
 - [x] fast dump open: the VCD time range is found from the header plus a bounded tail scan instead of the whole body (~20x cheaper on the 8.3 MB benchmark)
 - [x] migration plans for yew 0.21 and Tauri 2 added under `docs/migrations/` (breaker lists, steps, verification)
+- [x] LSP/design position queries indexed: `textDocument/definition` answers in ~12 us on the synthetic 100-module design (byte-identical to the old scan, differential-tested) with a new `bench lsp` suite
+- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor and the TXT export (49 scenarios / 356 assertions)
+- [x] multi-dump + split-view design note under `docs/design/multi-dump.md` (planned Wave 8)
 
 Still open:
 

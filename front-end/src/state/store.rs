@@ -396,7 +396,7 @@ mod tests {
     fn a_persisted_store_restores_the_session_and_writes_committed_changes() {
         use crate::state::persist::{MemoryStorage, Persister};
         use crate::state::types::Layout;
-        use wave_insight_lib::data_struct::ShowType;
+        use wave_insight_lib::waveform::ShowType;
 
         let storage = MemoryStorage::new();
         // a first session: commit a layout and configure one signal
