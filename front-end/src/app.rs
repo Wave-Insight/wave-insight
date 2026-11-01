@@ -5,10 +5,7 @@ use yew::prelude::*;
 use crate::code_reader::CodeReader;
 use crate::lsp::LspBridge;
 use crate::module_struct::ModuleStruct;
-use crate::nav::{
-    match_dump_candidates, DesignState, PathPicker, SharedDesign, SidebarTree, SignalInspector,
-    SourceClick,
-};
+use crate::nav::{match_dump_candidates, PathPicker, SidebarTree, SignalInspector, SourceClick};
 use crate::state::{
     self, Action, Cursors, DumpHandle, Effect, Focus, Goto, Layout, Picker, RowsSlice,
     SourcesSlice, Status, Store, Subscription,
@@ -23,7 +20,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 #[cfg(feature = "tauri")]
-use crate::file_load::{invoke, listen};
+use crate::file_load::{current_webview, invoke};
 #[cfg(feature = "tauri")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "tauri")]
@@ -49,6 +46,12 @@ pub enum Msg {
     GotoChanged(Option<Goto>),
     /// The store's path picker changed (the app subscribes to it).
     PickerChanged(Option<Picker>),
+    /// The store's sidebar tree changed (the app subscribes to it).
+    Tree(Option<SidebarTree>),
+    /// A module-tree row was clicked: the sidebar selection moved.
+    InstanceSelected(String),
+    /// The editor buffer changed; the store re-syncs the document and the LSP.
+    SourceEdited((String, String)),
     /// A source tab was clicked.
     TabActivated(usize),
     /// The editor applied a jump request; the store clears the pending one.
@@ -177,11 +180,11 @@ pub struct App {
     /// `window.addEventListener("resize")`: unlike `window.onresize` (owned by
     /// the wave pane) this one does not steal another component's listener.
     resize_listener: Option<Closure<dyn FnMut()>>,
-    /// The sidebar tree: the dump hierarchy once a waveform is open, the
-    /// elaborated design otherwise.
+    /// The sidebar tree, mirrored from the store (the reducer derives it from
+    /// the dump hierarchy or the elaborated design).
     tree: Option<SidebarTree>,
-    /// Parsed sources plus the elaborated design.
-    design: SharedDesign,
+    /// Kept so the subscription lives exactly as long as the component.
+    _tree_sub: Subscription,
     /// The language server client the source editor talks to.
     lsp: LspBridge,
     /// Cursor/dump subscriptions for the editor inlay hints; they update the
@@ -228,29 +231,52 @@ impl Component for App {
         #[cfg(feature = "tauri")]
         let file_drop_callback = ctx.link().callback(Msg::FileDrop);
 
+        // Tauri 2 removed the `tauri://file-drop` event: the webview owns the
+        // drag-drop API now. `onDragDropEvent` fires for enter/over/drop/leave
+        // and only the drop carries the absolute paths, so the existing
+        // Msg::FileDrop(Vec<String>) path is unchanged.
         #[cfg(feature = "tauri")]
-        spawn_local(async move {
-            #[derive(Debug, Serialize, Deserialize)]
-            #[allow(non_snake_case)] // tauri's event envelope
-            struct TauriEvent {
-                event: String,
-                windowLabel: String,
-                payload: Vec<String>,
-                id: f64,
-            }
-            let closure = Closure::<dyn FnMut(JsValue)>::new(move |x: JsValue| {
-                let tauri_event: TauriEvent = serde_wasm_bindgen::from_value(x).unwrap(); //TODO:do not unwrap
-                                                                                          //console::log_1(&format!("callback: {:?}", tauri_event).into());
-                file_drop_callback.emit(tauri_event.payload);
+        {
+            let webview = current_webview();
+            let handler = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
+                let payload = match js_sys::Reflect::get(&event, &JsValue::from_str("payload")) {
+                    Ok(payload) => payload,
+                    Err(_) => return,
+                };
+                if payload.is_undefined() {
+                    return;
+                }
+                let kind = js_sys::Reflect::get(&payload, &JsValue::from_str("type"))
+                    .ok()
+                    .and_then(|kind| kind.as_string());
+                if kind.as_deref() != Some("drop") {
+                    return;
+                }
+                let paths: Vec<String> =
+                    js_sys::Reflect::get(&payload, &JsValue::from_str("paths"))
+                        .ok()
+                        .and_then(|paths| paths.dyn_into::<js_sys::Array>().ok())
+                        .map(|paths| paths.iter().filter_map(|path| path.as_string()).collect())
+                        .unwrap_or_default();
+                if !paths.is_empty() {
+                    file_drop_callback.emit(paths);
+                }
             });
-            let ret = listen("tauri://file-drop", &closure).await;
-            closure.forget();
-        });
+            // the handler lives for the page, like the old event closure did
+            let registered = js_sys::Reflect::get(&webview, &JsValue::from_str("onDragDropEvent"))
+                .ok()
+                .and_then(|function| function.dyn_into::<js_sys::Function>().ok())
+                .and_then(|function| {
+                    function
+                        .call1(&webview, handler.as_ref().unchecked_ref())
+                        .ok()
+                })
+                .is_some();
+            if registered {
+                handler.forget();
+            }
+        }
 
-        // The language server client runs the same code the desktop transport
-        // pumps, but against its own parse of the same sources; navigation
-        // falls back to `design` whenever it cannot answer.
-        let design = SharedDesign::new(DesignState::new());
         // R2: the store is created here and owns the layout and the status line
         // from now on; the panes are still wired with props (later steps). It is
         // created before the language server client because that client reports
@@ -272,8 +298,10 @@ impl Component for App {
                 max,
             });
         }
+        // R2 step 3b: the design database lives in the store; the bridge reads
+        // its fallback answers through it (the store is created first on purpose)
         let lsp = LspBridge::new(
-            design.clone(),
+            store.clone(),
             ctx.link()
                 .callback(|goto: Goto| Msg::Goto((goto.file, goto.line, goto.col))),
             {
@@ -288,7 +316,7 @@ impl Component for App {
         // The editor's inlay hints show the value at cursor 1; the context is
         // page state (the provider runs inside a monaco callback), so it is
         // updated from subscriptions and never triggers a Yew render.
-        crate::lsp::inlay::init(design.clone(), store.clone());
+        crate::lsp::inlay::init(store.clone());
         let cursors_sub = store.subscribe(
             state::select::cursors,
             Callback::from(|cursors: Cursors| {
@@ -313,6 +341,9 @@ impl Component for App {
             state::select::picker,
             ctx.link().callback(Msg::PickerChanged),
         );
+        // the sidebar tree is derived by the reducer (dump hierarchy or design)
+        let tree = store.select(state::select::tree);
+        let tree_sub = store.subscribe(state::select::tree, ctx.link().callback(Msg::Tree));
         let mut this = Self {
             store,
             layout,
@@ -322,8 +353,8 @@ impl Component for App {
             main: NodeRef::default(),
             main_h: 0.0,
             resize_listener: None,
-            tree: None,
-            design,
+            tree,
+            _tree_sub: tree_sub,
             lsp,
             _cursors_sub: cursors_sub,
             _rows_sub: rows_sub,
@@ -378,7 +409,7 @@ impl Component for App {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
-        let design_version = self.design.borrow().version();
+        let design_version = self.store.select(state::select::design_version);
         // while the splitter is dragged the preview is authoritative (it was
         // written straight to the DOM); otherwise the store's layout is
         let sidebar_w = self.sidebar_preview.unwrap_or(self.layout.sidebar_w);
@@ -400,6 +431,8 @@ impl Component for App {
                         <aside class="sidebar">
                             {self.file_button(ctx)}
                             <ModuleStruct tree={self.tree.clone()}
+                                focus={self.focus.clone()}
+                                oninstance={link.callback(Msg::InstanceSelected)}
                                 signaladd={link.callback(|(_name, path): (String, String)| Msg::SidebarAdd(path))}/>
                         </aside>
                         }
@@ -443,6 +476,7 @@ impl Component for App {
                                 ontab={link.callback(Msg::TabActivated)}
                                 onclose={link.callback(Msg::CloseSource)}
                                 onshown={link.callback(Msg::JumpHandled)}
+                                onchange={link.callback(Msg::SourceEdited)}
                                 onwordclick={link.callback(Msg::SourceClick)} />
                         </div>
                         <div class={if self.wave_splitter_start.is_some() {"wave-splitter dragging"} else {"wave-splitter"}}
@@ -477,7 +511,7 @@ impl Component for App {
                                     onlocate={link.callback(Msg::Locate)} />
                                 <SignalInspector
                                     hidden={self.wave_tab != WaveFrameTab::LoadDrive}
-                                    design={self.design.clone()}
+                                    store={self.store.clone()}
                                     version={design_version}
                                     path={self.focus.signal.clone()}
                                     ongoto={link.callback(Msg::Goto)} />
@@ -680,6 +714,25 @@ impl App {
                 self.picker = picker;
                 true
             }
+            Msg::Tree(tree) => {
+                self.tree = tree;
+                true
+            }
+            Msg::InstanceSelected(path) => {
+                self.apply(Action::FocusChanged {
+                    focus: Focus {
+                        signal: self.focus.signal.clone(),
+                        instance: Some(path),
+                    },
+                });
+                false
+            }
+            Msg::SourceEdited((file, text)) => {
+                // the editor owns its buffer; the store is the document of record
+                // and re-syncs the LSP through the effect the reducer returns
+                self.apply(Action::SourceReloaded { file, text });
+                false
+            }
             Msg::TabActivated(index) => {
                 self.apply(Action::TabActivated { index });
                 false
@@ -817,17 +870,8 @@ impl App {
                 true
             }
             Msg::GetWaveform(waveform) => {
-                // the dump knows which module it was made from; that is the best
-                // guess for the design top
-                let top_hint = waveform
-                    .waveform()
-                    .hierarchy()
-                    .root()
-                    .children()
-                    .first()
-                    .map(|scope| scope.name().to_string());
-                self.design.borrow_mut().set_top_hint(top_hint);
-                // the store owns the handle and derives the time range from it
+                // the store owns the handle, derives the time range and the
+                // top hint from it, and rebuilds the sidebar tree in the reducer
                 // (that is what the ruler and the fit zoom read); the file name
                 // the loader read is what exports are named after
                 let dump_name = self
@@ -854,8 +898,6 @@ impl App {
                 };
                 // the inlay hints can only show values once a dump is open
                 crate::lsp::inlay::set_waveform(Some(waveform));
-                self.refresh_tree();
-                self.sync_lsp_top();
                 // the loader reported what the parse cost (bytes, ms, wasm
                 // memory): the QA matrix still asserts the "waveform loaded"
                 // prefix, so the numbers are appended to it
@@ -880,13 +922,10 @@ impl App {
                 true
             }
             Msg::GetVerilog((file, text)) => {
-                // the design database stays in the app until step 3b; the open
-                // documents move into the store, which asks for the LSP
-                // didOpen/didChange through the effects the dispatch returns
-                self.design.borrow_mut().add_source(&file, &text);
+                // the store parses the source into the design database, rebuilds
+                // the sidebar tree and asks for the LSP didOpen/didChange through
+                // the effects the dispatch returns
                 self.apply(Action::SourceOpened { file, text });
-                self.refresh_tree();
-                self.sync_lsp_top();
                 // names that resolved to nothing before may resolve now
                 crate::lsp::inlay::refresh();
                 true
@@ -944,7 +983,10 @@ impl App {
             }
             Msg::WaveSelect(path) => {
                 self.apply(Action::FocusChanged {
-                    focus: Focus { signal: path },
+                    focus: Focus {
+                        signal: path,
+                        instance: self.focus.instance.clone(),
+                    },
                 });
                 false
             }
@@ -956,6 +998,7 @@ impl App {
                 self.apply(Action::FocusChanged {
                     focus: Focus {
                         signal: Some(path.clone()),
+                        instance: self.focus.instance.clone(),
                     },
                 });
                 self.locate_reference(&path, load, index);
@@ -1079,40 +1122,21 @@ impl App {
         }
     }
 
-    /// Rebuild the sidebar tree: the dump hierarchy wins, the design is the
-    /// fallback so the module list is usable before a dump is loaded.
-    fn refresh_tree(&mut self) {
-        self.tree = match self.dump() {
-            Some(waveform) => Some(SidebarTree::from_hierarchy(waveform.waveform().hierarchy())),
-            None => self.design.borrow().sidebar_tree(),
-        };
-    }
-
     /// The opened dump, read from the store (the store owns the only handle).
     fn dump(&self) -> Option<DumpHandle> {
         self.store.select(state::select::dump_waveform)
     }
 
-    /// Tell the language server which module to elaborate, so its hover,
-    /// definition and outline answers describe the same hierarchy the sidebar
-    /// and the inspector show.
-    fn sync_lsp_top(&self) {
-        let top = {
-            let state = self.design.borrow();
-            state.top().map(str::to_owned)
-        };
-        // the store owns the mirrored top; the LspTop effect tells the server
-        self.apply(Action::TopChanged { top });
-    }
-
     /// Where `path` is declared, when the design knows it.
     fn declare_target(&self, path: &str) -> Option<(String, u32, u32)> {
-        self.design.borrow().declaration(path).map(|span| {
-            (
-                span.file.display().to_string(),
-                span.start_line,
-                span.start_col,
-            )
+        self.store.select(|state| {
+            state.design.declaration(path).map(|span| {
+                (
+                    span.file.display().to_string(),
+                    span.start_line,
+                    span.start_col,
+                )
+            })
         })
     }
 
@@ -1136,18 +1160,24 @@ impl App {
             load: Vec::new(),
             drive: Vec::new(),
         };
-        if let Some(flat) = self.design.borrow().flat_signal(path) {
-            signal.size = flat.width.unwrap_or(1).max(1) as usize;
-            signal.drive = flat
-                .drivers
-                .iter()
-                .map(|driver| driver.span.to_string())
-                .collect();
-            signal.load = flat
-                .loads
-                .iter()
-                .map(|load| load.span.to_string())
-                .collect();
+        if let Some((width, drive, load)) = self.store.select(|state| {
+            state.design.flat_signal(path).map(|flat| {
+                (
+                    flat.width.unwrap_or(1).max(1) as usize,
+                    flat.drivers
+                        .iter()
+                        .map(|driver| driver.span.to_string())
+                        .collect::<Vec<_>>(),
+                    flat.loads
+                        .iter()
+                        .map(|load| load.span.to_string())
+                        .collect::<Vec<_>>(),
+                )
+            })
+        }) {
+            signal.size = width;
+            signal.drive = drive;
+            signal.load = load;
         }
         // The dump is what gets drawn, so its width wins when the two disagree
         // (a truncated vector would otherwise be formatted at the declared
@@ -1224,6 +1254,7 @@ impl App {
         self.apply(Action::FocusChanged {
             focus: Focus {
                 signal: Some(row_path.clone()),
+                instance: self.focus.instance.clone(),
             },
         });
         self.note(Status::info(format!("added {row_path} to the waveform")));
@@ -1249,33 +1280,37 @@ impl App {
             self.goto_to(file, line, col);
             return;
         }
-        let state = self.design.borrow();
-        if state.is_empty() {
+        let (is_empty, names, top) = self.store.select(|state| {
+            (
+                state.design.is_empty(),
+                state
+                    .design
+                    .resolve_candidates(path)
+                    .iter()
+                    .take(4)
+                    .map(|signal| signal.path.clone())
+                    .collect::<Vec<_>>(),
+                state.design.top().map(str::to_owned),
+            )
+        });
+        if is_empty {
             self.note(Status::error(format!(
                 "no sources loaded — `{path}` is declared in the .v/.sv files; load them to navigate"
             )));
             return;
         }
-        let candidates = state.resolve_candidates(path);
-        if candidates.len() > 1 {
-            let names: Vec<&str> = candidates
-                .iter()
-                .take(4)
-                .map(|signal| signal.path.as_str())
-                .collect();
-            let more = if candidates.len() > names.len() {
-                ", ..."
-            } else {
-                ""
-            };
+        let count = self
+            .store
+            .select(|state| state.design.resolve_candidates(path).len());
+        if count > 1 {
+            let more = if count > names.len() { ", ..." } else { "" };
             self.note(Status::error(format!(
-                "ambiguous: {} signals match `{path}` — {}{more}",
-                candidates.len(),
+                "ambiguous: {count} signals match `{path}` — {}{more}",
                 names.join(", ")
             )));
             return;
         }
-        match state.top() {
+        match top {
             Some(top) => self.note(Status::error(format!(
                 "the loaded sources do not declare `{path}` (elaborated top: {top})"
             ))),
@@ -1293,9 +1328,8 @@ impl App {
     /// reference while pretending there is only one.
     fn locate_reference(&mut self, path: &str, load: bool, index: usize) {
         let kind = if load { "load" } else { "driver" };
-        let (targets, has_signal) = {
-            let design = self.design.borrow();
-            let signal = design.resolve_path(path);
+        let (targets, has_signal, design_empty) = self.store.select(|state| {
+            let signal = state.design.resolve_path(path);
             let targets = signal
                 .map(|signal| {
                     let spans = if load { &signal.loads } else { &signal.drivers };
@@ -1311,10 +1345,10 @@ impl App {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            (targets, signal.is_some())
-        };
+            (targets, signal.is_some(), state.design.is_empty())
+        });
         if !has_signal {
-            let message = if self.design.borrow().is_empty() {
+            let message = if design_empty {
                 format!("no sources loaded — load the .v/.sv files to find the {kind}s of `{path}`")
             } else {
                 format!("the loaded sources do not contain `{path}` — cannot find its {kind}s")
@@ -1353,15 +1387,14 @@ impl App {
     /// Without a matching design, the dump hierarchy is searched by local name,
     /// which keeps navigation useful when only the VCD is loaded.
     fn candidates_at(&self, click: &SourceClick) -> Vec<String> {
-        let mut found = {
-            let design = self.design.borrow();
-            let exact = design.signals_at(&click.file, click.line, click.col);
+        let mut found = self.store.select(|state| {
+            let exact = state.design.signals_at(&click.file, click.line, click.col);
             if exact.is_empty() {
-                design.signals_matching(&click.word)
+                state.design.signals_matching(&click.word)
             } else {
                 exact
             }
-        };
+        });
         if found.is_empty() {
             if let Some(waveform) = self.dump() {
                 found = waveform

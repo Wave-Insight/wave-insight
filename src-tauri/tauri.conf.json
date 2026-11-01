@@ -1,67 +1,64 @@
 {
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "wave_insight_tauri",
+  "version": "0.11.0",
+  "identifier": "com.waveinsight.tauri",
+  "mainBinaryName": "app",
   "build": {
     "beforeBuildCommand": "cd front-end && trunk build --no-default-features --release --features tauri",
     "beforeDevCommand": "cd front-end && trunk serve --no-default-features --release --features tauri",
-    "devPath": "http://localhost:8080",
-    "distDir": "../front-end/dist",
-    "withGlobalTauri": true
+    "devUrl": "http://localhost:8080",
+    "frontendDist": "../front-end/dist"
   },
-  "package": {
-    "productName": "wave_insight_tauri",
-    "version": "0.10.0"
-  },
-  "tauri": {
-    "allowlist": {
-      "all": false
-    },
-    "bundle": {
-      "active": true,
-      "category": "DeveloperTool",
-      "copyright": "Copyright © Wave Insight contributors",
-      "deb": {
-        "depends": []
-      },
-      "externalBin": [],
-      "icon": [
-        "icons/32x32.png",
-        "icons/128x128.png",
-        "icons/128x128@2x.png",
-        "icons/icon.icns",
-        "icons/icon.ico"
-      ],
-      "identifier": "com.waveinsight.tauri",
-      "longDescription": "A wave viewer and debugger for Verilog/SystemVerilog: it reads VCD, FST and GHW dumps, shows the hierarchy and the waveforms, and links signals to their declarations, drivers and loads in the source.",
-      "macOS": {
-        "entitlements": null,
-        "exceptionDomain": "",
-        "frameworks": [],
-        "providerShortName": null,
-        "signingIdentity": null
-      },
-      "resources": [],
-      "shortDescription": "Wave viewer and debugger for VCD/FST/GHW dumps",
-      "targets": "all",
-      "windows": {
-        "certificateThumbprint": null,
-        "digestAlgorithm": "sha256",
-        "timestampUrl": ""
-      }
-    },
-    "security": {
-      "csp": null
-    },
-    "updater": {
-      "active": false
-    },
+  "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
-        "fullscreen": false,
-        "height": 600,
-        "resizable": true,
+        "label": "main",
         "title": "Wave Insight Tauri",
         "width": 800,
-        "maximized": true
+        "height": 600,
+        "resizable": true,
+        "maximized": true,
+        "fullscreen": false
       }
-    ]
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "copyright": "Copyright © Wave Insight contributors",
+    "shortDescription": "Wave viewer and debugger for VCD/FST/GHW dumps",
+    "longDescription": "A wave viewer and debugger for Verilog/SystemVerilog: it reads VCD, FST and GHW dumps, shows the hierarchy and the waveforms, and links signals to their declarations, drivers and loads in the source.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [],
+    "externalBin": [],
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    },
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    }
   }
 }

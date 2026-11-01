@@ -266,7 +266,16 @@ impl Waveform {
         })?;
         let format =
             WaveFormat::from_wellen(header.file_format).ok_or(WaveformError::UnknownFormat)?;
-        let hierarchy = HierarchyView::build(&header.hierarchy);
+        // Resolving the hierarchy walks wellen's arena and recurses into nested
+        // scopes; a corrupt header with dangling handles or absurd nesting must
+        // become a Corrupt error, not a panic/stack overflow.
+        let hierarchy = catch_parse(format, "read hierarchy", || {
+            HierarchyView::build(&header.hierarchy).map_err(|detail| WaveformError::Corrupt {
+                format,
+                operation: "read hierarchy",
+                detail,
+            })
+        })?;
         let date = header.hierarchy.date().to_string();
         let version = header.hierarchy.version().to_string();
         let timescale = header
@@ -599,11 +608,11 @@ impl Waveform {
     /// # Aliased variables
     ///
     /// Several variables can share one signal (the same VCD identifier or FST
-    /// handle).  The visitor then receives the index of the *first* variable
-    /// that uses the signal for every change, not the alias that was requested;
-    /// [`ValueQuery::includes_signal`] does not distinguish aliases either.  Use
-    /// [`Waveform::decoded_changes_many`] when the exact requested row indices
-    /// are needed.
+    /// handle).  The visitor is called once per *requested* variable: when
+    /// [`ValueQuery::signals`] names one alias, the callback receives exactly
+    /// that index; when the query covers every variable ([`ValueQuery::all`]) a
+    /// change of an aliased signal is reported for every alias, in declaration
+    /// order.  The stream itself still decodes the signal only once.
     pub fn stream_changes<F>(&self, query: &ValueQuery, mut visit: F) -> Result<()>
     where
         F: FnMut(usize, Time, WaveValue) -> bool,
@@ -641,21 +650,29 @@ impl Waveform {
             let result = streamed.stream_changes(
                 filter,
                 |time, signal_ref, value| -> std::result::Result<(), ()> {
-                    let Some(variable) = self.hierarchy.variable_of_signal(signal_ref) else {
-                        //a signal without a variable; aliases are mapped to their
-                        //first variable, so this only affects internal signals
+                    let Some(variables) = self.hierarchy.variables_of_signal(signal_ref) else {
+                        //a signal without a variable (an internal signal)
                         return Ok(());
                     };
                     //belt and braces: some backends only use the filter as a hint
                     if !query.includes_time(time) {
                         return Ok(());
                     }
-                    emitted += 1;
-                    in_visitor.set(true);
-                    let keep_going = visit(variable, time, WaveValue::from_wellen(value));
-                    in_visitor.set(false);
-                    if !keep_going || limit.map(|limit| emitted >= limit).unwrap_or(false) {
-                        return Err(());
+                    // One change per variable that aliases this signal, so a
+                    // query for an alias reports the alias (not the first
+                    // variable of the shared signal).  The value is a Copy view
+                    // into the decoder, so this does not copy the payload.
+                    for &variable in variables {
+                        if !query.includes_signal(variable) {
+                            continue;
+                        }
+                        emitted += 1;
+                        in_visitor.set(true);
+                        let keep_going = visit(variable, time, WaveValue::from_wellen(value));
+                        in_visitor.set(false);
+                        if !keep_going || limit.map(|limit| emitted >= limit).unwrap_or(false) {
+                            return Err(());
+                        }
                     }
                     Ok(())
                 },

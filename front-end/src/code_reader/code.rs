@@ -28,6 +28,9 @@ pub struct CodeReaderProps {
     /// The editor applied jump `token` (the store then clears the request).
     #[prop_or_default]
     pub onshown: Callback<u32>,
+    /// The visible buffer changed; the store is the document of record.
+    #[prop_or_default]
+    pub onchange: Callback<(String, String)>,
 }
 
 pub enum Msg {
@@ -138,6 +141,7 @@ impl Component for CodeReader {
                         goto={props.goto.clone()}
                         onwordclick={props.onwordclick.clone()}
                         onshown={props.onshown.clone()}
+                        onchange={props.onchange.clone()}
                         lsp={props.lsp.clone()} />
                 </div>
             </>

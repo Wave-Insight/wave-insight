@@ -8,18 +8,20 @@ does not duplicate them.
 
 ## Where we are
 
-The last tagged release is **0.9.0** (2026-11-02): one-canvas waveform
+The last tagged release is **0.10.0** (2026-11-02): one-canvas waveform
 renderer, R2 state store, Verdi-style navigation, CI gate, fixed-point display,
 search options, CSV/TXT/MAT export, chunked large-dump loading, LSP diagnostics
 in the editor, the browser QA suite in `qa/`, generate/arrayed elaboration,
-sidebar virtualization, persistence, the accessibility/keyboard pass and the
-Verdi find-value flow. **Wave 6** is landing in this wave on `main` (commit
-follows 0.9.0): the R3 legacy data-model deletion, R2 step 3b (the path picker
-and the settings dialog are store slices now), an indexed span structure for the
-design/LSP position queries plus a second benchmark suite, three new browser QA
-scenarios, and the multi-dump/split-view design note. The `Unreleased` section
-of [`CHANGELOG.md`](../CHANGELOG.md) is the authoritative list of what is on
-`main` beyond 0.9.0.
+sidebar virtualization, persistence, the accessibility/keyboard pass, the Verdi
+find-value flow, indexed LSP/design queries and the R3 legacy deletion. **Wave
+7** is landing in this wave on `main` (commit follows 0.10.0): the Tauri 2
+migration (shell, capabilities, IPC and CI on `ubuntu-24.04` +
+webkit2gtk-4.1), the finished R2 step 3b (the design and the module-tree
+selection live in the store, editor edits are `SourceReloaded`), and waveform
+hardening (structural FST validation, hierarchy depth bound, aliased-signal
+streaming, deterministic fuzz tests). The `Unreleased` section of
+[`CHANGELOG.md`](../CHANGELOG.md) is the authoritative list of what is on
+`main` beyond 0.10.0.
 
 ## How a wave works
 
@@ -46,24 +48,22 @@ cut when the accumulated waves are coherent for users; no wave promises a date.
 | **2** | released in 0.6.0 | export signal values to CSV/TXT; large-dump loading UX (progress, cancel, 512 MB guard); LSP diagnostics in the editor + top bar; browser QA suite in `qa/` with an advisory CI smoke job |
 | **3** | released in 0.7.0 | constant-bound generate unrolling + arrayed instances (Verdi-flat paths); `unresolved-name`/`width-mismatch` driver/load diagnostics; sidebar virtualization above 80 rows; layout + per-signal display persistence; accessibility/keyboard/tier-A-ruler pass; tauri file browser home directory; data-URI favicon |
 | **4** | released in 0.8.0 | elaboration diagnostics merged into the editor's LSP diagnostics; criterion benchmarks + advisory bench workflow; `deny.toml` + `cargo deny` audit workflow + dependabot policy + tokio 1.54.1 security bump; per-dump session restore; MAT export |
-| **5** | released in 0.9.0 | R2 step 3 (sources/focus/goto/jump_token slices + real LSP/editor `Effect`s); fast VCD open (header + bounded tail time-range scan); Verdi find-value in the ruler box; semver-compatible dependency refresh + CI deploy job split out; yew 0.21 and Tauri 2 migration plans |
-| **6** | shipped in this wave | R3 legacy data-model deletion (internal); R2 step 3b partial (picker/`nav.dialog` are store slices now); indexed design/LSP span structure + `bench lsp` suite (definition ~12 us on a 3.5k-signal synthetic design); three QA scenarios (elaboration, diagnostics, exportTxt) -> 49 scenarios / 356 assertions; multi-dump/split-view design note |
-| **7** | chosen for the next wave, not started | finish R2 step 3b (design slice, `focus.instance` + module-tree selection, editor edits as `SourceReloaded`); Tauri 2 migration (`docs/migrations/tauri-2.md`) |
-| **8** | chosen, after Wave 7 | multiple open dumps + split view (`docs/design/multi-dump.md`) |
-| **9** | later candidates | yew 0.21 migration (`docs/migrations/yew-0.21.md`); signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
+| **5** | released in 0.9.0 | R2 step 3 (sources/focus/goto/jump_token slices + real LSP/editor `Effect`s); fast VCD open (header + bounded tail time-range scan); Verdi find-value in the ruler box; semver-compatible dependency refresh + CI deploy job split out |
+| **6** | released in 0.10.0 | R3 legacy data-model deletion; R2 step 3b partial (picker/dialog slices); indexed design/LSP span structure + `bench lsp` suite; three QA scenarios (elaboration, diagnostics, exportTxt) -> 49 scenarios / 356 assertions; multi-dump/split-view design note |
+| **7** | shipped in this wave | Tauri 2 migration (v2 config + capabilities + `__TAURI__.core` IPC/drag-drop, CI on Ubuntu 24.04 + webkit2gtk-4.1, deny.toml cleanup); R2 step 3b finished (design slice, `focus.instance` + module-tree selection, editor edits as `SourceReloaded`); waveform hardening (structural FST validator, hierarchy depth bound, aliased-signal streaming, deterministic fuzz tests) |
+| **8** | chosen for the next wave, not started | multiple open dumps + split view ([`docs/design/multi-dump.md`](design/multi-dump.md)) |
+| **9** | later candidates | yew 0.21 migration ([`docs/migrations/yew-0.21.md`](migrations/yew-0.21.md)); signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
 
 Statuses are honest: *released* means a tagged release, *shipped in this wave*
 means committed on `main` and waiting for the next release, *chosen* means the
 next wave's agreed top items (not started), and *later candidates* are unordered.
 Items can move between waves when the tree says a wave should be smaller.
 
-Wave 7's top items, in order: finish R2 step 3b (design slice,
-`focus.instance` + module-tree selection, editor edits as `SourceReloaded` —
-see [`rebuild-plan.md`](rebuild-plan.md) and [`state-store.md`](state-store.md));
-then the Tauri 2 migration ([`docs/migrations/tauri-2.md`](migrations/tauri-2.md)).
 Wave 8 is multiple dumps + split view
-([`docs/design/multi-dump.md`](design/multi-dump.md)), after the step-3b cleanup
-that note depends on.
+([`docs/design/multi-dump.md`](design/multi-dump.md)), whose prerequisites are now
+in: the design slice, `focus.instance` and the module-tree selection live in the
+store. After that the candidates are the yew 0.21 migration and the smaller
+features below it.
 
 ## Invariants every wave keeps
 

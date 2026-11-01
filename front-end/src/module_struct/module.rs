@@ -27,6 +27,7 @@ use crate::module_struct::seam;
 use crate::module_struct::virtual_list::{self, ROW_H};
 use crate::module_struct::SignalStruct;
 use crate::nav::SidebarTree;
+use crate::state::Focus;
 
 /// One row of the flattened module tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,13 +62,21 @@ pub struct ModuleStructProps {
     /// A signal was added: its display name and its hierarchical path.
     #[prop_or_default]
     pub signaladd: Callback<(String, String)>,
+    /// The store's focus slice: `instance` is the selected scope (R2 step 3b;
+    /// the expanded set stays component-local).
+    #[prop_or_default]
+    pub focus: Focus,
+    /// A scope row was clicked: the store owns the selection.
+    #[prop_or_default]
+    pub oninstance: Callback<String>,
 }
 
 pub struct ModuleStruct {
-    /// Full path of the scope whose signals are listed.
-    selected: String,
     /// The tree the selection belongs to, so a new tree resets it.
     tree: Option<SidebarTree>,
+    /// The last module selection seen in the props: a focus change re-renders
+    /// the sidebar even when the tree did not move.
+    instance: Option<String>,
     /// Scope paths whose children are open (the old per-row show_sub flag).
     expanded: HashSet<String>,
     /// The flattened rows of the open tree. Rebuilt when the tree or the
@@ -92,8 +101,8 @@ impl Component for ModuleStruct {
 
     fn create(ctx: &Context<Self>) -> Self {
         let mut this = Self {
-            selected: String::new(),
             tree: None,
+            instance: None,
             expanded: HashSet::new(),
             rows: Vec::new(),
             scope_count: 0,
@@ -112,6 +121,13 @@ impl Component for ModuleStruct {
         // the same tree must not re-render 20k rows.
         if self.tree.as_ref() != ctx.props().tree.as_ref() {
             self.sync_tree(ctx);
+            self.instance = ctx.props().focus.instance.clone();
+            return true;
+        }
+        // the store owns the module selection: a click there must re-render the
+        // signal list even though the tree is the same
+        if self.instance != ctx.props().focus.instance {
+            self.instance = ctx.props().focus.instance.clone();
             return true;
         }
         false
@@ -155,7 +171,9 @@ impl Component for ModuleStruct {
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Msg::Select(path) => {
-                self.selected = path.clone();
+                // the store owns the selection; the component keeps only the
+                // expansion set (a presentation detail)
+                ctx.props().oninstance.emit(path.clone());
                 // clicking a scope opens it (the old row did the same)
                 let opens = self
                     .tree
@@ -169,10 +187,11 @@ impl Component for ModuleStruct {
                 true
             }
             Msg::SignalAdd(path) => {
+                let selected = self.selected(ctx);
                 let display = self
                     .tree
                     .as_ref()
-                    .and_then(|tree| tree.find(&self.selected))
+                    .and_then(|tree| tree.find(&selected))
                     .and_then(|scope| scope.signals.iter().find(|signal| signal.path == path))
                     .map(|signal| signal.display_name())
                     .unwrap_or_else(|| path.rsplit('.').next().unwrap_or(&path).to_string());
@@ -212,7 +231,7 @@ impl Component for ModuleStruct {
                 </div>
             };
         };
-        let selected = self.selected.clone();
+        let selected = self.selected(ctx);
         let signal_count = tree
             .find(&selected)
             .map(|scope| scope.signals.len())
@@ -310,16 +329,35 @@ impl Component for ModuleStruct {
 }
 
 impl ModuleStruct {
-    /// Adopt the tree from the props: a new tree resets the selection and every
-    /// expansion, exactly like the old component being rebuilt did.
+    /// The scope whose signals are listed: the store's module selection, or the
+    /// tree's initial path when nothing is selected (a fresh tree) or the
+    /// selected scope left the tree.
+    fn selected(&self, ctx: &Context<Self>) -> String {
+        let focus = ctx.props().focus.instance.clone().unwrap_or_default();
+        // an empty selection means "the tree's first scope"; note that
+        // `find("")` can resolve to the synthetic root of a dump hierarchy,
+        // whose signal list is empty
+        let known = !focus.is_empty()
+            && self
+                .tree
+                .as_ref()
+                .is_some_and(|tree| tree.find(&focus).is_some());
+        if known {
+            focus
+        } else {
+            self.tree
+                .as_ref()
+                .map(|tree| tree.initial_path())
+                .unwrap_or_default()
+        }
+    }
+
+    /// Adopt the tree from the props: a new tree resets every expansion, exactly
+    /// like the old component being rebuilt did (the selection lives in the
+    /// store and is cleared by the reducer when the tree changes).
     fn sync_tree(&mut self, ctx: &Context<Self>) {
         self.tree = ctx.props().tree.clone();
         self.expanded.clear();
-        self.selected = self
-            .tree
-            .as_ref()
-            .map(|tree| tree.initial_path())
-            .unwrap_or_default();
         self.module_scroll = 0.0;
         self.module_viewport = 0.0;
         self.rebuild();

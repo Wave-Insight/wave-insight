@@ -15,6 +15,7 @@ use super::state::State;
 use super::types::{
     clamp_ratio, clamp_sidebar, Dialog, Dump, Goto, Picker, Row, SessionRestore, Status,
 };
+use crate::nav::SidebarTree;
 
 pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
     match action {
@@ -197,14 +198,37 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 bytes,
                 session_restore: None,
             };
+            // the dump knows which module it was made from; that is the best
+            // guess for the design top (the shell used to compute this)
+            let top_hint = state
+                .dump
+                .waveform
+                .as_ref()
+                .and_then(|handle| handle.waveform().hierarchy().root().children().first())
+                .map(|scope| scope.name().to_string());
+            state.design.set_top_hint(top_hint);
+            refresh_tree(state);
             // reopening a dump puts its remembered row list back (a different
             // dump leaves the current list alone)
             restore_session_rows(state);
+            return vec![Effect::LspTop {
+                top: state.design.top().map(str::to_owned),
+            }];
         }
         Action::SourceOpened { file, text } | Action::SourceReloaded { file, text } => {
             if file.is_empty() {
                 return Vec::new();
             }
+            // an editor edit re-dispatches the buffer it already holds; only a
+            // real change re-parses and re-elaborates
+            let unchanged = state
+                .sources
+                .index_of(&file)
+                .is_some_and(|index| state.sources.items[index].text == text);
+            if unchanged {
+                return Vec::new();
+            }
+            let text_for_design = text.clone();
             let mut items = (*state.sources.items).clone();
             let effects = match items.iter().position(|source| source.name == file) {
                 Some(index) => {
@@ -229,7 +253,15 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                     }]
                 }
             };
+            // the design database lives in the store now: the reducer is the
+            // one place a source is parsed, so every pane reads the same design
+            state.design.add_source(&file, &text_for_design);
+            refresh_tree(state);
             state.nav.status = Some(Status::info(format!("parsed {file}")));
+            let mut effects = effects;
+            effects.push(Effect::LspTop {
+                top: state.design.top().map(str::to_owned),
+            });
             return effects;
         }
         Action::SourceClosed { index } => {
@@ -354,6 +386,20 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
         }
     }
     Vec::new()
+}
+
+/// Rebuild the sidebar tree the store hands to the sidebar.
+///
+/// The opened dump's scope hierarchy wins; the elaborated design is the fallback
+/// so the module list is usable before a dump is loaded. The module selection
+/// belongs to the old tree, so it is cleared (the sidebar then lists the top
+/// scope's signals, exactly as before this slice moved into the store).
+fn refresh_tree(state: &mut State) {
+    state.tree = match state.dump.waveform.as_ref() {
+        Some(handle) => Some(SidebarTree::from_hierarchy(handle.waveform().hierarchy())),
+        None => state.design.sidebar_tree(),
+    };
+    state.focus.instance = None;
 }
 
 /// Put the remembered row list of the dump that just opened back on the wave.
@@ -630,10 +676,15 @@ mod tests {
         let effects = open(&mut state, "top.sv");
         assert_eq!(
             effects,
-            vec![Effect::LspOpen {
-                file: "top.sv".to_string(),
-                text: "// top.sv\n".to_string()
-            }]
+            vec![
+                Effect::LspOpen {
+                    file: "top.sv".to_string(),
+                    text: "// top.sv\n".to_string()
+                },
+                // the source was parsed: the server is told which module to
+                // elaborate (none yet, the buffer is a comment)
+                Effect::LspTop { top: None },
+            ]
         );
         assert_eq!(state.sources.len(), 1);
         assert_eq!(state.sources.active, 0);
@@ -649,7 +700,7 @@ mod tests {
             .is_some_and(|status| status.text.contains("top.sv")));
         // a second document becomes the active tab
         let effects = open(&mut state, "cpu.sv");
-        assert!(matches!(effects.as_slice(), [Effect::LspOpen { .. }]));
+        assert!(matches!(effects.first(), Some(Effect::LspOpen { .. })));
         assert_eq!(state.sources.len(), 2);
         assert_eq!(state.sources.active, 1);
     }
@@ -667,10 +718,13 @@ mod tests {
         );
         assert_eq!(
             effects,
-            vec![Effect::LspChange {
-                file: "top.sv".to_string(),
-                text: "// edited\n".to_string()
-            }]
+            vec![
+                Effect::LspChange {
+                    file: "top.sv".to_string(),
+                    text: "// edited\n".to_string()
+                },
+                Effect::LspTop { top: None },
+            ]
         );
         // one tab, new text, bumped version: the editor keeps the same document
         assert_eq!(state.sources.len(), 1);
@@ -727,6 +781,7 @@ mod tests {
             Action::FocusChanged {
                 focus: crate::state::types::Focus {
                     signal: Some("top.pc".to_string()),
+                    instance: None,
                 },
             },
         );
@@ -838,6 +893,105 @@ mod tests {
         assert_eq!(effects, vec![Effect::LspTop { top: None }]);
     }
 
+    // --- R2 step 3b: the design slice, focus.instance, editor reloads ------
+
+    #[test]
+    fn a_parsed_source_lands_in_the_design_slice_and_rebuilds_the_tree() {
+        let mut state = state();
+        let effects = reduce(
+            &mut state,
+            Action::SourceOpened {
+                file: "top.sv".to_string(),
+                text: "module top; wire clk; endmodule\n".to_string(),
+            },
+        );
+        // the store parsed the source itself: the design knows it and the tree
+        // was derived from it in the same dispatch
+        assert_eq!(state.design.version(), 1);
+        assert!(!state.design.is_empty());
+        assert!(state.tree.is_some());
+        assert!(state.tree.as_ref().is_some_and(|tree| {
+            !tree.root().children.is_empty() || !tree.root().signals.is_empty()
+        }));
+        // and the language server is told (open + the elaborated top)
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::LspOpen { .. })));
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::LspTop { .. })));
+    }
+
+    #[test]
+    fn an_editor_edit_re_syncs_the_document_without_a_duplicate_open() {
+        let mut state = state();
+        reduce(
+            &mut state,
+            Action::SourceOpened {
+                file: "top.sv".to_string(),
+                text: "module top; endmodule\n".to_string(),
+            },
+        );
+        // the same text again (the editor re-attaching a model) is a no-op
+        let effects = reduce(
+            &mut state,
+            Action::SourceReloaded {
+                file: "top.sv".to_string(),
+                text: "module top; endmodule\n".to_string(),
+            },
+        );
+        assert!(effects.is_empty());
+        assert_eq!(state.sources.items[0].version, 1);
+        // a real edit bumps the document and asks for a didChange
+        let effects = reduce(
+            &mut state,
+            Action::SourceReloaded {
+                file: "top.sv".to_string(),
+                text: "module top; wire a; endmodule\n".to_string(),
+            },
+        );
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|effect| matches!(effect, Effect::LspChange { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(state.sources.items[0].version, 2);
+        assert_eq!(
+            state.sources.items[0].text,
+            "module top; wire a; endmodule\n"
+        );
+        // the design was re-elaborated from the new buffer (the store owns it)
+        assert_eq!(state.design.version(), 2);
+    }
+
+    #[test]
+    fn the_module_selection_lives_in_focus_and_a_new_tree_clears_it() {
+        let mut state = state();
+        reduce(
+            &mut state,
+            Action::FocusChanged {
+                focus: crate::state::types::Focus {
+                    signal: Some("top.clk".to_string()),
+                    instance: Some("top.u_cpu".to_string()),
+                },
+            },
+        );
+        assert_eq!(state.focus.instance.as_deref(), Some("top.u_cpu"));
+        // the wave selection is a separate field and is untouched
+        assert_eq!(state.focus.signal.as_deref(), Some("top.clk"));
+        // a source parse rebuilds the tree: the old module selection is gone
+        reduce(
+            &mut state,
+            Action::SourceOpened {
+                file: "top.sv".to_string(),
+                text: "module top; endmodule\n".to_string(),
+            },
+        );
+        assert_eq!(state.focus.instance, None);
+        assert_eq!(state.focus.signal.as_deref(), Some("top.clk"));
+    }
     #[test]
     fn the_picker_is_store_state_and_the_choice_closes_it() {
         let mut state = state();

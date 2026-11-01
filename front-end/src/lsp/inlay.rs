@@ -32,7 +32,7 @@ use wave_insight_lib::waveform::ShowType;
 use wave_insight_lib::waveform::Waveform;
 
 use crate::code_reader::monaco_glue::model_uri;
-use crate::nav::{value_text, SharedDesign, ValueFormat};
+use crate::nav::{value_text, ValueFormat};
 use crate::state::{select, DumpHandle, Store};
 
 use super::bridge::file_of_uri;
@@ -45,7 +45,6 @@ const MAX_LINES: u32 = 400;
 
 /// Page-wide state the provider reads.
 struct Context {
-    design: SharedDesign,
     store: Store,
     waveform: Option<DumpHandle>,
     /// Cursor 1, in wave time units; `None` means no hints at all.
@@ -58,12 +57,11 @@ thread_local! {
 }
 
 /// Install the page-wide context. Called once from `App::create`.
-pub fn init(design: SharedDesign, store: Store) {
+pub fn init(store: Store) {
     CONTEXT.with(|context| {
         let mut context = context.borrow_mut();
         if context.is_none() {
             *context = Some(Context {
-                design,
                 store,
                 waveform: None,
                 cursor: None,
@@ -165,7 +163,7 @@ fn fill_hints(
     let Some((file, first, last)) = scan_range(model, range) else {
         return (false, None, 0);
     };
-    let Some((cursor, design, waveform, store)) = borrow_parts() else {
+    let Some((cursor, waveform, store)) = borrow_parts() else {
         return (false, None, 0);
     };
     let Some(cursor) = cursor else {
@@ -195,7 +193,7 @@ fn fill_hints(
                 return (true, Some(cursor), last - first + 1);
             }
             if let Some(hint) = hint_at(
-                &design,
+                &store,
                 waveform.waveform(),
                 &formats,
                 &file,
@@ -217,7 +215,7 @@ fn fill_hints(
 /// the cursor is inside its history.
 #[allow(clippy::too_many_arguments)]
 fn hint_at(
-    design: &SharedDesign,
+    store: &Store,
     waveform: &Waveform,
     formats: &HashMap<&str, ValueFormat>,
     file: &str,
@@ -231,15 +229,14 @@ fn hint_at(
     if word.is_empty() || cursor < 0 {
         return None;
     }
-    let candidates = {
-        let design = design.borrow();
-        let exact = design.signals_at(file, line, start);
+    let candidates = store.select(|state| {
+        let exact = state.design.signals_at(file, line, start);
         if exact.is_empty() {
-            design.signals_matching(word)
+            state.design.signals_matching(word)
         } else {
             exact
         }
-    };
+    });
     if candidates.is_empty() {
         return None;
     }
@@ -341,13 +338,12 @@ fn publish_debug(
 
 /// Clone the parts the provider needs out of the thread local: no borrow is
 /// held while JS or the design database is used.
-fn borrow_parts() -> Option<(Option<i64>, SharedDesign, Option<DumpHandle>, Store)> {
+fn borrow_parts() -> Option<(Option<i64>, Option<DumpHandle>, Store)> {
     CONTEXT.with(|context| {
         let context = context.borrow();
         let context = context.as_ref()?;
         Some((
             context.cursor,
-            context.design.clone(),
             context.waveform.clone(),
             context.store.clone(),
         ))

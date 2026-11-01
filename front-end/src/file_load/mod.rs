@@ -9,9 +9,9 @@
 pub use file::parse_dump;
 pub use file::{FileLoad, LoadReport};
 #[cfg(feature = "tauri")]
-pub use filelist::invoke;
+pub use filelist::current_webview;
 #[cfg(feature = "tauri")]
-pub use filelist::listen;
+pub use filelist::invoke;
 #[cfg(feature = "tauri")]
 pub use filelist::FileList;
 

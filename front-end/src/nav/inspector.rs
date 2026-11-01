@@ -4,13 +4,15 @@
 use yew::html::Scope;
 use yew::prelude::*;
 
-use super::{SharedDesign, SourceRow};
+use super::SourceRow;
+use crate::state::Store;
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalInspectorProps {
-    pub design: SharedDesign,
-    /// Design database version; changes when a source file was parsed, even when
-    /// `design` itself is the same handle.
+    /// The store owns the design database; the panel queries it through the
+    /// selector instead of holding a second handle (R2 step 3b).
+    pub store: Store,
+    /// Design database version; changes when a source file was parsed.
     pub version: u64,
     /// Hierarchical path of the signal selected in the wave view.
     #[prop_or_default]
@@ -54,8 +56,9 @@ impl Component for SignalInspector {
 
         // take an owned copy of everything; the database borrow must not be held
         // while the html is built
-        let (details, has_sources, top, diagnostics, candidates) = {
-            let design = props.design.borrow();
+        let store = props.store.clone();
+        let (details, has_sources, top, diagnostics, candidates) = store.select(|state| {
+            let design = &state.design;
             let candidates = props
                 .path
                 .as_deref()
@@ -78,7 +81,7 @@ impl Component for SignalInspector {
                 design.diagnostic_count(),
                 candidates,
             )
-        };
+        });
 
         html! {
             <section class={if props.hidden {"panel inspector-panel hidden"} else {"panel inspector-panel"}}>

@@ -8,6 +8,7 @@
 
 use std::rc::Rc;
 
+use super::design::DesignState;
 use super::persist::{RowPrefs, SessionRow, Sessions};
 use super::sources::{Source, Sources};
 use super::types::{Dialog, Dump, Focus, Goto, Layout, Picker, Row, RowsSlice, Status, Viewport};
@@ -54,7 +55,10 @@ pub struct Nav {
 }
 
 /// The single source of truth.
-#[derive(Clone, Debug, Default, PartialEq)]
+// The design database is not Clone/PartialEq (it owns parsed source text and the
+// elaboration cache), and nothing compares whole states: subscribers compare
+// slices. `Default` is all the store needs to build one.
+#[derive(Default)]
 pub struct State {
     pub layout: Layout,
     pub nav: Nav,
@@ -71,8 +75,16 @@ pub struct State {
     pub sessions: Sessions,
     /// The open source documents, their buffer text and the active tab.
     pub sources: Sources,
-    /// The inspector selection (the signal selected in the wave view).
+    /// The inspector selection (the signal selected in the wave view) and the
+    /// module-tree selection.
     pub focus: Focus,
+    /// The design database and its elaboration cache. The reducer owns it: every
+    /// source action updates it here and rebuilds the sidebar tree below.
+    pub design: DesignState,
+    /// The sidebar tree, derived in the reducer from the opened dump (its scope
+    /// hierarchy wins) or from the elaborated design. A versioned cache: the
+    /// components subscribe instead of rebuilding it per render.
+    pub tree: Option<crate::nav::SidebarTree>,
 }
 
 impl State {

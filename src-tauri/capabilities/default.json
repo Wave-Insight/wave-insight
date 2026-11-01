@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Main window: core IPC/events only. The app's own commands (get_file_list, choose_vcd, choose_verilog) are not ACL-gated; no plugin APIs are exposed.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -121,6 +121,8 @@ pub struct Dialog {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Focus {
     pub signal: Option<String>,
+    /// The module-tree selection: the scope whose signals the sidebar lists.
+    pub instance: Option<String>,
 }
 
 /// The identity a remembered row list is keyed by.

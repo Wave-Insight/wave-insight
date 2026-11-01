@@ -11,10 +11,13 @@ use super::progress;
 
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "tauri"])]
+    // tauri 2 renamed the JS module: __TAURI__.tauri is now __TAURI__.core.
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"])]
     pub async fn invoke(cmd: &str, args: JsValue) -> JsValue;
-    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"])]
-    pub async fn listen(event: &str, handler: &Closure<dyn FnMut(JsValue)>);
+    // tauri 2 removed the tauri://file-drop event; the webview owns the
+    // drag-drop API now. The listener itself is installed in app.rs.
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "webview"], js_name = getCurrentWebview)]
+    pub fn current_webview() -> JsValue;
 }
 
 ///one row of the directory listing, produced by the `get_file_list` command

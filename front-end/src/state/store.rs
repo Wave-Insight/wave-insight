@@ -475,10 +475,13 @@ mod tests {
         // the store owns the document; the bridge mirror is updated by the effect
         assert_eq!(
             effects,
-            vec![crate::state::Effect::LspOpen {
-                file: "top.sv".into(),
-                text: "// top\n".into()
-            }]
+            vec![
+                crate::state::Effect::LspOpen {
+                    file: "top.sv".into(),
+                    text: "// top\n".into()
+                },
+                crate::state::Effect::LspTop { top: None },
+            ]
         );
         assert_eq!(store.select(|state| state.sources.len()), 1);
         // closing it asks for the didClose, and the document is gone

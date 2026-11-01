@@ -24,19 +24,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-22.04, windows-latest]
+        platform: [macos-latest, ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 90
 
     steps:
-    #ubuntu-22.04 is pinned on purpose: tauri 1.x links webkit2gtk-4.0, which
-    #ubuntu 24.04 no longer ships (it has 4.1). Do not move to ubuntu-latest
-    #before the tauri 2 migration.
+    #tauri 2 links webkit2gtk-4.1 (tauri 1.x needed 4.0, which is why this job
+    #used to be pinned to ubuntu-22.04); 4.1 is what ubuntu 24.04 ships, so the
+    #runner is back on the current LTS. libxdo-dev is in the v2 prerequisite list.
     - name: Install dependencies (ubuntu only)
       if: startsWith(matrix.platform, 'ubuntu')
       run: |
         sudo apt-get update
-        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
 
     - uses: actions/checkout@v4
 

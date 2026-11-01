@@ -33,7 +33,8 @@ use wasm_bindgen::{JsCast, JsValue};
 use yew::prelude::Callback;
 
 use crate::code_reader::monaco_glue::{set_model_markers, Marker};
-use crate::nav::{Goto, SharedDesign};
+use crate::nav::Goto;
+use crate::state::Store;
 
 use super::shim::DesignLsp;
 
@@ -226,8 +227,9 @@ struct OpenDocument {
 /// and the debug hook all share it.
 struct Bridge {
     lsp: DesignLsp,
-    /// The app's own database, i.e. the fallback for every question.
-    design: SharedDesign,
+    /// The store that owns the app's design database, i.e. the fallback for
+    /// every question (R2 step 3b: the bridge no longer holds the database).
+    store: Store,
     /// How to ask the UI to bring a position into view.
     goto: Callback<Goto>,
     /// Request ids; only ever incremented.
@@ -394,10 +396,10 @@ pub struct LspBridge(Rc<RefCell<Bridge>>);
 
 impl LspBridge {
     /// Build the client, send `initialize` once and publish the debug hook.
-    pub fn new(design: SharedDesign, goto: Callback<Goto>, problems: Callback<u32>) -> Self {
+    pub fn new(store: Store, goto: Callback<Goto>, problems: Callback<u32>) -> Self {
         let bridge = Self(Rc::new(RefCell::new(Bridge {
             lsp: DesignLsp::new(),
-            design,
+            store,
             goto,
             next_id: 0,
             documents: HashMap::new(),
@@ -415,9 +417,9 @@ impl LspBridge {
         bridge
     }
 
-    /// The app's design database, for callers that need it directly.
-    pub fn design(&self) -> SharedDesign {
-        self.0.borrow().design.clone()
+    /// The app's design database, read through the store that owns it.
+    pub fn store(&self) -> Store {
+        self.0.borrow().store.clone()
     }
 
     // -- document lifecycle ------------------------------------------------
@@ -637,28 +639,34 @@ impl LspBridge {
 
     /// The elaborated signal path covering a 1-based source position.
     fn signal_at(&self, file: &str, line: u32, column: u32) -> Option<String> {
-        let design = self.design();
-        let state = design.borrow();
-        state.signals_at(file, line, column).into_iter().next()
+        let store = self.store();
+        store.select(|state| {
+            state
+                .design
+                .signals_at(file, line, column)
+                .into_iter()
+                .next()
+        })
     }
 
     fn declaration_fallback(&self, file: &str, line: u32, column: u32) -> Option<Location> {
         let path = self.signal_at(file, line, column)?;
-        let design = self.design();
-        let state = design.borrow();
-        let span = state.declaration(&path)?;
-        Some(location_of(
-            &span.file.display().to_string(),
-            span.start_line,
-            span.start_col,
-        ))
+        let store = self.store();
+        store.select(|state| {
+            state.design.declaration(&path).map(|span| {
+                location_of(
+                    &span.file.display().to_string(),
+                    span.start_line,
+                    span.start_col,
+                )
+            })
+        })
     }
 
     fn hover_fallback(&self, file: &str, line: u32, column: u32) -> Option<Hover> {
         let path = self.signal_at(file, line, column)?;
-        let design = self.design();
-        let state = design.borrow();
-        let details = state.signal_details(&path)?;
+        let store = self.store();
+        let details = store.select(|state| state.design.signal_details(&path))?;
         let mut text = format!("`{}`\n\n", details.path);
         match details.width {
             Some(width) => text.push_str(&format!("- width: {width} bits\n")),
@@ -684,9 +692,8 @@ impl LspBridge {
         if path.is_empty() {
             return Vec::new();
         }
-        let design = self.design();
-        let state = design.borrow();
-        let Some(details) = state.signal_details(&path) else {
+        let store = self.store();
+        let Some(details) = store.select(|state| state.design.signal_details(&path)) else {
             return Vec::new();
         };
         let rows = details

@@ -7,23 +7,23 @@
 //! "what is under the cursor", "which signals match this word"), while
 //! [`SignalInspector`] and [`PathPicker`] only render those answers.
 //!
-//! Everything the components exchange is cheap to clone and compare: the
-//! database is behind a [`SharedDesign`] identity handle, and the opened dump
-//! lives in the store as a [`crate::state::DumpHandle`] (identity comparing), so
-//! a re-render never deep compares a design or a waveform.
+//! R2 step 3b moved the database itself into the store (`State.design`): the
+//! [`DesignState`] is re-exported here for the panes, and the store's version
+//! counter is what tells a subscriber the content changed. The opened dump lives
+//! in the store too ([`crate::state::DumpHandle`], identity comparing), so a
+//! re-render never deep compares a design or a waveform.
 
-pub use design_state::{DesignState, SignalDetails, SourceRow};
+// R2 step 3b: the design database lives in the store now; the panes keep the
+// old spelling through this re-export.
+#[allow(unused_imports)]
+pub use crate::state::design::{DesignState, SignalDetails, SourceRow};
 pub use inspector::SignalInspector;
 pub use picker::PathPicker;
 pub use tree::{SidebarTree, SignalRow};
 
-mod design_state;
 mod inspector;
 mod picker;
-mod tree;
-
-use std::cell::{Ref, RefCell, RefMut};
-use std::rc::Rc;
+pub mod tree;
 
 use wasm_bindgen::JsCast;
 
@@ -44,50 +44,6 @@ pub struct SourceClick {
     /// The identifier the user clicked, used for the fallback lookup when the
     /// elaborated design has nothing at that exact position.
     pub word: String,
-}
-
-/// Shared handle on the [`DesignState`].
-///
-/// Compares by identity, not by content: re-rendering the app must not walk a
-/// whole design database, and the version counter is what tells the inspector
-/// that the content behind the handle changed.
-#[derive(Clone)]
-pub struct SharedDesign(Rc<RefCell<DesignState>>);
-
-impl SharedDesign {
-    pub fn new(state: DesignState) -> Self {
-        Self(Rc::new(RefCell::new(state)))
-    }
-
-    pub fn borrow(&self) -> Ref<'_, DesignState> {
-        self.0.borrow()
-    }
-
-    pub fn borrow_mut(&self) -> RefMut<'_, DesignState> {
-        self.0.borrow_mut()
-    }
-}
-
-impl PartialEq for SharedDesign {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl std::fmt::Debug for SharedDesign {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.0.borrow();
-        f.debug_struct("SharedDesign")
-            .field("version", &state.version())
-            .field("top", &state.top())
-            .finish()
-    }
-}
-
-impl Default for SharedDesign {
-    fn default() -> Self {
-        Self::new(DesignState::new())
-    }
 }
 
 /// How one row's values are printed: the base format plus the fixed-point

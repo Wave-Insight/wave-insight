@@ -1,9 +1,16 @@
 # Tauri 1.x -> 2.x migration plan
 
-Status: **planned (Wave 6)**. Written against the tree at version 0.8.0, 2026-11-02.
-Current: `tauri 1.8.3` / `tauri-build 1.5.6` (`src-tauri/Cargo.toml:15,20`),
-`tauri.conf.json` in the v1 schema (`"tauri"` key, `allowlist`, `distDir`).
-Target: **Tauri 2.x** (2.12.5 is the current stable at the time of writing).
+Status: **done (Wave 7, tree at 0.10.0).** Both phases landed: the Rust shell
+and config on tauri 2, the front-end IPC shims on `__TAURI__.core` and
+`onDragDropEvent`. What remains is runtime-only verification (window, IPC,
+drag-and-drop, bundles) on the tag workflow, because this environment has no
+desktop runtime. Written as a plan in Wave 6 against the tree at 0.8.0; the
+"Phase 1 result"/"Phase 2 result" sections at the bottom record what actually
+landed and where reality differed.
+Was: `tauri 1.8.3` / `tauri-build 1.5.6`, `tauri.conf.json` in the v1 schema
+(`"tauri"` key, `allowlist`, `distDir`).
+Now: `tauri 2.12.5` / `tauri-build 2.7.4` (`tauri-utils 2.10.2`, `wry 0.57.1`,
+`tao 0.37.2`), v2 config schema and `src-tauri/capabilities/default.json`.
 
 Why this is worth doing even though the app works today:
 
@@ -135,9 +142,9 @@ capability entry; `core:default` is what the webview needs for IPC/event core.
 ## Verification strategy
 
 - `cargo check -p app --locked` and the wasm tauri-feature check above (fast loop).
-- `cargo deny check` must go green **without** the three ignores (this is the
+- `cargo deny check` must go green **without** the tauri-1.x ignores (this is the
   measurable proof the GTK3 advisories left the tree).
-- Browser QA matrix (324 assertions) proves the *browser* channel is untouched;
+- Browser QA matrix (356 assertions) proves the *browser* channel is untouched;
   it cannot prove the desktop channel, so the manual checklist in step 7 plus the
   `tauri.yml` tag build are the desktop gate.
 - Rollback: the migration is one commit per step; reverting steps 1-5 restores
@@ -154,3 +161,91 @@ capability entry; `core:default` is what the webview needs for IPC/event core.
   localStorage-backed layout/settings reset once unless `useHttpsScheme` is set.
 - **Not verifiable here**: no desktop runtime/bundle build in this environment;
   the `tauri.yml` tag build on the real runners is the final gate.
+
+## Phase 1 result (landed, Wave 7)
+
+Versions actually resolved (Cargo.lock): `tauri 2.12.5`, `tauri-build 2.7.4`,
+`tauri-utils 2.10.2`, `wry 0.57.1`, `tao 0.37.2`; `tauri` keeps the
+`custom-protocol` feature (it still exists in v2, confirmed against the v2
+crate's `Cargo.toml`).
+
+Files changed in phase 1:
+
+- `src-tauri/Cargo.toml` — `tauri-build = "2"`, `tauri = "2"`; the
+  `custom-protocol` feature stays (v2 still has it).
+- `src-tauri/tauri.conf.json` — v2 schema, written from the schema at
+  `https://schema.tauri.app/config/2` and validated by `tauri-build`:
+  top-level `productName`/`version`/`identifier`/`mainBinaryName: "app"`,
+  `build.frontendDist`/`devUrl`, `app.windows` (label `main`),
+  `app.withGlobalTauri`, `app.security.csp`, top-level `bundle` with
+  `bundle.linux.deb` (the old `deb`), `bundle.macOS`/`bundle.windows`; the
+  inactive `updater` block and the v1 `allowlist` are gone.
+- `src-tauri/capabilities/default.json` (new) — `windows: ["main"]`,
+  `permissions: ["core:default"]`. The five app commands are not ACL-gated;
+  tauri-build compiled this file and generated `gen/schemas/capabilities.json`
+  with it, which is the compile-time proof it parses.
+- `src-tauri/.gitignore` — `/gen/` (tauri-build v2 writes `gen/schemas/*`).
+- `.github/workflows/{tauri,tauri_pre,rust}.yml` — `ubuntu-22.04` ->
+  `ubuntu-24.04`, `libwebkit2gtk-4.0-dev` -> `libwebkit2gtk-4.1-dev`, plus
+  `libxdo-dev`/`libssl-dev` from the v2 prerequisite list; the `rust.yml`
+  clippy job (it builds `-p app`) moved with them.
+- `deny.toml` — RUSTSEC-2024-0384 (instant) and RUSTSEC-2025-0057 (fxhash) are
+  gone from the tree and their ignores were removed; RUSTSEC-2024-0370
+  (proc-macro-error) **remains** because tauri 2 still links GTK3 on Linux,
+  so `glib-macros/gtk3-macros` is still in the build tree.
+- `Cargo.lock` — the tauri-1.x stack replaced by the v2 stack (~1300 lines).
+
+Verified here (Windows, no desktop runtime):
+
+- `cargo check -p app --locked` -> exit 0 (tauri-build parsed the v2 config and
+  the capability, generated `gen/schemas/`, and the shell compiled).
+- `cargo deny check` -> advisories ok, bans ok, licenses ok, sources ok; the
+  remaining duplicate-version warnings are informational (bans is `warn`).
+- `src-tauri/gen/schemas/capabilities.json` contains the `default` capability,
+  so the ACL file is valid.
+
+Not verified here (needs a desktop runtime / real runners): the window opens
+and the webview loads the bundled frontend; the five `#[tauri::command]`s
+answer through v2 IPC; drag-and-drop (phase 2); `cargo tauri build` bundles
+(deb/rpm/AppImage/dmg/msi) and the `tauri.yml` tag workflow, including
+`beforeBuildCommand`'s working directory and the tauri-action CLI version
+selection for v2.
+
+## Phase 2 result (landed, Wave 7)
+
+Front-end tauri-gated code only (the browser build and the QA contract are
+untouched; `trunk build --features wasm` and the 171 front-end tests stay
+green):
+
+- `front-end/src/file_load/filelist.rs` — the IPC shim now declares
+  `js_namespace = ["window", "__TAURI__", "core"]` for `invoke` (v2 renamed
+  the JS module from `tauri` to `core`), and the v1 `listen` extern was
+  replaced by `current_webview()`:
+  `js_namespace = ["window", "__TAURI__", "webview"], js_name = getCurrentWebview`.
+- `front-end/src/file_load/mod.rs` — exports `current_webview` instead of
+  `listen`.
+- `front-end/src/app.rs` (the `#[cfg(feature = "tauri")]` block in
+  `App::create`) — the removed `tauri://file-drop` listener is gone. It now
+  calls `current_webview()` and registers `onDragDropEvent` on it via
+  `Reflect` (the v2 webview method), reads `event.payload.type` and only on
+  `"drop"` maps `event.payload.paths` (absolute paths) into the existing
+  `Msg::FileDrop(Vec<String>)` path. enter/over/leave are ignored, so the
+  rest of the file-drop handling is unchanged.
+
+Verified in phase 2:
+
+- `cargo check -p front-end --no-default-features --features tauri
+  --target wasm32-unknown-unknown --locked` -> exit 0.
+- `cargo check -p front-end --target wasm32-unknown-unknown --locked`
+  (default/browser features) -> exit 0.
+- `cargo check -p app --locked` -> exit 0.
+- `cargo test -p front-end --bins --locked` -> 171 passed, 0 failed.
+- `trunk build --no-default-features --features tauri --release` -> exit 0
+  (93 s); wasm-bindgen processed the bundle, which validates the new
+  `js_namespace`/`js_name` bindings. The dist was then rebuilt with the wasm
+  feature so the tree is back to the browser bundle.
+
+Still runtime-only (cannot be checked here): the window opens and loads the
+frontend, the five commands answer over v2 IPC, a real drag-and-drop delivers
+absolute paths through `onDragDropEvent`, and `cargo tauri build` produces
+the deb/rpm/AppImage/dmg/msi bundles on the tag workflow.

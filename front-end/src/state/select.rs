@@ -71,6 +71,18 @@ pub fn dialog(state: &State) -> Option<Dialog> {
     state.nav.dialog.clone()
 }
 
+/// The sidebar tree (the dump hierarchy or the elaborated design).
+/// Subscribed by the sidebar.
+pub fn tree(state: &State) -> Option<crate::nav::SidebarTree> {
+    state.tree.clone()
+}
+
+/// The design database's version; a component that queries `State.design`
+/// subscribes to this to re-render when a source was parsed.
+pub fn design_version(state: &State) -> u64 {
+    state.design.version()
+}
+
 /// The pending (or last) jump request. Subscribed by the editor.
 pub fn goto(state: &State) -> Option<Goto> {
     state.nav.goto.clone()

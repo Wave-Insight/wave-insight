@@ -40,6 +40,7 @@
 //! reads the elaborated design.
 
 pub mod action;
+pub mod design;
 pub mod persist;
 pub mod reduce;
 pub mod select;
@@ -54,6 +55,8 @@ pub mod types;
 // the call sites do not have to move again
 #[allow(unused_imports)]
 pub use action::{Action, Effect};
+#[allow(unused_imports)]
+pub use design::{DesignState, SignalDetails, SourceRow};
 #[allow(unused_imports)]
 pub use persist::{Persister, RowPrefs, Session, SessionRow, Sessions, Storage};
 #[allow(unused_imports)]

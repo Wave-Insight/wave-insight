@@ -12,7 +12,7 @@ There are two builds, and both parse everything in the application itself — no
 server and no second copy of the reader:
 
 * `wasm version`: you can click [here](https://wave-insight.github.io/wave-insight/) to have a try. It's only a website so you don't need to download anything or install anything. A browser normally gives wasm 4GB of memory, so a very large dump can still exhaust it; a dump is opened lazily (only the header and a cheap scan of the time stamps, values are decoded per signal as you look at them), so the size that fits is much larger than it used to be.
-* `tauri version`: a local app for Windows, Linux and macOS. You can download it at the [release page](https://github.com/Wave-Insight/wave-insight/releases). For Windows users there is `wave_insight_tauri.exe`; Linux users download `wave_insight_tauri_ubuntu`, then run `chmod a+x wave_insight_tauri_ubuntu` and `./wave_insight_tauri_ubuntu`. The macOS asset is `wave_insight_tauri_mac_arm64` (Apple Silicon only; it is not signed, so Gatekeeper needs the usual "Open anyway" confirmation). You can drag `.vcd`, `.fst`, `.ghw` or `.v`/`.sv` files on the app to load. The tauri backend only opens the file dialog and returns the bytes; the dump is parsed by the webview with the same code the browser build uses.
+* `tauri version`: a local app for Windows, Linux and macOS. You can download it at the [release page](https://github.com/Wave-Insight/wave-insight/releases). For Windows users there is `wave_insight_tauri.exe`; Linux users download `wave_insight_tauri_ubuntu`, then run `chmod a+x wave_insight_tauri_ubuntu` and `./wave_insight_tauri_ubuntu`. The macOS asset is `wave_insight_tauri_mac_arm64` (Apple Silicon only; it is not signed, so Gatekeeper needs the usual "Open anyway" confirmation). You can drag `.vcd`, `.fst`, `.ghw` or `.v`/`.sv` files on the app to load. The shell is **Tauri 2**: the backend only opens the file dialog and returns the bytes (plus drag-and-drop paths); the dump is parsed by the webview with the same code the browser build uses.
 
 The old `server version` (a websocket that streamed a serialised waveform model
 to a web page) has been removed: the browser reads files itself, so it had no
@@ -155,25 +155,37 @@ download from [release page](https://github.com/Wave-Insight/wave-insight/releas
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install trunk --locked --version 0.22.1
-cargo install tauri-cli --version "^1"
+cargo install tauri-cli --version "^2"
 cargo tauri build
 ```
 
-The Tauri CLI is `tauri-cli` (the `tauri` crate itself is only the runtime
-library, so installing it gives you no `cargo tauri` subcommand). The pinned
-`tauri-cli` 1.x matches the 1.2 runtime used by `src-tauri`; the build runs
-`trunk build --features tauri` first (see `beforeBuildCommand` in
-`src-tauri/tauri.conf.json`) and then bundles the desktop app.
+The desktop app is **Tauri 2** (`tauri 2.12` / `tauri-build 2.7`): the CLI is
+`tauri-cli` 2.x (the `tauri` crate is only the runtime library), the config is the
+v2 schema (`frontendDist`/`devUrl`, `app.windows`, top-level `bundle`) with an
+explicit capability in `src-tauri/capabilities/default.json`, and the front end
+talks to it through `__TAURI__.core.invoke` plus the webview `onDragDropEvent`.
+On Linux the v2 prerequisites are needed - Ubuntu 24.04 ships the right one:
+
+```bash
+sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev \
+    libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+```
+
+The build runs `trunk build --features tauri` first (see `beforeBuildCommand` in
+`src-tauri/tauri.conf.json`) and then bundles the desktop app. Note that in this
+repository's environment the desktop build is **compile-verified only**
+(`cargo check -p app`, `trunk build --features tauri`); opening the window,
+the IPC commands, drag-and-drop and `cargo tauri build` bundles are validated by
+the tag workflow on the real runners, not by a desktop runtime test here.
 
 ### planned dependency migrations
 
-Two concrete migration plans live in `docs/migrations/` and are the next
-dependency step (Wave 6 in [`docs/roadmap.md`](docs/roadmap.md)):
-[`yew-0.21.md`](docs/migrations/yew-0.21.md) (yew 0.19 -> 0.21: the 12 class
-components, 74 `html!` sites and the breaking-change list) and
-[`tauri-2.md`](docs/migrations/tauri-2.md) (Tauri 1.x -> 2.x: the five commands,
-the config schema, webkit2gtk-4.1 and the CI/deny.toml consequences). Each lists
-the breaker list, the steps and the verification to run.
+The Tauri 1.x -> 2.x migration landed in Wave 7; its plan and the
+'phase 1 result'/'phase 2 result' sections live in
+[`docs/migrations/tauri-2.md`](docs/migrations/tauri-2.md). The remaining plan is
+[`docs/migrations/yew-0.21.md`](docs/migrations/yew-0.21.md) (yew 0.19 -> 0.21:
+the 12 class components, 74 `html!` sites and the breaking-change list), a later
+wave in [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Usage
 
@@ -284,9 +296,13 @@ closer is a real button, and the wave list and candidate picker expose
   elaborated, so an elaboration diagnostic that depends on another top (for
   example the width-mismatch fixture) is not surfaced in the editor yet.
 * **Corrupt dumps are recovered on a best-effort basis.** The readers validate
-  input and turn bad files into an error message instead of panicking, and the
-  library wraps third-party parsing in `catch_unwind`. The release profile is
-  `panic = "abort"` (needed for the wasm size), so where unwinding is not
+  input and turn bad files into an error message instead of panicking: FST files
+  get a structural pre-parse check (block lengths against EOF, plus gzip /
+  hierarchy / time-table plausibility caps), so a file with flipped length fields
+  is rejected as corrupt instead of driving a giant allocation or aborting the
+  viewer. The check is plausibility-based, not a full FST validator, and the
+  library still wraps third-party parsing in `catch_unwind`. The release profile
+  is `panic = "abort"` (needed for the wasm size), so where unwinding is not
   available a dependency panic still aborts the page/app rather than recovering.
 * **Very large dumps.** The lazy path keeps memory proportional to what is on
   screen plus the raw file bytes, but a browser tab is not a database: the
@@ -332,6 +348,9 @@ Done in the next release (unreleased at the time of writing):
 - [x] LSP/design position queries indexed: `textDocument/definition` answers in ~12 us on the synthetic 100-module design (byte-identical to the old scan, differential-tested) with a new `bench lsp` suite
 - [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor and the TXT export (49 scenarios / 356 assertions)
 - [x] multi-dump + split-view design note under `docs/design/multi-dump.md` (planned Wave 8)
+- [x] Tauri 2 migration: v2 config + capabilities, `__TAURI__.core` IPC and `onDragDropEvent` drag-and-drop, Linux webkit2gtk-4.1 prerequisites, CI on Ubuntu 24.04 (compile-verified; runtime and bundles are validated by the tag workflow)
+- [x] waveform hardening: a corrupt/truncated FST is rejected by a structural pre-parse validator instead of aborting the viewer; aliased signals stream under the requested variable index; deterministic VCD/FST fuzz and query-tier differential tests cover the entry points
+- [x] R2 step 3b: `State.design` (DesignDb + elaboration cache + top), the derived module tree, `focus.instance` + module-tree selection, and editor edits dispatched as `SourceReloaded` (re-elaborate + LSP change)
 
 Still open:
 

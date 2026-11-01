@@ -23,6 +23,10 @@ pub struct CodeBlockProps {
     /// The jump request was applied; the app clears the pending one.
     #[prop_or_default]
     pub onshown: Callback<u32>,
+    /// The buffer changed (an edit, or the app replacing the text). The store is
+    /// the document of record now: it re-syncs the LSP through an effect.
+    #[prop_or_default]
+    pub onchange: Callback<(String, String)>,
     /// The page's language server client: every document the editor shows is
     /// opened (and kept in sync) here, and the monaco providers answer from it.
     pub lsp: LspBridge,
@@ -156,12 +160,13 @@ impl CodeBlock {
         let options = EditorOptions::new(String::new(), LANGUAGE_ID, "vs-dark");
         let editor = MonacoEditor::create_interactive(&host, options, on_click);
 
-        // Every buffer change (a user edit, or the app replacing the text)
-        // goes to the language server as a `didChange`.
-        let lsp = props.lsp.clone();
+        // Every buffer change (a user edit, or the app replacing the text) is
+        // dispatched to the store; the reducer keeps the document of record and
+        // asks the language server for the `didChange` through an effect.
+        let change = props.onchange.clone();
         editor.on_content_change(Box::new(move |uri, text| {
             if let Some(file) = file_of_uri(&uri) {
-                lsp.open(&file, &text);
+                change.emit((file, text));
             }
         }));
 

@@ -105,16 +105,16 @@ jobs:
     - name: Check formatting
       run: cargo fmt --all -- --check
 
-  #the tauri crate links webkit2gtk-4.0, which only exists on ubuntu-22.04
-  #(see the same apt line in tauri.yml), so the whole workspace is linted there
+  #the tauri crate links webkit2gtk-4.1 (tauri 2), so the whole workspace is
+  #linted on the same runner/prerequisites as tauri.yml
   clippy:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
     - name: Install dependencies (ubuntu only)
       run: |
         sudo apt-get update
-        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
 
     - uses: actions/checkout@v4
 

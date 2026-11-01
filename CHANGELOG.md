@@ -10,6 +10,70 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.11.0] - 2026-11-02
+
+### Added
+
+- Tauri 2 migration (shell and front-end wiring): `tauri 2.12.5` /
+  `tauri-build 2.7.4`, the v2 config schema (`frontendDist`/`devUrl`,
+  `app.windows` with label `main`, top-level `bundle`, `mainBinaryName: "app"`,
+  explicit CSP) and a new `src-tauri/capabilities/default.json`
+  (`core:default`; the app's own commands are not ACL-gated). The front end now
+  calls `__TAURI__.core.invoke` and `__TAURI__.webview.getCurrentWebview()
+  .onDragDropEvent`; the removed v1 `tauri://file-drop` listener is gone and
+  dropped absolute paths map into the existing file-drop path. CI moved to
+  `ubuntu-24.04` with `libwebkit2gtk-4.1-dev` (+ `libxdo-dev`/`libssl-dev`)
+  in the tauri, tauri_pre and clippy jobs. Verified here: `cargo check -p app`,
+  the front end with `--features tauri` and with the default features, 171
+  front-end tests, and a `trunk build --features tauri` (the wasm-bindgen pass
+  validates the new JS bindings); opening the window, the IPC commands, real
+  drag-and-drop and `cargo tauri build` bundles remain runtime-only and are
+  gated by the tag workflow.
+- R2 step 3b finished (architecture, no user-visible change): `State.design`
+  owns the `DesignDb`, its elaboration cache and the top module; `SharedDesign`
+  is gone, `State.tree` is a derived cache, the module-tree selection lives in
+  `focus.instance` (the sidebar derives it and dispatches `FocusChanged`), the
+  path picker and the settings dialog are store slices, and editor edits dispatch
+  `SourceReloaded` - which emits the LSP change effect and re-elaborates (a no-op
+  for unchanged text). `LspBridge` reads the design through the store. What is
+  left in step 4 is only the pane wiring: panes could subscribe directly instead
+  of receiving shell-mirrored props, the picker/dialog props could be pure store
+  reads, and `Effect::MonacoShow` is still a no-op seam.
+- Waveform hardening: a corrupt FST whose length fields are flipped used to
+  drive a multi-terabyte allocation and an uncatchable process abort; a new
+  structural pre-parse validator (block lengths checked against EOF, plus
+  gzip/hierarchy/time-table plausibility caps) turns that into a `Corrupt`
+  error. `HierarchyView::build` now runs inside the panic guard with a
+  256-scope nesting bound, and aliased signals stream under the requested
+  variable index (`ValueQuery::all` reports every alias). New deterministic
+  fuzz-style tests in `wave-insight-lib/tests/waveform_fuzz.rs`: random valid
+  VCDs compared against a hand-built model, truncation/byte-flip sweeps for VCD
+  and FST, query-tier differential checks and the aliased-streaming case.
+
+### Changed
+
+- Building the desktop app needs the Tauri 2 CLI
+  (`cargo install tauri-cli --version "^2"`) and, on Linux, the webkit2gtk-4.1
+  prerequisites (Ubuntu 24.04: `libwebkit2gtk-4.1-dev`, `libxdo-dev`,
+  `libssl-dev`). In this repository's environment the desktop build is
+  compile-verified only; runtime and bundle checks happen on the tag workflow.
+- CI runners moved from Ubuntu 22.04 to 24.04 (the webkit2gtk-4.0 pin was a
+  tauri-1.x constraint), and `deny.toml` dropped the `instant`/`fxhash`
+  unmaintained ignores because tauri 2 no longer pulls them; the remaining
+  `proc-macro-error` ignore stays because tauri 2 still links GTK3 on Linux.
+  `docs/migrations/tauri-2.md` records the phase 1/phase 2 results.
+
+### Fixed
+
+- A corrupt or truncated FST no longer aborts the viewer: the structural
+  validator reports it as a corrupt dump (the check is plausibility-based, not a
+  full FST validator, and the `panic = "abort"` caveat for release builds
+  remains).
+- Streaming an aliased signal now reports the requested variable's index instead
+  of the first alias's.
+- The deterministic truncation/byte-flip sweeps over VCD and FST bytes never
+  panic; every entry point answers with a value or a `WaveformError`.
+
 ## [0.10.0] - 2026-11-02
 
 ### Added

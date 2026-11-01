@@ -148,7 +148,7 @@ fn uint_string(value: &[(u8, u8)]) -> String {
 }
 
 fn sint_string(value: &[(u8, u8)], bitcount: usize) -> String {
-    use num::{bigint::Sign, bigint::ToBigInt, BigInt, BigUint};
+    use num::{bigint::Sign, BigInt, BigUint};
     let has_xz = value.iter().map(|(xz, _)| xz).any(|&xz| xz != 0);
     if has_xz {
         "X".to_owned()
@@ -158,10 +158,13 @@ fn sint_string(value: &[(u8, u8)], bitcount: usize) -> String {
         //a one bit or empty value has no sign bit to test
         let bits = bitcount.max(1) as u32;
         let bound = BigUint::new(vec![2]).pow(bits - 1);
+        // BigInt::from_biguint cannot fail, so no unwrap is needed on input
+        // derived from a (possibly corrupt) dump.
         let value_to_sint = if value >= bound {
-            value.to_bigint().unwrap() - BigInt::new(Sign::Plus, vec![2]).pow(bits)
+            BigInt::from_biguint(Sign::Plus, value.clone())
+                - BigInt::new(Sign::Plus, vec![2]).pow(bits)
         } else {
-            value.to_bigint().unwrap()
+            BigInt::from_biguint(Sign::Plus, value)
         };
         format!("{value_to_sint}")
     }

@@ -197,11 +197,13 @@ pub struct HierarchyView {
     root: ScopeNode,
     signals: Vec<SignalInfo>,
     by_path: HashMap<String, usize>,
-    /// wellen signal handle index -> first variable index that uses it.
+    /// wellen signal handle index -> every variable index that uses it, first
+    /// variable first.
     ///
-    /// Two variables can alias one signal (e.g. a bus and an alias of it); the
-    /// value stream reports the signal, we map it back to a variable.
-    var_of_signal: HashMap<u32, usize>,
+    /// Two variables can alias one signal (the same VCD identifier code); the
+    /// value stream reports the signal once, so the caller needs all variables
+    /// to report the change against the row that was actually requested.
+    var_of_signal: HashMap<u32, Vec<usize>>,
 }
 
 impl HierarchyView {
@@ -235,32 +237,42 @@ impl HierarchyView {
         self.by_path.get(path).and_then(|&i| self.signals.get(i))
     }
 
-    /// Map a decoded wellen signal handle back to a variable index.
-    pub(crate) fn variable_of_signal(&self, signal: SignalRef) -> Option<usize> {
-        self.var_of_signal.get(&(signal.index() as u32)).copied()
+    /// Map a decoded wellen signal handle back to every variable that aliases
+    /// it (the first variable first).
+    pub(crate) fn variables_of_signal(&self, signal: SignalRef) -> Option<&[usize]> {
+        self.var_of_signal
+            .get(&(signal.index() as u32))
+            .map(Vec::as_slice)
     }
 
     /// Resolve the hierarchy of a freshly read header.
-    pub(crate) fn build(hierarchy: &Hierarchy) -> Self {
+    ///
+    /// Returns an error instead of recursing without a bound when a file
+    /// declares an absurdly deep scope nesting (the builder is recursive, and a
+    /// stack overflow cannot be turned into an error afterwards).
+    pub(crate) fn build(hierarchy: &Hierarchy) -> std::result::Result<Self, String> {
         let mut builder = Builder {
             signals: Vec::with_capacity(hierarchy.all_vars().count()),
             by_path: HashMap::new(),
             var_of_signal: HashMap::new(),
         };
-        let root = builder.build_scope(hierarchy, None, "");
-        Self {
+        let root = builder.build_scope(hierarchy, None, "", 0)?;
+        Ok(Self {
             root,
             signals: builder.signals,
             by_path: builder.by_path,
             var_of_signal: builder.var_of_signal,
-        }
+        })
     }
 }
+
+/// Upper bound on the scope nesting depth the builder recurses into.
+const MAX_SCOPE_DEPTH: usize = 256;
 
 struct Builder {
     signals: Vec<SignalInfo>,
     by_path: HashMap<String, usize>,
-    var_of_signal: HashMap<u32, usize>,
+    var_of_signal: HashMap<u32, Vec<usize>>,
 }
 
 impl Builder {
@@ -271,7 +283,13 @@ impl Builder {
         hierarchy: &Hierarchy,
         scope: Option<ScopeRef>,
         path: &str,
-    ) -> ScopeNode {
+        depth: usize,
+    ) -> std::result::Result<ScopeNode, String> {
+        if depth > MAX_SCOPE_DEPTH {
+            return Err(format!(
+                "scope hierarchy is nested deeper than {MAX_SCOPE_DEPTH} levels"
+            ));
+        }
         let mut node = ScopeNode {
             name: scope
                 .map(|s| hierarchy[s].name(hierarchy).to_string())
@@ -295,13 +313,17 @@ impl Builder {
                 ItemRef::Scope(child) => {
                     let child_name = hierarchy[child].name(hierarchy);
                     let child_path = join_path(path, child_name);
-                    node.children
-                        .push(self.build_scope(hierarchy, Some(child), &child_path));
+                    node.children.push(self.build_scope(
+                        hierarchy,
+                        Some(child),
+                        &child_path,
+                        depth + 1,
+                    )?);
                 }
             }
         }
 
-        node
+        Ok(node)
     }
 
     fn add_var(&mut self, hierarchy: &Hierarchy, var_ref: VarRef, scope_path: &str) -> usize {
@@ -343,7 +365,8 @@ impl Builder {
         self.by_path.insert(info.path.clone(), index);
         self.var_of_signal
             .entry(signal_ref.index() as u32)
-            .or_insert(index);
+            .or_default()
+            .push(index);
         self.signals.push(info);
         index
     }

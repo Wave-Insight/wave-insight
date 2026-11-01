@@ -10,7 +10,7 @@ use std::path::Path;
 
 use wave_insight_lib::design::{DesignDb, ElaboratedDesign, FlatSignal, Span, UsageKind};
 
-use super::tree::{ModuleRow, SidebarTree, SignalRow};
+use crate::nav::tree::{ModuleRow, SidebarTree, SignalRow};
 
 /// One clickable source position shown in the inspector.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,8 +63,9 @@ pub struct DesignState {
     /// The waveform hierarchy names its root scope (usually the testbench); when
     /// the same module was loaded from source it is the best guess for "top".
     top_hint: Option<String>,
-    /// Bumped on every rebuild; the components use it to notice new content
-    /// behind an unchanged [`crate::nav::SharedDesign`] handle.
+    /// Bumped on every rebuild; the store's `design_version` selector uses it to
+    /// tell the panes that new content was parsed (R2 step 3b: the design lives in
+    /// `State.design`, there is no separate identity handle any more).
     version: u64,
 }
 
@@ -164,7 +165,7 @@ impl DesignState {
         let Some(design) = self.design.as_ref() else {
             return Vec::new();
         };
-        super::resolve_candidates(
+        crate::nav::resolve_candidates(
             path,
             design.signals().iter(),
             |signal| signal.path.as_str(),
