@@ -83,7 +83,8 @@ impl Component for SignalName {
         let value = ctx.props().value.clone().unwrap_or_default();
         let value2 = ctx.props().value2.clone();
         html! {
-            <div class={class} style={style}>
+            <div class={class} style={style}
+                role="option" aria-selected={if ctx.props().choose {"true"} else {"false"}} tabindex="0">
                 <p class="wave-name-text" title={ctx.props().name.clone()}
                     oncontextmenu={link.callback(Msg::ContextMenu)}
                     onclick={ctx.props().onclick.reform(|_: MouseEvent| ())}>

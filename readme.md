@@ -136,18 +136,49 @@ placed.
   dumps over 512 MB are refused before a byte is read, with advice to trim the
   dump. The success line reports what it cost: `waveform loaded — opened in
   412 ms, 105 MB, wasm memory 320 MB`.
-- **Diagnostics**: problems the design front end finds in the open sources are
-  published into the editor as monaco markers (squiggles), and the top bar keeps
-  an `N problem(s)` chip visible even when the source pane is collapsed.
+- **Diagnostics**: problems the parser and front end find in the open sources
+  are published into the editor as monaco markers (squiggles), and the top bar
+  keeps an `N problem(s)` chip visible even when the source pane is collapsed.
+  (The elaboration diagnostics added in this wave - `unresolved-name` and
+  `width-mismatch` - are reported by the design API and tests but are not yet
+  forwarded to the editor; see Known limitations.)
+- **Big designs**: the sidebar module tree and signal list are virtualized above
+  80 rows - only the rows inside the scroll viewport exist in the DOM, with
+  spacers keeping the scrollbar the real length - so a dump with thousands of
+  signals stays responsive. Lists of 80 rows or fewer keep the plain DOM (and
+  the same selection behaviour) they always had.
+- **Persistence**: the window layout (sidebar width, editor/wave ratio, sidebar
+  visibility) and each signal's display settings (format, fixed point, analog,
+  colour) are remembered in the browser's `localStorage` and restored on the next
+  visit. The rows themselves are not persisted: re-adding a signal brings back
+  the format you chose for it. A future/corrupt stored payload, or a browser that
+  denies storage, simply falls back to the defaults.
+
+The keyboard and accessibility contract: `Delete` removes the selected rows,
+`ctrl+A` selects every row, the arrow keys and `Home`/`End` move the row
+selection, `Escape` closes dialogs and the `go to` box without clearing the
+selection, and `ctrl+W`/`ctrl+F4` closes the active source tab. Dialogs are
+labelled modals (`role="dialog"`, `aria-modal`) that trap Tab, take focus on
+open and give it back to the opener on close; focus rings are visible, the tab
+closer is a real button, and the wave list and candidate picker expose
+`listbox`/`option` semantics.
 
 ## Known limitations
 
 * **Elaboration coverage.** The design front end is `sv-parser` 0.13.5 plus an
   elaborator: modules, ports (by name/position/`.*`), parameters, nets/variables,
-  instances and the common `assign`/`always` blocks work. `generate` regions,
-  loops and conditionals are **not** elaborated; `typedef`/structs/enums,
-  interfaces and modports, packages, classes, tasks/functions, arrayed instances
-  and unsupported width expressions are skipped with a diagnostic instead of
+  instances and the common `assign`/`always` blocks work. Generate regions,
+  constant-bound generate-for loops and generate-if/case branches are unrolled
+  (named blocks keep their labels, anonymous blocks become `genblk1`, ... and
+  iterations get `g[2]`-style scopes, so paths look like `top.g[2].u`); arrayed
+  instances (`mod u[3:0]`) expand to one per element in Verdi order (`u[3]`,
+  `u[2]`, ...).  Limits: the generate shape is frozen from the module's *default*
+  parameter values (a per-instance override that would change a generate bound
+  is not reflected, whereas array bounds are re-evaluated per instance and do
+  honour overrides), non-constant generate bounds stay warnings, and there is no
+  generate node in the instance tree - paths are flattened. `typedef`/structs/
+  enums, interfaces and modports, packages, classes, tasks/functions and
+  unsupported width expressions are still skipped with a diagnostic instead of
   aborting the file.
 * **GHW is experimental.** wellen cannot stream GHW, so a GHW dump is read
   eagerly: the time axis is learned by reading the body, and value queries
@@ -156,9 +187,13 @@ placed.
 * **Language-server coverage.** Definition/hover/references/symbols come from the
   declaration spans the elaborator recorded; a construct from the "skipped"
   list above has no definition to jump to, and name lookup is best effort when a
-  signal cannot be resolved across instances. Diagnostics (editor squiggles and
-  the top bar's problem count) cover the same scope, so a skipped construct may
-  be reported as a warning even though the source is valid SystemVerilog.
+  signal cannot be resolved across instances. The editor squiggles and the top
+  bar's problem count currently cover the parser/front-end diagnostics; the new
+  elaboration diagnostics (`unresolved-name`, `width-mismatch`, non-constant
+  generate bounds) are visible through the design API and its tests but are not
+  yet pushed through `textDocument/publishDiagnostics`, so they do not appear in
+  the editor yet. A skipped construct may also be reported as a warning even
+  though the source is valid SystemVerilog.
 * **Corrupt dumps are recovered on a best-effort basis.** The readers validate
   input and turn bad files into an error message instead of panicking, and the
   library wraps third-party parsing in `catch_unwind`. The release profile is
@@ -190,10 +225,18 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV or TXT (one row, or every row as long-format CSV); `.mat` is not implemented
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 40 scenarios, own fixtures) with an advisory CI smoke job
+- [x] browser QA suite moved into the repository (`qa/`, 44 scenarios, own fixtures) with an advisory CI smoke job
+- [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
+- [x] sidebar module tree and signal list virtualization above 80 rows
+- [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
+- [x] accessibility/keyboard pass: modal semantics with a focus trap and focus return, visible focus rings, arrow/Home/End row selection, `ctrl+W`/`ctrl+F4` tab close, tier-A draggable ruler
+- [x] driver/load diagnostics: unresolved names, wildcard/implicit connections and port width mismatches are reported (design API and tests; not yet shown in the editor)
+- [x] tauri file browser starts in the user's home directory
+- [x] favicon data-URI, so the `/favicon.ico` 404 console error is gone
 
 Still open:
 
+- [ ] forward elaboration diagnostics (`unresolved-name`, `width-mismatch`, non-constant generate bounds) to the editor through the language server
 - [ ] export to `.mat` (not implemented; the CSV/TXT export covers the current need)
 - [ ] inline python for writing your own process on signal values
 - [ ] signal bundles (AXI, Avalon and so on)

@@ -10,6 +10,70 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.7.0] - 2026-11-02
+
+### Added
+
+- Generate elaboration: generate regions, constant-bound generate-for loops and
+  generate-if/case branches are unrolled at parse time. Named blocks keep their
+  labels, anonymous blocks become `genblk1`, ... and each iteration gets a
+  `g[2]`-style scope, so generated instances/signals get flat Verdi-style paths
+  (`top.g[2].u`) with their source spans and driver/load links intact.
+- Arrayed instances (`mod u[3:0]`) are expanded during elaboration to one
+  instance per element in Verdi order (`u[3]`, `u[2]`, ...), with the array
+  bounds re-evaluated per instance so parameter overrides are honoured.
+- Driver/load diagnostics instead of silent drops: an unresolved simple name, an
+  unresolved `.*` wildcard or implicit `.name` connection, and a port connected
+  to a plain signal of a different width now become `unresolved-name` /
+  `width-mismatch` diagnostics. New fixtures and integration tests cover
+  generate, arrayed instances and the link diagnostics.
+- Sidebar virtualization: the module tree and signal list render only the rows
+  inside their scroll viewport above 80 rows (lists of 80 or fewer keep the old
+  DOM and selection behaviour). A `window.__waveInsightSidebar` debug seam
+  carries the full logical lists for QA.
+- Session persistence: the window layout (sidebar width, editor ratio, drawer)
+  and per-signal display settings are stored in versioned `localStorage`
+  entries (`wave-insight.layout.v1`, `wave-insight.rows.v1`, schema 1). Corrupt,
+  future-version or denied storage degrades to defaults; row settings are keyed
+  by hierarchical path and capped to the 2000 most recently changed signals, and
+  only committed changes are written (a splitter drag writes once, on mouseup).
+- Accessibility and keyboard pass: the time ruler is tier-A draggable (one store
+  commit on mouseup), `Escape` closes dialogs and the `go to` box without
+  clearing the row selection, dialogs are labelled `role="dialog"` modals with
+  `aria-modal`, a Tab focus trap and focus returned to the opener; arrow keys and
+  `Home`/`End` move the row selection, `ctrl+W`/`ctrl+F4` closes the active
+  source tab, focus rings are visible, tab closers are real buttons, and the wave
+  list and candidate picker expose `listbox`/`option` semantics.
+- The tauri file browser starts in the user's home directory (`USERPROFILE` /
+  `HOME`) instead of the process working directory, which is System32 when the
+  desktop app is started from a shortcut.
+- A data-URI favicon, so browsers stop probing `/favicon.ico` (a 404 console
+  error on every page load).
+- The browser QA suite grew three scenarios (`virtualization`, `persistence`,
+  `a11y`), 44 in total, and the full matrix is green: **317 passed, 0 failed**
+  with the R2 layout rules required. `boot()` clears `localStorage` between
+  scenarios because persistence made the matrix order-dependent.
+
+### Changed
+
+- Generate bounds/conditions are resolved while parsing, from the module's
+  default parameter values; a per-instance override that would reshape a generate
+  is not reflected (arrayed-instance bounds are evaluated per instance and do
+  honour overrides). There is no generate node in the instance tree - paths are
+  flattened - and non-constant generate bounds stay warnings.
+- The state store gained a `row_prefs` slice (remembered per-signal settings)
+  and an optional persister; the reducer applies a remembered setting when a row
+  is added and records committed changes, and the store writes only the slices
+  that changed.
+- Elaboration diagnostics are reported through the design API and tests only for
+  now; they are not yet forwarded through `textDocument/publishDiagnostics`, so
+  the editor's squiggles and the top bar still show parser/front-end diagnostics.
+
+### Fixed
+
+- The tauri file dialog no longer opens in System32 / the app directory.
+- The per-load `/favicon.ico` 404 (and its console error) is gone.
+
 ## [0.6.0] - 2026-11-02
 
 ### Added

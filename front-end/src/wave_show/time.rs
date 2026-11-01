@@ -32,6 +32,10 @@ pub struct Axis {
 
 /// A ruler drag in progress: where the pointer went down and the pan the view had
 /// at that moment.
+///
+/// Tier A (docs/state-store.md §4.1): the drag only writes a preview transform
+/// on the ruler's content group, so a 60 Hz pan costs no Yew render and no store
+/// dispatch. The single commit happens on mouseup.
 #[derive(Clone, Copy)]
 struct Drag {
     /// client x of the mousedown
@@ -42,6 +46,8 @@ struct Drag {
     button: i16,
     /// `true` once the pointer moved far enough to be a pan, not a click
     moved: bool,
+    /// the pan the preview shows; committed on mouseup
+    preview_axis: Option<f64>,
 }
 
 pub enum Msg {
@@ -128,6 +134,7 @@ impl Component for Time {
                     x_axis: self.viewport.view.x_axis,
                     button: e.button(),
                     moved: false,
+                    preview_axis: None,
                 });
                 true
             }
@@ -140,19 +147,32 @@ impl Component for Time {
                     return false;
                 }
                 drag.moved = true;
-                self.drag = Some(drag);
+                // the pan the preview shows, clamped exactly like the commit
+                // would be, so the ruler cannot slide past the end of the dump
                 let mut view = self.viewport.view;
                 view.x_axis = (drag.x_axis - delta / view.size.max(1e-9)).max(0.0);
-                self.commit_view(view);
-                // the store subscription rebuilds the ruler; the canvas is
-                // repainted by the wave pane from its own subscription
+                let view = self.clamp_view(view);
+                drag.preview_axis = Some(view.x_axis);
+                self.drag = Some(drag);
+                // tier A: the content group moves, nothing is dispatched
+                let shift = (drag.x_axis - view.x_axis) * self.viewport.view.size;
+                set_content_offset(shift);
                 false
             }
             Msg::RulerUp(e) => {
                 let Some(drag) = self.drag.take() else {
                     return false;
                 };
+                // the preview transform is not part of the virtual dom, so it
+                // must be reset by hand before the committed ruler renders
+                set_content_offset(0.0);
                 if drag.moved {
+                    // one dispatch for the whole pan, on mouseup
+                    if let Some(x_axis) = drag.preview_axis {
+                        let mut view = self.viewport.view;
+                        view.x_axis = x_axis;
+                        self.commit_view(view);
+                    }
                     return true;
                 }
                 // a click on the ruler places a cursor (Verdi's time marker)
@@ -223,10 +243,19 @@ impl Component for Time {
         let goto = {
             let link = ctx.link().clone();
             Callback::from(move |e: KeyboardEvent| {
+                let input = e.target_unchecked_into::<HtmlInputElement>();
+                // Escape leaves the box without jumping and without clearing the
+                // wave row selection (the page wide handler must not see it)
+                if e.key() == "Escape" {
+                    e.stop_propagation();
+                    e.prevent_default();
+                    input.set_value("");
+                    let _ = input.blur();
+                    return;
+                }
                 if e.key() != "Enter" {
                     return;
                 }
-                let input = e.target_unchecked_into::<HtmlInputElement>();
                 let value = input.value();
                 input.set_value("");
                 // the wave pane listens for keys page wide; a digit typed into
@@ -244,6 +273,7 @@ impl Component for Time {
                 <div class="timebar-readout">
                     <input class="timebar-goto" type="text" inputmode="numeric"
                         placeholder="go to"
+                        aria-label="Go to time: type a time and press Enter to put cursor 1 there"
                         title="Type a time and press Enter: cursor 1 goes there"
                         onkeydown={goto} />
                     <code>{
@@ -254,8 +284,15 @@ impl Component for Time {
                     }</code>
                 </div>
                 <svg class={if self.drag.is_some() {"timebar-svg dragging"} else {"timebar-svg"}}
+                    role="slider" aria-label="Time ruler: drag to pan, click to set cursor 1"
+                    aria-valuemin="0"
+                    aria-valuenow={format!("{:.0}", self.viewport.view.x_axis)}
+                    tabindex="0"
                     onmousedown={ctx.link().callback(Msg::RulerDown)}
                     oncontextmenu={Callback::from(|e: MouseEvent| e.prevent_default())}>
+                    // the tier-A drag preview translates this group instead of
+                    // re-rendering the ~100 labels it contains
+                    <g class="timebar-content">
                     {
                         for self.labels.iter().map(|&(x, time)| {
                             html!{
@@ -288,6 +325,7 @@ impl Component for Time {
                         }
                     }
                     <polyline class="axis-line" points={self.points.clone()} />
+                    </g>
                 </svg>
             </div>
         }
@@ -324,12 +362,19 @@ impl Time {
         self.labels = axis.labels;
     }
 
-    /// Commit a pan: clamp it inside the dump, then hand it to the store.
-    fn commit_view(&mut self, view: View) {
-        let view = match self.time_range {
+    /// `view`, pulled back so its right edge is at or before the end of the
+    /// trace. The drag preview and the commit use the same clamp, so the ruler
+    /// does not jump on mouseup.
+    fn clamp_view(&self, view: View) -> View {
+        match self.time_range {
             Some(range) => view.clamp_to_end(range.end as i64, self.width),
             None => view,
-        };
+        }
+    }
+
+    /// Commit a pan: clamp it inside the dump, then hand it to the store.
+    fn commit_view(&mut self, view: View) {
+        let view = self.clamp_view(view);
         self.store.dispatch(state::Action::ViewCommitted(view));
     }
 
@@ -339,6 +384,21 @@ impl Time {
         let element = document.query_selector(".timebar-svg").ok()??;
         Some(client_x - element.get_bounding_client_rect().left())
     }
+}
+
+/// Translate the ruler's content group by `shift` css pixels (tier-A preview).
+///
+/// The transform is deliberately not part of the virtual dom: the drag writes it
+/// straight to the element, and `RulerUp` resets it before the committed ruler
+/// renders. A missing element (a detached ruler) is a no-op.
+fn set_content_offset(shift: f64) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Some(group) = document.query_selector(".timebar-content").ok().flatten() else {
+        return;
+    };
+    let _ = group.set_attribute("transform", &format!("translate({shift:.2} 0)"));
 }
 
 ///Build the ruler for one zoom/pan state. Used by the time bar itself and by the

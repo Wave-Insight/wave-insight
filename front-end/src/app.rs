@@ -234,7 +234,23 @@ impl Component for App {
         // from now on; the panes are still wired with props (later steps). It is
         // created before the language server client because that client reports
         // the diagnostic count straight into the store.
-        let store = Store::new();
+        //
+        // Wave 3: the store restores the layout and the per-signal display
+        // settings from the last session and writes committed changes back (see
+        // `state::persist`). `browser_persister` is `None` when the browser
+        // denies storage (private mode), which simply means "no persistence".
+        let store = Store::with_persister(state::persist::browser_persister());
+        // A restored sidebar width may be wider than this window allows (the
+        // window was larger last time). Clamp it before the shell reads the
+        // slice, so the first render already has a usable width.
+        let restored = store.select(state::select::layout);
+        let max = sidebar_max();
+        if restored.sidebar_w > max {
+            let _ = store.dispatch(Action::ResizeSidebar {
+                width: restored.sidebar_w,
+                max,
+            });
+        }
         let lsp = LspBridge::new(
             design.clone(),
             ctx.link()

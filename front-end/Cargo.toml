@@ -57,7 +57,11 @@ features = [
     "BlobPropertyBag",
     #wave_show: export signal values as a downloaded csv/txt file
     "Url",
-    "HtmlAnchorElement",]
+    "HtmlAnchorElement",
+    #state/persist: layout and per-signal display settings survive a reload
+    "Storage",
+    #nav: the modal focus trap walks the focusable elements with querySelectorAll
+    "NodeList",]
 
 [features]
 default = ["wasm"]

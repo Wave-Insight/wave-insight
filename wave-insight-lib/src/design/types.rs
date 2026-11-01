@@ -208,6 +208,12 @@ pub struct SignalDef {
     /// Width with the module's default parameter values applied.
     pub width: Option<u32>,
     pub span: Span,
+    /// Enclosing generate-block path, outermost component first.  Empty for a
+    /// declaration written directly in the module body; `["g[2]"]` for a
+    /// declaration inside `for (...) begin : g` on its third iteration.  The
+    /// elaborated signal path is `<instance>.<scope...>.<name>`.
+    #[serde(default)]
+    pub scope: Vec<String>,
 }
 
 /// A `parameter` or `localparam` declaration.
@@ -269,6 +275,15 @@ pub struct InstanceDecl {
     pub module_span: Span,
     pub parameters: Vec<ParamAssignment>,
     pub connections: Vec<PortConnectionDecl>,
+    /// Enclosing generate-block path, outermost component first (see
+    /// [`SignalDef::scope`]).
+    #[serde(default)]
+    pub scope: Vec<String>,
+    /// Unpacked dimensions of an arrayed instance (`mod u[3:0] (...)`),
+    /// outermost first.  Empty for a plain instance; the elaborator expands
+    /// each element into its own instance with a `u[3]`/`u[2]`... path.
+    #[serde(default)]
+    pub array: Vec<RangeDim>,
 }
 
 /// Role of a signal reference collected from the source.
@@ -297,6 +312,10 @@ pub struct SignalUsage {
     pub span: Span,
     pub role: UsageRole,
     pub kind: UsageKind,
+    /// Enclosing generate-block path, outermost component first, so a use of
+    /// `x` inside `begin : g` resolves to `<instance>.g[i].x`.
+    #[serde(default)]
+    pub scope: Vec<String>,
 }
 
 /// One parsed module definition.
@@ -306,6 +325,11 @@ pub struct ModuleDef {
     /// Span of the module name in its declaration.
     pub span: Span,
     pub parameters: Vec<ParamDef>,
+    /// Genvar names declared in the module (standalone declarations and the
+    /// genvars of generate loops).  They are constants, not signals, so
+    /// driver/load diagnostics must not report them as unresolved names.
+    #[serde(default)]
+    pub genvars: Vec<String>,
     pub ports: Vec<PortDef>,
     /// Nets and variables declared in the body.  Ports are not repeated here.
     pub signals: Vec<SignalDef>,
@@ -364,6 +388,13 @@ pub struct Connection {
     pub names: Vec<NameRef>,
     /// Resolved parent signal paths.
     pub signals: Vec<String>,
+    /// `true` for a `.*` connection: an unresolved name is a wildcard miss.
+    #[serde(default)]
+    pub wildcard: bool,
+    /// `true` for an implicit `.a` connection: an unresolved name means the
+    /// parent has no same-named signal.
+    #[serde(default)]
+    pub implicit: bool,
 }
 
 /// One node of the elaborated instance tree.
@@ -388,6 +419,11 @@ pub struct InstanceNode {
     /// Index of the instantiation statement in the parent module's
     /// [`ModuleDef::instances`]; `None` for the top instance.
     pub decl_index: Option<usize>,
+    /// Enclosing generate-block path of the instantiation (see
+    /// [`InstanceDecl::scope`]); empty for an instance written directly in a
+    /// module body.
+    #[serde(default)]
+    pub scope: Vec<String>,
 }
 
 impl InstanceNode {
@@ -590,6 +626,11 @@ pub enum DiagnosticKind {
     UnresolvedWidth,
     UnknownPort,
     RecursionLimit,
+    /// A name in an expression or connection that does not resolve to a signal
+    /// (parameter/instance/function names are filtered before this is emitted).
+    UnresolvedName,
+    /// A port connection whose signal width differs from the port width.
+    WidthMismatch,
     Other,
 }
 
@@ -607,6 +648,8 @@ impl DiagnosticKind {
             DiagnosticKind::UnresolvedWidth => "unresolved-width",
             DiagnosticKind::UnknownPort => "unknown-port",
             DiagnosticKind::RecursionLimit => "recursion-limit",
+            DiagnosticKind::UnresolvedName => "unresolved-name",
+            DiagnosticKind::WidthMismatch => "width-mismatch",
             DiagnosticKind::Other => "other",
         }
     }

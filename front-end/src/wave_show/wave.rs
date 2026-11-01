@@ -448,7 +448,8 @@ impl Component for WaveShow {
                     // right click sets the second cursor; the browser menu
                     // must not open on top of the wave area
                     oncontextmenu={Callback::from(|event: MouseEvent| event.prevent_default())}>
-                    <div class="wave-rows" style={format!("height:{rows_height}")}>
+                    <div class="wave-rows" style={format!("height:{rows_height}")}
+                        role="listbox" aria-label="Wave signals">
                     {if self.names_drag.is_some() {
                         html!{
                             <div class="splitter-shield"
@@ -707,8 +708,19 @@ impl WaveShow {
                         return true;
                     }
                 } else if idx == 27 {
-                    //esc: clear the selection
+                    // esc: the settings dialog owns the key while it is open
+                    // (closing it must not also clear the row selection); with
+                    // no dialog it clears the selection, as before
+                    if self.menu_show {
+                        self.menu_show = false;
+                        return true;
+                    }
                     self.dispatch(state::Action::RowsCleared);
+                    return true;
+                } else if let Some(key) = wave_key_action(idx, self.key(17), self.key(16)) {
+                    // arrow keys / Home / End move the row selection, so the
+                    // wave list is usable without the mouse
+                    self.move_selection(key);
                     return true;
                 } else if idx == 46 || idx == 8 {
                     //delete / backspace removes the selected rows
@@ -1262,6 +1274,40 @@ impl WaveShow {
         }
     }
 
+    /// Move the row selection by one of the arrow keys / Home / End.
+    ///
+    /// The selection model is the store's: a plain `RowSelected` selects exactly
+    /// one row, which is what an arrow key means. The list does not scroll here
+    /// (the row list scrolls from its own dom node); a selection moved off screen
+    /// is still selected, and the next render shows it once it is scrolled to.
+    fn move_selection(&mut self, key: WaveKey) {
+        let count = self.rows.items.len();
+        if count == 0 {
+            return;
+        }
+        let current = self
+            .rows
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.chosen)
+            .map(|(index, _)| index)
+            .next_back();
+        let target = match key {
+            WaveKey::Up => current.map(|index| index.saturating_sub(1)).unwrap_or(0),
+            WaveKey::Down => current.map(|index| (index + 1).min(count - 1)).unwrap_or(0),
+            WaveKey::Home => 0,
+            WaveKey::End => count - 1,
+        };
+        if Some(target) != current {
+            self.dispatch(state::Action::RowSelected {
+                index: target,
+                ctrl: false,
+                shift: false,
+            });
+        }
+    }
+
     fn key(&self, code: usize) -> bool {
         self.key_press.borrow().get(code).copied().unwrap_or(false)
     }
@@ -1630,4 +1676,58 @@ fn typing_in_text_field(event: &web_sys::KeyboardEvent) -> bool {
         current = element.parent_element();
     }
     false
+}
+
+/// A keyboard gesture the wave pane owns (row selection movement).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaveKey {
+    Up,
+    Down,
+    Home,
+    End,
+}
+
+/// Map a `keyCode` + modifiers to the row-selection gesture, if any.
+///
+/// Pure on purpose: the mapping is the part that can be wrong, and it is unit
+/// tested on the host. The modifiers are taken so a future Ctrl+Arrow ("move the
+/// view") cannot be confused with the plain selection keys.
+pub fn wave_key_action(code: u32, ctrl: bool, shift: bool) -> Option<WaveKey> {
+    // Ctrl+Arrow is a view gesture in other tools, and Shift+Arrow a range
+    // selection; neither is wired, so both fall through to the other shortcuts.
+    if ctrl || shift {
+        return None;
+    }
+    match code {
+        38 => Some(WaveKey::Up),
+        40 => Some(WaveKey::Down),
+        36 => Some(WaveKey::Home),
+        35 => Some(WaveKey::End),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::wave_key_action;
+    use super::WaveKey;
+
+    #[test]
+    fn the_arrow_keys_move_the_selection() {
+        assert_eq!(wave_key_action(38, false, false), Some(WaveKey::Up));
+        assert_eq!(wave_key_action(40, false, false), Some(WaveKey::Down));
+        assert_eq!(wave_key_action(36, false, false), Some(WaveKey::Home));
+        assert_eq!(wave_key_action(35, false, false), Some(WaveKey::End));
+    }
+
+    #[test]
+    fn other_keys_and_modifiers_are_left_to_the_existing_shortcuts() {
+        // z / f / n / ctrl+a / esc / del keep their own branches
+        for code in [90u32, 70, 78, 65, 27, 46, 8, 16, 17] {
+            assert_eq!(wave_key_action(code, false, false), None, "keyCode {code}");
+        }
+        // ctrl+arrow is not a selection gesture
+        assert_eq!(wave_key_action(38, true, false), None);
+        assert_eq!(wave_key_action(40, true, false), None);
+    }
 }

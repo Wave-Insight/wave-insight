@@ -147,6 +147,11 @@ window.__qa = {
   // the "nothing loaded yet" call to action (R2 polish)
   startHint(){ const hint = this.q('.start-hint'); return hint ? hint.innerText : null; },
 
+  // R3 sidebar seam: the whole lists the virtualized sidebar would draw, plus
+  // the number of rows actually in the DOM (see module_struct/seam.rs).
+  sidebar(){ return window.__waveInsightSidebar || null; },
+  sidebarDom(){ return { modules: this.qa('.tree-row').length, signals: this.qa('.sidebar .sig-row').length }; },
+
   // --- canvas renderer seam (R1 draws the rows on one canvas) ----------------
   // Everything that used to read the per-row SVG nodes goes through
   // window.__waveDebug (the renderer's own counters) and a pixel hash of the
@@ -202,12 +207,17 @@ window.__qa = {
     // while the waveform is shown; read it with textContent (innerText is empty
     // for a hidden element).
     const textOf = (sel) => { const e = this.q(sel); return e ? (e.textContent || '').replace(/\\s+/g, ' ').trim() : null; };
+    // R3 virtualizes both sidebar lists: the DOM only holds the rows inside the
+    // scroll window, so the logical lists come from the seam the sidebar
+    // publishes (window.__waveInsightSidebar). Falls back to the DOM when no
+    // seam exists yet (first paint) so an assertion never reads a half state.
+    const seam = (window.__waveInsightSidebar && Array.isArray(window.__waveInsightSidebar.modules) && Array.isArray(window.__waveInsightSidebar.signals)) ? window.__waveInsightSidebar : null;
     const body = textOf('.inspector-panel .panel-body');
     return {
       tabs: this.texts('.tab .tab-name'),
       activeTab: this.text('.tab.active .tab-name'),
-      modules: this.texts('.tree-row .tree-name').map(s=>s.trim()),
-      sidebarSignals: this.texts('.sidebar .sig-row .sig-name'),
+      modules: seam ? seam.modules.map((name) => String(name).trim()) : this.texts('.tree-row .tree-name').map(s=>s.trim()),
+      sidebarSignals: seam ? seam.signals.slice() : this.texts('.sidebar .sig-row .sig-name'),
       waveNames: this.texts('.wave-name-text'),
       status: this.text('.topbar-hint .brand-tag'),
       inspectorHead: textOf('.inspector-panel .panel-head'),
@@ -298,6 +308,14 @@ async function waitFor(cdp, expr, timeout = 20000) {
 
 async function boot(cdp, waitEditor = true) {
   cdp.events.length = 0;
+  // The app persists the workspace (open sources, wave rows, signal settings) in
+  // localStorage, and every scenario reuses the same browser profile. Without
+  // this clear a scenario inherits the previous one's state and the matrix turns
+  // order-dependent (formats leaves pc in ASCII and busExpand then reads a
+  // hex-looking value; analog leaves a row analog and wave1/wave2 see it).
+  // The first call runs on about:blank, where storage throws, hence the
+  // try/catch; a failed clear only means there was nothing to clear.
+  try { await cdp.eval('window.localStorage.clear()'); } catch (error) { /* about:blank has no storage origin yet */ }
   await cdp.send('Page.navigate', { url: APP_URL });
   // the wasm bundle is large and monaco is now a local asset; give the page
   // enough time on a cold cache
@@ -2515,6 +2533,171 @@ scenarios.wave2 = async (cdp) => {
   check('wave2: the top bar shows the problem count', /problem/.test(chip || ''), chip);
   check('wave2: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   await cdp.shot('qa-wave2-export.png');
+};
+
+// --- R3: the sidebar virtualizes the module tree and the signal list --------
+// A dump with a couple of thousand signals must not put every row in the DOM:
+// the seam reports the whole list, the DOM only holds the scroll window, and
+// scrolling, filtering, click-to-add and expanding still work.
+scenarios.virtualization = async (cdp) => {
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'many_signals.vcd')]);
+  const loaded = await waitStatus(cdp, 'waveform loaded', 40000);
+  await sleep(1200);
+  let s = await state(cdp);
+  note('virtualization load', { status: s.status, signals: s.sidebarSignals.length, modules: s.modules.length });
+  check('virtualization: the big dump loads', !!loaded, s.status);
+  check('virtualization: the seam reports the whole signal list', s.sidebarSignals.length > 2000, s.sidebarSignals.length);
+  const seam = await cdp.eval('window.__qa.sidebar()');
+  const domRows = await cdp.eval('window.__qa.sidebarDom()');
+  note('sidebar seam', seam && { signals: seam.signals.length, total: seam.signals_total, dom: seam.signals_dom, windowed: seam.signals_windowed });
+  check('virtualization: the DOM holds only the visible window', domRows.signals > 0 && domRows.signals < 80, domRows);
+  check('virtualization: the seam knows the signal list is windowed', !!seam && seam.signals_windowed === true, seam && seam.signals_windowed);
+  check('virtualization: the seam window matches the DOM', !!seam && seam.signals_dom === domRows.signals, { seam: seam && seam.signals_dom, dom: domRows.signals });
+  const geometry = await cdp.eval('(function(){ var s = document.querySelector(".sidebar .sig-scroll"); if (!s) return null; return { scrollHeight: s.scrollHeight, clientHeight: s.clientHeight }; })()');
+  note('signal scroll geometry', geometry);
+  check('virtualization: the scrollbar covers the whole list', !!geometry && geometry.scrollHeight > geometry.clientHeight * 3, geometry);
+  // scrolling to the bottom draws the end of the list, still bounded
+  await cdp.eval('(function(){ var s = document.querySelector(".sidebar .sig-scroll"); s.scrollTop = s.scrollHeight; s.dispatchEvent(new Event("scroll", { bubbles: true })); })()');
+  await sleep(900);
+  const bottom = await cdp.eval('(function(){ var names = Array.prototype.map.call(document.querySelectorAll(".sidebar .sig-row .sig-name"), function(n){ return n.textContent; }); var seam = window.__waveInsightSidebar || null; return { names: names, rows: names.length, last: seam ? seam.signals[seam.signals.length - 1] : null }; })()');
+  note('after scrolling to the bottom', bottom && { rows: bottom.rows, last: bottom.last, tail: bottom.names.slice(-2) });
+  check('virtualization: scrolling draws the end of the list', !!bottom && bottom.last !== null && bottom.names.indexOf(bottom.last) >= 0, bottom && { last: bottom.last, tail: bottom.names.slice(-2) });
+  check('virtualization: scrolling keeps the DOM bounded', !!bottom && bottom.rows > 0 && bottom.rows < 80, bottom && bottom.rows);
+  // the filter still narrows the list, and a filtered big list stays bounded
+  await cdp.eval('(function(){ var i = document.querySelector(".filter-wrap input"); var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; set.call(i, "sig_00"); i.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await sleep(800);
+  s = await state(cdp);
+  const filtered = await cdp.eval('window.__qa.sidebar()');
+  note('filtered sidebar', { matches: s.sidebarSignals.length, dom: filtered && filtered.signals_dom });
+  check('virtualization: the filter still narrows the logical list', s.sidebarSignals.length > 0 && s.sidebarSignals.length < 500 && s.sidebarSignals.every(function (name) { return name.indexOf('sig_00') >= 0; }), s.sidebarSignals.slice(0, 3));
+  check('virtualization: the filtered DOM stays bounded', !!filtered && filtered.signals_dom > 0 && filtered.signals_dom < 80, filtered && filtered.signals_dom);
+  // clearing the filter restores the whole list
+  await cdp.eval('(function(){ var i = document.querySelector(".filter-wrap input"); var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; set.call(i, ""); i.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await sleep(700);
+  s = await state(cdp);
+  check('virtualization: clearing the filter restores the whole list', s.sidebarSignals.length > 2000, s.sidebarSignals.length);
+  // a row from the window can still be added to the wave view
+  const clicked = await cdp.eval('window.__qa.click(".sidebar .sig-row", 0)');
+  await sleep(800);
+  s = await state(cdp);
+  check('virtualization: a windowed signal row can still be added', clicked === 'ok' && s.waveNames.length === 1, { clicked: clicked, names: s.waveNames });
+  // expanding the top scope lists its 120 children; the tree DOM stays bounded
+  const treeClick = await cdp.eval('window.__qa.click(".tree-row", 0)');
+  await sleep(900);
+  const tree = await cdp.eval('(function(){ var seam = window.__waveInsightSidebar || null; return { rows: document.querySelectorAll(".sidebar .tree-row").length, full: seam ? seam.modules.length : 0, total: seam ? seam.modules_total : 0, windowed: seam ? seam.modules_windowed : null }; })()');
+  note('module tree after expanding the top scope', tree);
+  check('virtualization: expanding the top scope lists every module', treeClick === 'ok' && !!tree && tree.full > 120, tree);
+  check('virtualization: the tree DOM stays bounded', !!tree && tree.rows > 0 && tree.rows < 80, tree && tree.rows);
+  check('virtualization: the seam knows the tree is windowed', !!tree && tree.windowed === true, tree && tree.windowed);
+  check('virtualization: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-virtualization.png');
+};
+// --- Wave 3: persistence across a reload -----------------------------------
+// The app stores layout and per-row display settings in localStorage. This
+// scenario bypasses boot()'s storage clear on purpose: it writes, reloads with
+// Page.navigate, and asserts the restored state.
+scenarios.persistence = async (cdp) => {
+  await boot(cdp, false);
+  const before = await cdp.eval('window.__qa.rect(".sidebar")');
+  const splitter = await cdp.eval('window.__qa.rect(".splitter")');
+  await cdp.mouse('mousePressed', splitter.x + 2, splitter.y + 200, { buttons: 1 });
+  await cdp.mouse('mouseMoved', splitter.x + 122, splitter.y + 200, { buttons: 1 });
+  await cdp.mouse('mouseReleased', splitter.x + 122, splitter.y + 200, { buttons: 0 });
+  await sleep(800);
+  const committed = await cdp.eval('window.__qa.rect(".sidebar")');
+  const layout = await cdp.eval('window.localStorage.getItem("wave-insight.layout.v1")');
+  note('layout', { before: before && before.w, committed: committed && committed.w, stored: layout });
+  const parsed = layout ? JSON.parse(layout) : null;
+  check('persistence: the committed layout is written to localStorage',
+    !!parsed && Math.abs(parsed.sidebar_w - committed.w) <= 1.5, { stored: parsed && parsed.sidebar_w, committed: committed && committed.w });
+  // reload without clearing storage: the shell must come back at the same width
+  await cdp.send('Page.navigate', { url: APP_URL });
+  await waitFor(cdp, `!!window.__waveInsightLsp && !!document.querySelector('.app')`, 60000);
+  await cdp.eval(PAGE_HELPERS);
+  await sleep(1000);
+  const restored = await cdp.eval('window.__qa.rect(".sidebar")');
+  note('restored layout', restored);
+  check('persistence: the sidebar width survives a reload',
+    !!restored && Math.abs(restored.w - committed.w) <= 1.5, { committed: committed && committed.w, restored: restored && restored.w });
+  // per-row display setting: set Bin on top.pc, reload, re-add the row
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(700);
+  await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(900);
+  await cdp.eval('window.__qa.click(".wave-more", 1)');
+  await sleep(500);
+  const chose = await cdp.eval('window.__qa.clickText(".modal .btn", "Bin")');
+  await sleep(700);
+  const rows = await cdp.eval('window.localStorage.getItem("wave-insight.rows.v1")');
+  note('row settings', rows && rows.slice(0, 220));
+  check('persistence: the chosen row format is written',
+    chose === 'ok' && !!rows && rows.indexOf('Bin') >= 0, { chose: chose, rows: rows && rows.slice(0, 120) });
+  await cdp.send('Page.navigate', { url: APP_URL });
+  await waitFor(cdp, `!!window.__waveInsightLsp && !!document.querySelector('.app')`, 60000);
+  await cdp.eval(PAGE_HELPERS);
+  await sleep(1000);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(700);
+  await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(900);
+  await cdp.eval('window.__qa.click(".wave-more", 1)');
+  await sleep(500);
+  const active = await cdp.eval('window.__qa.texts(".modal .btn.active")');
+  note('restored format', active);
+  check('persistence: the remembered format is applied to the re-added row',
+    !!active && active.indexOf('Bin') >= 0, active);
+  check('persistence: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+};
+
+// --- Wave 3: accessibility, keyboard and modal focus -----------------------
+scenarios.a11y = async (cdp) => {
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(700);
+  await cdp.eval('window.__qa.clickSignal("clk")');
+  await sleep(500);
+  await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(900);
+  const optionRows = await cdp.eval('window.__qa.qa(".wave-name-cell[role=option]").length');
+  const listboxes = await cdp.eval('window.__qa.qa("[role=listbox]").length');
+  note('listbox semantics', { options: optionRows, listboxes: listboxes });
+  check('a11y: the wave rows are listbox options', optionRows >= 2 && listboxes >= 1, { options: optionRows, listboxes: listboxes });
+  // the settings dialog is a labelled modal that takes focus
+  await cdp.eval('window.__qa.click(".wave-more", 1)');
+  await sleep(600);
+  const dialog = await cdp.eval('(function(){ var d = document.querySelector(".modal"); if (!d) return null; return { role: d.getAttribute("role"), modal: d.getAttribute("aria-modal"), label: d.getAttribute("aria-label"), focusInside: d.contains(document.activeElement) }; })()');
+  note('settings dialog', dialog);
+  check('a11y: the settings dialog is a labelled modal',
+    !!dialog && dialog.role === 'dialog' && dialog.modal === 'true' && !!dialog.label, dialog);
+  check('a11y: focus moves into the dialog', !!dialog && dialog.focusInside === true, dialog && dialog.focusInside);
+  const rowsBefore = (await state(cdp)).waveNames.length;
+  await cdp.press('Escape', 'Escape', 27);
+  await sleep(700);
+  const afterEscape = await state(cdp);
+  note('after Escape', { modal: afterEscape.modal, rows: afterEscape.waveNames.length });
+  check('a11y: Escape closes the dialog', afterEscape.modal === null, afterEscape.modal);
+  check('a11y: Escape keeps the row selection', afterEscape.waveNames.length === rowsBefore, { before: rowsBefore, after: afterEscape.waveNames.length });
+  // arrow keys move the selection between rows
+  await cdp.eval('window.__qa.click(".wave-name-text", 0)');
+  await sleep(400);
+  const first = await cdp.eval('Array.prototype.findIndex.call(document.querySelectorAll(".wave-name-cell"), function(e){ return e.getAttribute("aria-selected") === "true"; })');
+  await cdp.press('ArrowDown', 'ArrowDown', 40);
+  await sleep(600);
+  const second = await cdp.eval('Array.prototype.findIndex.call(document.querySelectorAll(".wave-name-cell"), function(e){ return e.getAttribute("aria-selected") === "true"; })');
+  note('selection', { first: first, second: second });
+  check('a11y: the arrow keys move the row selection', first >= 0 && second >= 0 && second !== first, { first: first, second: second });
+  // tab closers are real buttons with an accessible name
+  await cdp.upload([path.join(FIXTURES, 'top.sv')]);
+  await sleep(1500);
+  const closer = await cdp.eval('(function(){ var b = document.querySelector(".tab .tab-close"); return b ? { tag: b.tagName, label: b.getAttribute("aria-label") } : null; })()');
+  note('tab closer', closer);
+  check('a11y: the tab closer is a labelled button', !!closer && closer.tag === 'BUTTON' && !!closer.label, closer);
+  check('a11y: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-a11y.png');
 };
 (async () => {
   const wanted = process.argv.slice(2);

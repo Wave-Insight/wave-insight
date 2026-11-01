@@ -5,26 +5,28 @@ carries the shape of the old one. This is what gets rebuilt and what stays.
 
 ## Status (at the time of writing)
 
-- **R1 — done except the sidebar lists and the truly windowed read.** The wave
-  body is one `<canvas>`, device pixel ratio aware, drawing only the visible rows
-  and decimating the decoded history to one sample per pixel; the decode cache is
-  budgeted and a row is unloaded when it scrolls out of view. The signal-name
-  column is virtualized (only the rows around the viewport exist in the DOM).
-  Open: the sidebar signal list and module tree still render every row, and the
+- **R1 — done except the truly windowed read.** The wave body is one `<canvas>`,
+  device pixel ratio aware, drawing only the visible rows and decimating the
+  decoded history to one sample per pixel; the decode cache is budgeted and a row
+  is unloaded when it scrolls out of view. The signal-name column, the sidebar
+  module tree and the signal list are all virtualized (only the rows around the
+  viewport exist in the DOM; lists of 80 or fewer keep the plain DOM). Open: the
   renderer still decodes a row's whole history (`decoded_changes_many`) instead of
   only the visible time window as the plan above describes.
 - **R2 — steps 1–2 done, 3–4 open.** `AppStore` with typed actions, slice
   subscriptions and tier-A splitters is in (`docs/state-store.md`); the wave pane
-  and time bar are subscribers and gestures re-render nothing. Step 3 is only at
-  its first increment (the dump handle lives in the store); the sources/design/
-  focus slices and the LSP/editor effects are not written yet, and step 4 is
-  partial (layout rules in, legacy shell teardown open).
+  and time bar are subscribers and gestures re-render nothing, and an optional
+  persister now writes the layout and the per-signal display settings to
+  `localStorage`. Step 3 is only at its first increment (the dump handle lives in
+  the store); the sources/design/focus slices and the LSP/editor effects are not
+  written yet, and step 4 is partial (layout rules in, legacy shell teardown
+  open).
 - **R3 — the desktop build already parses in wasm; the deletion pass is open.**
   `src-tauri` only opens the file dialog and returns bytes, and both builds use
   the same `Waveform::open_bytes` reader, so the "tauri uses the backend directly"
   half is done. What is left is deleting the old `data_struct`/legacy shells,
   `SharedDesign` and the `nav/` glue (tracked as R2 step 4 and R3).
-- **wasm-opt and the size budget are landing in CI now.** The Rust workflow pins
+- **wasm-opt and the size budget landed in CI (0.6.0).** The Rust workflow pins
   trunk 0.22.1 (so the wasm-bindgen/wasm-opt defaults cannot drift with a release)
   and fails the build when the release wasm exceeds **10 MiB**
   (`WASM_SIZE_BUDGET`); the size task is therefore no longer only an Order item.

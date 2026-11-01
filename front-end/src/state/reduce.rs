@@ -58,13 +58,17 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                         .next_back()
                         .map(|index| index + 1)
                         .unwrap_or(items.len());
+                    // the display settings are remembered by signal path, so
+                    // a signal that was configured in an earlier session (or
+                    // before it was removed) comes back the way it looked
+                    let setting = state.row_prefs.setting_for(&path);
                     items.insert(
                         insert_at,
                         Row {
                             path,
                             name,
                             width: width.max(1),
-                            setting: State::default_row_setting(),
+                            setting,
                             chosen: false,
                             load,
                             drive,
@@ -91,6 +95,8 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 return Vec::new();
             }
             let (path, name) = (row.path.clone(), row.name.clone());
+            // the bits of a bus share the bus's remembered display settings
+            let setting = state.row_prefs.setting_for(&path);
             // most significant bit on top, like Verdi's expanded bus
             let bits: Vec<Row> = (0..width)
                 .rev()
@@ -98,7 +104,7 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                     path: path.clone(),
                     name: name.clone(),
                     width: 1,
-                    setting: State::default_row_setting(),
+                    setting: setting.clone(),
                     chosen: false,
                     load: Vec::new(),
                     drive: Vec::new(),
@@ -192,14 +198,25 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
         Action::RowSettingChanged { indices, setting } => {
             let mut items = (*state.rows.items).clone();
             let mut changed = false;
+            // the paths are collected before the rows are handed back to the
+            // state (the row list and the memory are two fields of it)
+            let mut paths: Vec<String> = Vec::new();
             for index in indices {
                 if let Some(row) = items.get_mut(index) {
                     row.setting = setting.clone();
                     changed = true;
+                    if !row.path.is_empty() && !paths.contains(&row.path) {
+                        paths.push(row.path.clone());
+                    }
                 }
             }
             if changed {
                 state.set_rows(items);
+                // remember the choice by signal path: the next time this signal
+                // is added (this session or after a reload) it starts like this
+                for path in paths {
+                    state.row_prefs.record(&path, &setting);
+                }
             }
         }
     }
@@ -531,6 +548,44 @@ mod tests {
         assert!(state.rows.items[0].setting.fixed_active);
         assert!(state.rows.items[1].setting.fixed_active);
         assert!(!state.rows.items[0].chosen);
+    }
+
+    #[test]
+    fn a_remembered_setting_comes_back_when_the_signal_is_added_again() {
+        let mut state = state();
+        add(&mut state, "top.pc");
+        let mut setting = Settings::new();
+        setting.show_type = wave_insight_lib::data_struct::ShowType::Bin;
+        setting.analog_active = true;
+        reduce(
+            &mut state,
+            Action::RowSettingChanged {
+                indices: vec![0],
+                setting: setting.clone(),
+            },
+        );
+        // the memory is by signal path, not by row: removing the row and adding
+        // the same signal again restores the setting
+        reduce(&mut state, Action::RowsRemoved { indices: vec![0] });
+        add(&mut state, "top.pc");
+        assert_eq!(state.rows.items[0].setting, setting);
+
+        // a reset to the default is forgotten, so the next add starts at the
+        // default instead of the old choice
+        reduce(
+            &mut state,
+            Action::RowSettingChanged {
+                indices: vec![0],
+                setting: Settings::new(),
+            },
+        );
+        reduce(&mut state, Action::RowsRemoved { indices: vec![0] });
+        add(&mut state, "top.pc");
+        assert_eq!(state.rows.items[0].setting, Settings::new());
+
+        // a signal that was never configured starts at the default too
+        add(&mut state, "top.other");
+        assert_eq!(state.rows.items[1].setting, Settings::new());
     }
 
     #[test]

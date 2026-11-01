@@ -8,7 +8,8 @@
 
 use std::rc::Rc;
 
-use super::types::{Dump, Layout, Row, RowsSlice, Settings, Status, Viewport};
+use super::persist::RowPrefs;
+use super::types::{Dump, Layout, Row, RowsSlice, Status, Viewport};
 
 /// The wave rows, versioned so a subscriber compares one integer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -47,6 +48,10 @@ pub struct State {
     pub rows: Rows,
     pub dump: Dump,
     pub viewport: Viewport,
+    /// The per-signal display settings remembered across sessions (see
+    /// [`super::persist`]); the reducer applies them when a row is added and
+    /// records them when one changes, the store persists them.
+    pub row_prefs: RowPrefs,
 }
 
 impl State {
@@ -55,10 +60,5 @@ impl State {
     pub(crate) fn set_rows(&mut self, items: Vec<Row>) {
         self.rows.items = Rc::new(items);
         self.rows.version = self.rows.version.wrapping_add(1);
-    }
-
-    /// The settings a newly added row starts with.
-    pub(crate) fn default_row_setting() -> Settings {
-        Settings::new()
     }
 }

@@ -25,6 +25,8 @@ mod tree;
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
 
+use wasm_bindgen::JsCast;
+
 use wave_insight_lib::data_struct::ShowType;
 use wave_insight_lib::waveform::{WaveValue, Waveform};
 
@@ -512,5 +514,96 @@ mod tests {
                 fixed_point: Some(8)
             }
         );
+    }
+}
+
+/// What a modal's keydown handler should do with one key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModalKey {
+    /// Escape: close the dialog.
+    Close,
+    /// The key was consumed (focus was wrapped inside the dialog).
+    Trapped,
+    /// Not ours.
+    Ignore,
+}
+
+/// The keys a modal owns: Escape closes it, Tab stays inside it.
+///
+/// This is the "simple focus trap" the accessibility pass promises: focus cannot
+/// leave the open dialog with Tab and the dialog is dismissible from the
+/// keyboard. Only one modal is open at a time (the settings dialog or the path
+/// picker), so the trap is the single `.modal` in the document.
+///
+/// DOM only (it reads `document.activeElement`), so it has no host test; the
+/// browser QA run is what exercises it.
+pub fn modal_keydown(event: &web_sys::KeyboardEvent) -> ModalKey {
+    if event.key() == "Escape" {
+        return ModalKey::Close;
+    }
+    if event.key() != "Tab" {
+        return ModalKey::Ignore;
+    }
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return ModalKey::Ignore;
+    };
+    let Ok(Some(modal)) = document.query_selector(".modal") else {
+        return ModalKey::Ignore;
+    };
+    let selector = "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])";
+    let Ok(items) = modal.query_selector_all(selector) else {
+        return ModalKey::Ignore;
+    };
+    let count = items.length();
+    if count == 0 {
+        return ModalKey::Ignore;
+    }
+    let element = |index: u32| {
+        items
+            .get(index)
+            .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+    };
+    let active = document.active_element();
+    let first = element(0);
+    let last = element(count - 1);
+    if event.shift_key() {
+        if active == first || active.is_none() {
+            if let Some(last) = last {
+                event.prevent_default();
+                if let Ok(element) = last.dyn_into::<web_sys::HtmlElement>() {
+                    let _ = element.focus();
+                }
+                return ModalKey::Trapped;
+            }
+        }
+    } else if active == last {
+        if let Some(first) = first {
+            event.prevent_default();
+            if let Ok(element) = first.dyn_into::<web_sys::HtmlElement>() {
+                let _ = element.focus();
+            }
+            return ModalKey::Trapped;
+        }
+    }
+    ModalKey::Ignore
+}
+
+/// Focus the first control of the open modal, so the keyboard lands inside it.
+pub fn focus_first_in_modal() {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Ok(Some(modal)) = document.query_selector(".modal") else {
+        return;
+    };
+    let selector = "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])";
+    let Ok(items) = modal.query_selector_all(selector) else {
+        return;
+    };
+    if let Some(first) = items
+        .get(0)
+        .and_then(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        let _ = first.focus();
     }
 }

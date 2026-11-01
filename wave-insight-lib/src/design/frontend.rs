@@ -6,6 +6,18 @@
 //! [`crate::design::types`], so the parser dependency can be replaced without
 //! changing a single public signature.
 //!
+//! # Generate
+//!
+//! Generate regions, constant generate-for loops and generate-if/case are
+//! unrolled here with the existing constant evaluator and the module's default
+//! parameter values.  Every iteration becomes ordinary signals/instances tagged
+//! with its generate-block path (`g[2]`), so the elaborator, the source spans
+//! and the driver/load tables work unchanged.  Non-constant bounds and
+//! conditions stay warning diagnostics.  Limitation: the unroll happens at
+//! parse time, so a per-instance parameter override that changes a generate
+//! bound does not reshape the design (arrayed-instance bounds are re-evaluated
+//! per instance during elaboration and do honour overrides).
+//!
 //! Robustness rules for this layer:
 //!
 //! * malformed input should not panic - parser errors, preprocessing errors and
@@ -22,17 +34,23 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use sv_parser::{
-    parse_sv, parse_sv_str, AlwaysConstruct, AnsiPortDeclaration, ConstantParamExpression,
-    ContinuousAssign, DataDeclaration, DataType, DataTypeOrImplicit, Defines, FinalConstruct,
-    HierarchicalIdentifier, InitialConstruct, InputDeclaration, IntegerAtomType, IntegerVectorType,
-    Iter, ListOfParameterAssignments, ListOfPortConnections, LocalParameterDeclaration, Locate,
-    ModuleAnsiHeader, ModuleCommonItem, ModuleDeclaration, ModuleInstantiation, ModuleItem,
-    ModuleNonansiHeader, NamedPortConnection, NetDeclaration, NetPortType, NodeEvent,
-    NonPortModuleItem, OutputDeclaration, PackageOrGenerateItemDeclaration, PackedDimension,
-    ParameterDeclaration, ParameterPortDeclaration, ParameterPortList, PortDeclaration,
-    PortDirection, PsOrHierarchicalNetIdentifier, RefNode, RefNodes, SyntaxTree, UnpackedDimension,
-    VarDataType, VariableDimension, VariablePortType,
+    parse_sv, parse_sv_str, AlwaysConstruct, AnsiPortDeclaration, CaseGenerateConstruct,
+    CaseGenerateItem, ConditionalGenerateConstruct, ConstantParamExpression, ContinuousAssign,
+    DataDeclaration, DataType, DataTypeOrImplicit, Defines, FinalConstruct, GenerateBlock,
+    GenerateItem, GenerateRegion, GenvarIteration, HierarchicalIdentifier, IfGenerateConstruct,
+    InitialConstruct, InputDeclaration, IntegerAtomType, IntegerVectorType, Iter,
+    ListOfParameterAssignments, ListOfPortConnections, LocalParameterDeclaration, Locate,
+    LoopGenerateConstruct, ModuleAnsiHeader, ModuleCommonItem, ModuleDeclaration,
+    ModuleInstantiation, ModuleItem, ModuleNonansiHeader, NamedPortConnection, NetDeclaration,
+    NetPortType, NodeEvent, NonPortModuleItem, OutputDeclaration, PackageOrGenerateItemDeclaration,
+    PackedDimension, ParameterDeclaration, ParameterPortDeclaration, ParameterPortList,
+    PortDeclaration, PortDirection, PsOrHierarchicalNetIdentifier, RefNode, RefNodes, SyntaxTree,
+    UnpackedDimension, VarDataType, VariableDimension, VariablePortType,
 };
+
+/// Upper bound on the number of iterations one generate loop may unroll, so a
+/// runaway or malicious bound cannot hang the parser.
+const MAX_GENERATE_ITERATIONS: usize = 4096;
 
 use super::const_eval::{dim_width, eval_const, ParamEnv};
 use super::types::{
@@ -95,6 +113,8 @@ pub(crate) fn parse_file(
             tree: &tree,
             locator,
             diagnostics: RefCell::new(Vec::new()),
+            generate_scope: Vec::new(),
+            next_genblk: 1,
         };
         extractor.run()
     }));
@@ -251,6 +271,7 @@ struct ModuleBuilder {
     span: Span,
     parameters: Vec<ParamDef>,
     env: ParamEnv,
+    genvars: Vec<String>,
     /// ANSI ports in header order, or the final ports of a non-ANSI module.
     ports: Vec<PortDef>,
     /// Non-ANSI: port names in header order.
@@ -270,6 +291,7 @@ impl ModuleBuilder {
             span,
             parameters: Vec::new(),
             env: ParamEnv::new(),
+            genvars: Vec::new(),
             ports: Vec::new(),
             port_order: Vec::new(),
             port_map: HashMap::new(),
@@ -350,6 +372,7 @@ impl ModuleBuilder {
             name: self.name,
             span: self.span,
             parameters: self.parameters,
+            genvars: self.genvars,
             ports: self.ports,
             signals: self.signals,
             instances: self.instances,
@@ -362,6 +385,11 @@ struct Extractor<'a> {
     tree: &'a SyntaxTree,
     locator: Locator,
     diagnostics: RefCell<Vec<Diagnostic>>,
+    /// Generate-block path of the item being walked, outermost component first
+    /// (e.g. ["g[2]"]).  Empty while walking the module body itself.
+    generate_scope: Vec<String>,
+    /// Next implicit name for an anonymous generate block (genblk1, ...).
+    next_genblk: usize,
 }
 
 impl<'a> Extractor<'a> {
@@ -522,6 +550,8 @@ impl<'a> Extractor<'a> {
         let name = self.text_of(&header.nodes.3).trim().to_string();
         let span = self.span_of(&header.nodes.3);
         let mut builder = ModuleBuilder::new(name, span);
+        self.generate_scope.clear();
+        self.next_genblk = 1;
         self.extract_parameter_port_list(&mut builder, header.nodes.5.as_ref());
         self.extract_ansi_ports_header(&mut builder, header);
         for item in &module.nodes.2 {
@@ -540,6 +570,8 @@ impl<'a> Extractor<'a> {
         let name = self.text_of(&header.nodes.3).trim().to_string();
         let span = self.span_of(&header.nodes.3);
         let mut builder = ModuleBuilder::new(name, span);
+        self.generate_scope.clear();
+        self.next_genblk = 1;
         self.extract_parameter_port_list(&mut builder, header.nodes.5.as_ref());
         self.collect_port_list_names(&mut builder, &header.nodes.6);
         for item in &module.nodes.2 {
@@ -1032,9 +1064,7 @@ impl<'a> Extractor<'a> {
             NonPortModuleItem::ModuleOrGenerateItem(item) => {
                 self.walk_module_or_generate_item(builder, item)
             }
-            NonPortModuleItem::GenerateRegion(region) => {
-                self.unsupported("generate region", self.span_of(region.as_ref()))
-            }
+            NonPortModuleItem::GenerateRegion(region) => self.walk_generate_region(builder, region),
             NonPortModuleItem::SpecifyBlock(block) => {
                 self.unsupported("specify block", self.span_of(block.as_ref()))
             }
@@ -1078,6 +1108,268 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    // -- generate ----------------------------------------------------------
+
+    fn walk_generate_region(&mut self, builder: &mut ModuleBuilder, region: &GenerateRegion) {
+        for item in &region.nodes.1 {
+            self.walk_generate_item(builder, item);
+        }
+    }
+
+    fn walk_generate_item(&mut self, builder: &mut ModuleBuilder, item: &GenerateItem) {
+        match item {
+            GenerateItem::ModuleOrGenerateItem(item) => {
+                self.walk_module_or_generate_item(builder, item)
+            }
+            GenerateItem::InterfaceOrGenerateItem(_) => {
+                self.unsupported("interface item in a generate block", self.span_of(item))
+            }
+            GenerateItem::CheckerOrGenerateItem(_) => {
+                self.unsupported("checker item in a generate block", self.span_of(item))
+            }
+        }
+    }
+
+    /// Label of a named generate block: "begin : name", "name : begin" or
+    /// "end : name".  None for an anonymous block.
+    fn generate_block_label(&mut self, block: &GenerateBlock) -> Option<String> {
+        let GenerateBlock::Multiple(block) = block else {
+            return None;
+        };
+        let candidates = [
+            block.nodes.0.as_ref().map(|pair| &pair.0),
+            block.nodes.2.as_ref().map(|pair| &pair.1),
+            block.nodes.5.as_ref().map(|pair| &pair.1),
+        ];
+        for identifier in candidates.into_iter().flatten() {
+            let label = self.text_of(identifier).trim().to_string();
+            if !label.is_empty() {
+                return Some(label);
+            }
+        }
+        None
+    }
+
+    /// Next implicit generate-block name (genblk1, genblk2, ... per module).
+    fn anonymous_generate_label(&mut self) -> String {
+        let label = format!("genblk{}", self.next_genblk);
+        self.next_genblk += 1;
+        label
+    }
+
+    fn walk_generate_block(&mut self, builder: &mut ModuleBuilder, block: &GenerateBlock) {
+        let label = self
+            .generate_block_label(block)
+            .unwrap_or_else(|| self.anonymous_generate_label());
+        self.generate_scope.push(label);
+        self.walk_generate_block_items(builder, block);
+        self.generate_scope.pop();
+    }
+
+    fn walk_generate_block_items(&mut self, builder: &mut ModuleBuilder, block: &GenerateBlock) {
+        match block {
+            GenerateBlock::GenerateItem(item) => self.walk_generate_item(builder, item),
+            GenerateBlock::Multiple(block) => {
+                for item in &block.nodes.3 {
+                    self.walk_generate_item(builder, item);
+                }
+            }
+        }
+    }
+
+    /// Unroll a constant generate-for: every iteration walks the body with the
+    /// genvar bound in the module's parameter environment, so the declarations
+    /// and instances it contains get distinct paths like "g[2].u".
+    fn walk_generate_loop(
+        &mut self,
+        builder: &mut ModuleBuilder,
+        generate: &LoopGenerateConstruct,
+    ) {
+        let initialization = &generate.nodes.1.nodes.1 .0;
+        let genvar = self.text_of(&initialization.nodes.1).trim().to_string();
+        if genvar.is_empty() {
+            return;
+        }
+        if !builder.genvars.contains(&genvar) {
+            builder.genvars.push(genvar.clone());
+        }
+        let initialization = self.text_of(&initialization.nodes.3).trim().to_string();
+        let condition = self
+            .text_of(&generate.nodes.1.nodes.1 .2)
+            .trim()
+            .to_string();
+        let iteration = &generate.nodes.1.nodes.1 .4;
+        let body = &generate.nodes.2;
+        let label = self
+            .generate_block_label(body)
+            .unwrap_or_else(|| self.anonymous_generate_label());
+
+        let Some(mut value) = eval_const(&initialization, &builder.env) else {
+            self.unsupported(
+                "generate loop with a non-constant initial value",
+                self.span_of(generate),
+            );
+            return;
+        };
+        let previous = builder.env.get(&genvar).copied();
+        let mut iterations = 0usize;
+        loop {
+            if iterations >= MAX_GENERATE_ITERATIONS {
+                self.diagnostics.borrow_mut().push(Diagnostic::warning(
+                    DiagnosticKind::RecursionLimit,
+                    format!(
+                        "generate loop over the genvar exceeds {} iterations; the remaining ones were not elaborated",
+                        MAX_GENERATE_ITERATIONS
+                    ),
+                    Some(self.span_of(generate)),
+                ));
+                break;
+            }
+            builder.env.insert(genvar.clone(), value);
+            let Some(condition_value) = eval_const(&condition, &builder.env) else {
+                self.unsupported(
+                    "generate loop with a non-constant condition",
+                    self.span_of(generate),
+                );
+                break;
+            };
+            if condition_value == 0 {
+                break;
+            }
+            iterations += 1;
+            self.generate_scope.push(format!("{label}[{value}]"));
+            self.walk_generate_block_items(builder, body);
+            self.generate_scope.pop();
+            let Some(next) = self.generate_iteration_value(iteration, value, &builder.env) else {
+                self.unsupported(
+                    "generate loop step the constant evaluator cannot apply",
+                    self.span_of(generate),
+                );
+                break;
+            };
+            if next == value {
+                self.unsupported(
+                    "generate loop step does not change the genvar",
+                    self.span_of(generate),
+                );
+                break;
+            }
+            value = next;
+        }
+        match previous {
+            Some(previous) => {
+                builder.env.insert(genvar, previous);
+            }
+            None => {
+                builder.env.remove(&genvar);
+            }
+        }
+    }
+
+    /// One iteration step of a generate loop: ++, -- or "genvar = expression".
+    fn generate_iteration_value(
+        &mut self,
+        iteration: &GenvarIteration,
+        current: i64,
+        env: &ParamEnv,
+    ) -> Option<i64> {
+        match iteration {
+            GenvarIteration::Suffix(suffix) => {
+                let operator = self.text_of(&suffix.nodes.1).trim().to_string();
+                match operator.as_str() {
+                    "++" => current.checked_add(1),
+                    "--" => current.checked_sub(1),
+                    _ => None,
+                }
+            }
+            GenvarIteration::Prefix(prefix) => {
+                let operator = self.text_of(&prefix.nodes.0).trim().to_string();
+                match operator.as_str() {
+                    "++" => current.checked_add(1),
+                    "--" => current.checked_sub(1),
+                    _ => None,
+                }
+            }
+            GenvarIteration::Assignment(assignment) => {
+                let operator = self.text_of(&assignment.nodes.1).trim().to_string();
+                if operator != "=" {
+                    return None;
+                }
+                let expression = self.text_of(&assignment.nodes.2).trim().to_string();
+                eval_const(&expression, env)
+            }
+        }
+    }
+
+    fn walk_generate_conditional(
+        &mut self,
+        builder: &mut ModuleBuilder,
+        generate: &ConditionalGenerateConstruct,
+    ) {
+        match generate {
+            ConditionalGenerateConstruct::If(if_generate) => {
+                self.walk_generate_if(builder, if_generate)
+            }
+            ConditionalGenerateConstruct::Case(case_generate) => {
+                self.walk_generate_case(builder, case_generate)
+            }
+        }
+    }
+
+    fn walk_generate_if(&mut self, builder: &mut ModuleBuilder, generate: &IfGenerateConstruct) {
+        let condition = self.text_of(&generate.nodes.1.nodes.1).trim().to_string();
+        let Some(value) = eval_const(&condition, &builder.env) else {
+            self.unsupported(
+                "generate-if with a non-constant condition",
+                self.span_of(generate),
+            );
+            return;
+        };
+        if value != 0 {
+            self.walk_generate_block(builder, &generate.nodes.2);
+        } else if let Some((_keyword, block)) = &generate.nodes.3 {
+            self.walk_generate_block(builder, block);
+        }
+    }
+
+    fn walk_generate_case(
+        &mut self,
+        builder: &mut ModuleBuilder,
+        generate: &CaseGenerateConstruct,
+    ) {
+        let selector = self.text_of(&generate.nodes.1.nodes.1).trim().to_string();
+        let Some(selector) = eval_const(&selector, &builder.env) else {
+            self.unsupported(
+                "generate-case with a non-constant selector",
+                self.span_of(generate),
+            );
+            return;
+        };
+        let mut default = None;
+        for item in &generate.nodes.2 {
+            match item {
+                CaseGenerateItem::Nondefault(item) => {
+                    let mut matched = false;
+                    for (_symbol, label) in &item.nodes.0.nodes.1 {
+                        let text = self.text_of(label).trim().to_string();
+                        if eval_const(&text, &builder.env) == Some(selector) {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if matched {
+                        self.walk_generate_block(builder, &item.nodes.2);
+                        return;
+                    }
+                }
+                CaseGenerateItem::Default(item) => default = Some(&item.nodes.2),
+            }
+        }
+        if let Some(block) = default {
+            self.walk_generate_block(builder, block);
+        }
+    }
+
     fn walk_common_item(&mut self, builder: &mut ModuleBuilder, item: &ModuleCommonItem) {
         match item {
             ModuleCommonItem::ModuleOrGenerateItemDeclaration(declaration) => {
@@ -1085,7 +1377,16 @@ impl<'a> Extractor<'a> {
                     sv_parser::ModuleOrGenerateItemDeclaration::PackageOrGenerateItemDeclaration(
                         declaration,
                     ) => self.walk_declaration(builder, declaration.as_ref()),
-                    sv_parser::ModuleOrGenerateItemDeclaration::GenvarDeclaration(_) => {
+                    sv_parser::ModuleOrGenerateItemDeclaration::GenvarDeclaration(declaration) => {
+                        // The declaration itself stays a warning (it is a
+                        // constant, not a signal), but the names are recorded so
+                        // driver/load diagnostics do not treat them as unknown.
+                        for identifier in declaration.nodes.1.nodes.0.contents() {
+                            let name = self.text_of(identifier).trim().to_string();
+                            if !name.is_empty() && !builder.genvars.contains(&name) {
+                                builder.genvars.push(name);
+                            }
+                        }
                         self.unsupported("genvar declaration", self.span_of(item))
                     }
                     sv_parser::ModuleOrGenerateItemDeclaration::ClockingDeclaration(_) => {
@@ -1107,11 +1408,11 @@ impl<'a> Extractor<'a> {
             ModuleCommonItem::FinalConstruct(final_construct) => {
                 self.handle_final(builder, final_construct)
             }
-            ModuleCommonItem::LoopGenerateConstruct(_) => {
-                self.unsupported("generate loop", self.span_of(item))
+            ModuleCommonItem::LoopGenerateConstruct(generate) => {
+                self.walk_generate_loop(builder, generate)
             }
-            ModuleCommonItem::ConditionalGenerateConstruct(_) => {
-                self.unsupported("conditional generate", self.span_of(item))
+            ModuleCommonItem::ConditionalGenerateConstruct(generate) => {
+                self.walk_generate_conditional(builder, generate)
             }
             ModuleCommonItem::NetAlias(_) => self.unsupported("net alias", self.span_of(item)),
             ModuleCommonItem::AssertionItem(_) => {
@@ -1143,10 +1444,21 @@ impl<'a> Extractor<'a> {
                 self.handle_data_declaration(builder, data)
             }
             PackageOrGenerateItemDeclaration::ParameterDeclaration(parameter) => {
-                self.push_parameter_declaration(builder, &parameter.0, false)
+                if self.generate_scope.is_empty() {
+                    self.push_parameter_declaration(builder, &parameter.0, false)
+                } else {
+                    // A parameter/localparam inside a generate block is a
+                    // constant local to that block, not a module parameter: bind
+                    // it in the environment used for widths and loop bounds.
+                    self.bind_generate_parameter(builder, &parameter.0, false)
+                }
             }
             PackageOrGenerateItemDeclaration::LocalParameterDeclaration(parameter) => {
-                self.push_local_parameter_declaration(builder, &parameter.0)
+                if self.generate_scope.is_empty() {
+                    self.push_local_parameter_declaration(builder, &parameter.0)
+                } else {
+                    self.bind_generate_local_parameter(builder, &parameter.0)
+                }
             }
             PackageOrGenerateItemDeclaration::Empty(_) => {}
             PackageOrGenerateItemDeclaration::TaskDeclaration(_) => {
@@ -1178,6 +1490,67 @@ impl<'a> Extractor<'a> {
             }
             PackageOrGenerateItemDeclaration::AssertionItemDeclaration(_) => {
                 self.unsupported("assertion item", self.span_of(declaration))
+            }
+        }
+    }
+
+    /// Bind the parameters of a generate-local parameter declaration in the
+    /// module environment (they are not part of the module's parameter list).
+    fn bind_generate_parameter(
+        &mut self,
+        builder: &mut ModuleBuilder,
+        declaration: &ParameterDeclaration,
+        is_local: bool,
+    ) {
+        match declaration {
+            ParameterDeclaration::Param(parameter) => {
+                for assignment in parameter.nodes.2.nodes.0.contents() {
+                    self.bind_generate_parameter_assignment(builder, assignment);
+                }
+            }
+            ParameterDeclaration::Type(_) => self.unsupported(
+                "type parameter inside a generate block",
+                self.span_of(declaration),
+            ),
+        }
+        let _ = is_local;
+    }
+
+    fn bind_generate_local_parameter(
+        &mut self,
+        builder: &mut ModuleBuilder,
+        declaration: &LocalParameterDeclaration,
+    ) {
+        match declaration {
+            LocalParameterDeclaration::Param(parameter) => {
+                for assignment in parameter.nodes.2.nodes.0.contents() {
+                    self.bind_generate_parameter_assignment(builder, assignment);
+                }
+            }
+            LocalParameterDeclaration::Type(_) => self.unsupported(
+                "type parameter inside a generate block",
+                self.span_of(declaration),
+            ),
+        }
+    }
+
+    fn bind_generate_parameter_assignment(
+        &mut self,
+        builder: &mut ModuleBuilder,
+        assignment: &sv_parser::ParamAssignment,
+    ) {
+        let name = self.text_of(&assignment.nodes.0).trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let default = assignment.nodes.2.as_ref().map(
+            |(_symbol, value): &(sv_parser::Symbol, ConstantParamExpression)| {
+                self.text_of(value).trim().to_string()
+            },
+        );
+        if let Some(default) = default {
+            if let Some(value) = eval_const(&default, &builder.env) {
+                builder.env.insert(name, value);
             }
         }
     }
@@ -1318,6 +1691,7 @@ impl<'a> Extractor<'a> {
             unpacked,
             width,
             span,
+            scope: self.generate_scope.clone(),
         });
     }
 
@@ -1333,15 +1707,14 @@ impl<'a> Extractor<'a> {
         let parameters = self.extract_parameter_assignments(instantiation.nodes.1.as_ref());
         for instance in instantiation.nodes.2.contents() {
             let name_of_instance = &instance.nodes.0;
-            if !name_of_instance.nodes.1.is_empty() {
-                self.unsupported("arrayed instance", self.span_of(&name_of_instance.nodes.0));
-                continue;
-            }
             let name = self.text_of(&name_of_instance.nodes.0).trim().to_string();
             if name.is_empty() {
                 continue;
             }
             let span = self.span_of(&name_of_instance.nodes.0);
+            // Unpacked dimensions of an arrayed instance (u[3:0]) are kept so
+            // the elaborator can expand one instance per element.
+            let array = self.unpacked_dims(&name_of_instance.nodes.1);
             let connections = self.extract_port_connections(&instance.nodes.1.nodes.1);
             builder.instances.push(InstanceDecl {
                 name,
@@ -1350,6 +1723,8 @@ impl<'a> Extractor<'a> {
                 module_span: module_span.clone(),
                 parameters: parameters.clone(),
                 connections,
+                scope: self.generate_scope.clone(),
+                array,
             });
         }
     }
@@ -1561,6 +1936,7 @@ impl<'a> Extractor<'a> {
                             span: name.span,
                             role: UsageRole::Load,
                             kind: UsageKind::EventControl,
+                            scope: self.generate_scope.clone(),
                         });
                     }
                 }
@@ -1583,6 +1959,7 @@ impl<'a> Extractor<'a> {
                 span: name.span,
                 role: UsageRole::Load,
                 kind: UsageKind::ProceduralAssign,
+                scope: self.generate_scope.clone(),
             });
         }
     }
@@ -1608,6 +1985,7 @@ impl<'a> Extractor<'a> {
                 span: name.span,
                 role,
                 kind,
+                scope: self.generate_scope.clone(),
             });
         }
     }

@@ -1,3 +1,4 @@
+use wasm_bindgen::JsCast;
 use yew::prelude::*;
 
 use crate::code_reader::code_block::CodeBlock;
@@ -24,6 +25,8 @@ pub struct CodeReaderProps {
 pub enum Msg {
     SetActive(usize),
     Close(usize),
+    /// A page-wide key: Ctrl+W / Ctrl+F4 closes the active tab.
+    KeyDown(web_sys::KeyboardEvent),
 }
 
 pub struct CodeReader {
@@ -31,16 +34,28 @@ pub struct CodeReader {
     /// Token of the jump request that was already applied, so a re-render that
     /// keeps the same request does not steal the tab back from the user.
     shown_token: Option<u32>,
+    /// The window keydown listener (created once, dropped in `destroy`).
+    keydown: Option<wasm_bindgen::closure::Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
 }
 
 impl Component for CodeReader {
     type Message = Msg;
     type Properties = CodeReaderProps;
 
-    fn create(_ctx: &Context<Self>) -> Self {
-        Self {
+    fn create(ctx: &Context<Self>) -> Self {
+        let mut this = Self {
             activate_index: 0,
             shown_token: None,
+            keydown: None,
+        };
+        this.attach_key_listener(ctx);
+        this
+    }
+
+    fn destroy(&mut self, _ctx: &Context<Self>) {
+        if let (Some(window), Some(listener)) = (web_sys::window(), self.keydown.take()) {
+            let _ = window
+                .remove_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
         }
     }
 
@@ -49,6 +64,28 @@ impl Component for CodeReader {
             Msg::SetActive(idx) => {
                 self.activate_index = idx;
                 true
+            }
+            Msg::KeyDown(event) => {
+                // Ctrl+W / Ctrl+F4: close the active tab, unless the user is
+                // typing in the editor (the editor owns its keys, and the
+                // browser would close its own tab for Ctrl+W anyway)
+                if typing_in_editor(&event) {
+                    return false;
+                }
+                let key = event.key();
+                let closes = event.ctrl_key() && (key == "w" || key == "W" || key == "F4");
+                if closes && !ctx.props().file.is_empty() {
+                    event.prevent_default();
+                    let active = self
+                        .activate_index
+                        .min(ctx.props().file.len().saturating_sub(1));
+                    ctx.props().onclose.emit(active);
+                    if self.activate_index >= ctx.props().file.len().saturating_sub(1) {
+                        self.activate_index = self.activate_index.saturating_sub(1);
+                    }
+                    return true;
+                }
+                false
             }
             Msg::Close(idx) => {
                 ctx.props().onclose.emit(idx);
@@ -95,22 +132,30 @@ impl Component for CodeReader {
 
         html! {
             <>
-                <nav class="tabs">
+                <nav class="tabs" role="tablist" aria-label="Open sources">
                 {
                     for props.file.iter().enumerate().map(|(idx,(name,_text))| {
                         let class = if idx == active {"tab active"} else {"tab"};
                         html! {
-                            <button type="button" class={class}
+                            // A div, not a button: the closer is a real button,
+                            // and a button inside a button is invalid html.
+                            <div class={class}
                                 onclick={link.callback(move |_| Msg::SetActive(idx))}>
-                                <span class="tab-name">{name.clone()}</span>
-                                <span class="tab-close" title="Close the tab"
-                                    style="margin-left:10px;opacity:.55;padding:0 2px;"
+                                <button type="button" class="tab-name"
+                                    role="tab" aria-selected={if idx == active {"true"} else {"false"}}
+                                    title={name.clone()}
+                                    onclick={link.callback(move |_| Msg::SetActive(idx))}>
+                                    {name.clone()}
+                                </button>
+                                <button type="button" class="tab-close"
+                                    aria-label={format!("Close {name}")}
+                                    title="Close the tab"
                                     onclick={link.callback(move |event: MouseEvent| {
                                         // closing must not also activate the tab
                                         event.stop_propagation();
                                         Msg::Close(idx)
-                                    })}>{"×"}</span>
-                            </button>
+                                    })}>{"×"}</button>
+                            </div>
                         }
                     })
                 }
@@ -124,4 +169,57 @@ impl Component for CodeReader {
             </>
         }
     }
+}
+
+impl CodeReader {
+    /// Install the page-wide key listener that owns Ctrl+W / Ctrl+F4.
+    fn attach_key_listener(&mut self, ctx: &Context<Self>) {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let link = ctx.link().clone();
+        let listener = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+            move |event: web_sys::KeyboardEvent| {
+                link.send_message(Msg::KeyDown(event));
+            },
+        );
+        if window
+            .add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref())
+            .is_ok()
+        {
+            self.keydown = Some(listener);
+        }
+    }
+}
+
+/// Is the key event aimed at the source editor (or any text field)?
+///
+/// The same rule the wave pane uses: the editor owns its keys, so a Ctrl+W
+/// typed into a comment must not close the tab it is written in.
+fn typing_in_editor(event: &web_sys::KeyboardEvent) -> bool {
+    let Some(target) = event.target() else {
+        return false;
+    };
+    let Ok(element) = target.dyn_into::<web_sys::Element>() else {
+        return false;
+    };
+    let mut current = Some(element);
+    while let Some(element) = current {
+        let tag = element.tag_name().to_ascii_lowercase();
+        if tag == "input" || tag == "textarea" || tag == "select" {
+            return true;
+        }
+        if element.has_attribute("contenteditable") {
+            return true;
+        }
+        if element
+            .get_attribute("class")
+            .map(|class| class.contains("monaco-editor"))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        current = element.parent_element();
+    }
+    false
 }

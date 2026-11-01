@@ -6,7 +6,7 @@ use wave_insight_lib::data_struct::ShowType;
 
 use super::export::{ExportFormat, ExportScope};
 use super::settings::Settings;
-use crate::nav::MAX_FIXED_POINT;
+use crate::nav::{focus_first_in_modal, modal_keydown, ModalKey, MAX_FIXED_POINT};
 
 ///signal colours, tuned to stay readable on the dark wave canvas
 const PALETTE: [(u8, u8, u8); 7] = [
@@ -106,6 +106,8 @@ pub enum Msg {
     ExportRowTxt,
     /// Download every row's values as long-format CSV.
     ExportAllRowsCsv,
+    /// A key pressed inside the dialog: Escape closes it, Tab stays inside.
+    KeyDown(KeyboardEvent),
 }
 
 pub struct Ctrl {
@@ -114,6 +116,9 @@ pub struct Ctrl {
     /// `Some(true)` after a successful copy, `Some(false)` when the browser
     /// refused; `None` before the button was pressed.
     copied: Option<bool>,
+    /// The element that had focus when the dialog opened (the row's settings
+    /// button), so Escape returns the keyboard there.
+    opener: Option<web_sys::Element>,
 }
 
 impl Component for Ctrl {
@@ -125,6 +130,26 @@ impl Component for Ctrl {
             show_load: false,
             show_drive: false,
             copied: None,
+            opener: web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.active_element()),
+        }
+    }
+
+    fn rendered(&mut self, _ctx: &Context<Self>, first_render: bool) {
+        // the dialog is opened by a click on a row button: the keyboard has to
+        // land inside it, or Escape/Tab are handled by the page behind it
+        if first_render {
+            focus_first_in_modal();
+        }
+    }
+
+    fn destroy(&mut self, _ctx: &Context<Self>) {
+        // focus returns to the element that opened the dialog
+        if let Some(opener) = self.opener.take() {
+            if let Ok(element) = opener.dyn_into::<web_sys::HtmlElement>() {
+                let _ = element.focus();
+            }
         }
     }
 
@@ -212,6 +237,15 @@ impl Component for Ctrl {
                 props.delete.emit(());
                 true
             }
+            Msg::KeyDown(event) => match modal_keydown(&event) {
+                // same path as clicking the overlay: one way to close
+                ModalKey::Close => {
+                    props.onset.emit((true, props.setting.clone()));
+                    true
+                }
+                ModalKey::Trapped => true,
+                ModalKey::Ignore => false,
+            },
         }
     }
 
@@ -225,7 +259,9 @@ impl Component for Ctrl {
         html! {
             <div>
                 <div class="overlay" onclick={link.callback(Msg::ExitMenu)}></div>
-                <div class="modal">
+                <div class="modal" role="dialog" aria-modal="true"
+                    aria-label={format!("Signal settings: {}", props.name)}
+                    onkeydown={link.callback(Msg::KeyDown)}>
                     <h4 class="modal-title">{props.name.clone()}</h4>
 
                     <div class="modal-section">
@@ -312,6 +348,8 @@ impl Component for Ctrl {
                                     html!{
                                         <button type="button" class={class}
                                             style={format!("--swatch:#{:02X}{:02X}{:02X}",c.0,c.1,c.2)}
+                                            aria-label={format!("Colour #{:02X}{:02X}{:02X}",c.0,c.1,c.2)}
+                                            aria-pressed={if props.setting.color==c {"true"} else {"false"}}
                                             onclick={link.callback(move |_| Msg::ChooseColor(c))}>
                                         </button>
                                     }

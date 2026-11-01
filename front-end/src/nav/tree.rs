@@ -6,6 +6,7 @@
 //! Both produce this one owned shape, so the tree component does not care which
 //! of the two it is showing, and the old `Module` type could go away.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::rc::Rc;
 
@@ -77,6 +78,15 @@ impl ModuleRow {
                 .map(|child| child.total_signals())
                 .sum::<usize>()
     }
+
+    /// Number of scopes in this subtree, including this one.
+    pub fn count_scopes(&self) -> usize {
+        1 + self
+            .children
+            .iter()
+            .map(|child| child.count_scopes())
+            .sum::<usize>()
+    }
 }
 
 /// Shared handle on a sidebar tree.
@@ -107,6 +117,43 @@ impl SidebarTree {
     pub fn find(&self, path: &str) -> Option<&ModuleRow> {
         self.0.find(path)
     }
+
+    /// The rows a sidebar shows when `expanded` holds the open scope paths, in
+    /// display order (depth first, declaration order).
+    ///
+    /// The virtual root is not a row itself (as before this change): the root's
+    /// children are the top-level rows, and a scope's children appear once it
+    /// is expanded. This is exactly the set of rows the old recursive
+    /// component rendered, so the sidebar can virtualize the drawing without
+    /// changing what is shown.
+    pub fn visible_rows(&self, expanded: &HashSet<String>) -> Vec<VisibleRow> {
+        let mut rows = Vec::new();
+        push_rows(self.root(), 0, expanded, &mut rows);
+        rows
+    }
+}
+
+/// Append the rows of `scope`'s children (and, for expanded scopes, their
+/// subtrees) to `rows`.
+fn push_rows(
+    scope: &ModuleRow,
+    depth: usize,
+    expanded: &HashSet<String>,
+    rows: &mut Vec<VisibleRow>,
+) {
+    for child in &scope.children {
+        let open = expanded.contains(&child.path);
+        rows.push((
+            child.path.clone(),
+            child.name.clone(),
+            depth,
+            !child.children.is_empty(),
+            open,
+        ));
+        if open && !child.children.is_empty() {
+            push_rows(child, depth + 1, expanded, rows);
+        }
+    }
 }
 
 impl PartialEq for SidebarTree {
@@ -114,6 +161,13 @@ impl PartialEq for SidebarTree {
         Rc::ptr_eq(&self.0, &other.0)
     }
 }
+
+/// One row the sidebar tree shows, as a flat tuple the sidebar module can draw
+/// without knowing the tree types: (path, name, depth, has_children, expanded).
+///
+/// The tuple keeps the drawing type in the sidebar module: `nav` only exports
+/// `SidebarTree` and `SignalRow`, and the row windowing needs a plain list.
+pub type VisibleRow = (String, String, usize, bool, bool);
 
 impl fmt::Debug for SidebarTree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -144,5 +198,157 @@ fn module_of(hierarchy: &HierarchyView, node: &wave_insight_lib::waveform::Scope
             .iter()
             .map(|child| module_of(hierarchy, child))
             .collect(),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signal(name: &str, width: usize) -> SignalRow {
+        SignalRow {
+            name: name.to_string(),
+            path: format!("top.{name}"),
+            width,
+        }
+    }
+
+    fn scope(
+        path: &str,
+        name: &str,
+        signals: Vec<SignalRow>,
+        children: Vec<ModuleRow>,
+    ) -> ModuleRow {
+        ModuleRow {
+            name: name.to_string(),
+            path: path.to_string(),
+            signals,
+            children,
+        }
+    }
+
+    // root
+    //  +- top            clk
+    //  |   +- u_cpu      pc
+    //  |       +- u_core state
+    //  +- top2            (no signals, no children)
+    fn sample() -> SidebarTree {
+        SidebarTree::new(scope(
+            "",
+            "",
+            vec![],
+            vec![
+                scope(
+                    "top",
+                    "top",
+                    vec![signal("clk", 1)],
+                    vec![scope(
+                        "top.u_cpu",
+                        "u_cpu",
+                        vec![signal("pc", 8)],
+                        vec![scope(
+                            "top.u_cpu.u_core",
+                            "u_core",
+                            vec![signal("state", 2)],
+                            vec![],
+                        )],
+                    )],
+                ),
+                scope("top2", "top2", vec![], vec![]),
+            ],
+        ))
+    }
+
+    fn expand(paths: &[&str]) -> HashSet<String> {
+        paths
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect::<HashSet<_>>()
+    }
+
+    fn names(rows: &[VisibleRow]) -> Vec<&str> {
+        rows.iter().map(|row| row.1.as_str()).collect()
+    }
+
+    #[test]
+    fn the_root_is_not_a_row() {
+        let rows = sample().visible_rows(&HashSet::new());
+        assert_eq!(names(&rows), ["top", "top2"]);
+        // both are top-level rows, and neither is expanded yet
+        assert!(rows.iter().all(|row| row.2 == 0));
+        assert!(rows.iter().all(|row| !row.4));
+        assert_eq!(rows[0].0, "top");
+        assert!(rows[0].3);
+        assert!(!rows[1].3);
+    }
+
+    #[test]
+    fn expanding_a_scope_inserts_its_children_after_it() {
+        let rows = sample().visible_rows(&expand(&["top"]));
+        assert_eq!(names(&rows), ["top", "u_cpu", "top2"]);
+        // the child is one level deeper and is the expanded row's child
+        assert_eq!(rows[1].2, 1);
+        assert_eq!(rows[1].0, "top.u_cpu");
+        // the expanded row carries its open flag, its child does not
+        assert!(rows[0].4);
+        assert!(!rows[1].4);
+    }
+
+    #[test]
+    fn nested_expansion_walks_depth_first() {
+        let rows = sample().visible_rows(&expand(&["top", "top.u_cpu"]));
+        assert_eq!(names(&rows), ["top", "u_cpu", "u_core", "top2"]);
+        assert_eq!(rows[2].2, 2);
+        assert_eq!(rows[2].0, "top.u_cpu.u_core");
+        // a leaf cannot be expanded any further
+        let rows = sample().visible_rows(&expand(&["top", "top.u_cpu", "top.u_cpu.u_core"]));
+        assert_eq!(names(&rows), ["top", "u_cpu", "u_core", "top2"]);
+    }
+
+    #[test]
+    fn expansion_flags_follow_the_set() {
+        let expanded = expand(&["top.u_cpu"]);
+        let rows = sample().visible_rows(&expanded);
+        // u_cpu is not a row at all: its parent is closed, so only the parent
+        // flag can be set
+        assert_eq!(names(&rows), ["top", "top2"]);
+        assert!(!rows[0].4);
+    }
+
+    #[test]
+    fn count_scopes_counts_the_subtree() {
+        let tree = sample();
+        // root + top + u_cpu + u_core + top2
+        assert_eq!(tree.root().count_scopes(), 5);
+        let top = tree.find("top").expect("top exists");
+        assert_eq!(top.count_scopes(), 3);
+        // a signal list is not a scope list
+        assert_eq!(tree.root().total_signals(), 3);
+    }
+
+    #[test]
+    fn an_empty_tree_shows_nothing() {
+        let tree = SidebarTree::new(scope("", "", vec![], vec![]));
+        assert!(tree.visible_rows(&HashSet::new()).is_empty());
+        assert_eq!(tree.root().count_scopes(), 1);
+    }
+
+    #[test]
+    fn duplicate_names_in_different_scopes_are_different_rows() {
+        let tree = SidebarTree::new(scope(
+            "",
+            "",
+            vec![],
+            vec![
+                scope("top", "top", vec![], vec![]),
+                scope("top.u0", "u0", vec![], vec![]),
+                scope("top.u1", "u0", vec![], vec![]),
+            ],
+        ));
+        let rows = tree.visible_rows(&expand(&["top"]));
+        // the expansion set is keyed by path, so two scopes that happen to
+        // share a name stay independent
+        assert_eq!(names(&rows), ["top", "u0", "u0"]);
+        let paths: Vec<&str> = rows.iter().map(|row| row.0.as_str()).collect();
+        assert_eq!(paths, ["top", "top.u0", "top.u1"]);
     }
 }

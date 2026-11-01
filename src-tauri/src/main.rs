@@ -33,10 +33,34 @@ fn is_openable(name: &str) -> bool {
         || lower.ends_with(".vh")
 }
 
-/// Join the path components the dialog collected onto the working directory.
+/// The directory the in-app file browser starts in.
+///
+/// It used to be the process working directory, which is `System32` (or the
+/// app directory) when the desktop app is started from the Start menu, so the
+/// dialog opened somewhere the user has no files. The home directory is what
+/// the user expects; `..` still walks up from there, and a part that is empty
+/// or a separator is ignored.
+fn base_dir() -> PathBuf {
+    for key in ["USERPROFILE", "HOME"] {
+        if let Ok(value) = std::env::var(key) {
+            let path = PathBuf::from(value);
+            if path.is_dir() {
+                return path;
+            }
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Join the path components the dialog collected onto [`base_dir`].
 fn resolve(parts: &[String]) -> std::io::Result<PathBuf> {
-    let mut path = std::env::current_dir()?;
+    let mut path = base_dir();
     for part in parts {
+        // a component with a separator would jump out of the navigation the
+        // dialog collected; the dialog never produces one
+        if part.is_empty() || part.contains('/') || part.contains('\\') {
+            continue;
+        }
         path.push(part);
     }
     Ok(path)
@@ -83,7 +107,7 @@ fn choose_vcd(name: Vec<String>) -> Result<Vec<u8>, String> {
     read_bytes(&path)
 }
 
-/// Read a dump by absolute path (drag and drop, launch argument).
+/// Read a dump by absolute path (drag and drop; a launch argument is planned).
 #[tauri::command]
 fn choose_vcd_absolute(path: String) -> Result<Vec<u8>, String> {
     read_bytes(Path::new(&path))

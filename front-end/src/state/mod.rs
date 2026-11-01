@@ -16,8 +16,14 @@
 //!   from the stored ratio and the measured pane, never stored. The source
 //!   documents and the design database move in in the next step-3 increment and
 //!   still live in `App` today.
+//!
+//! Wave 3 adds [`persist`]: the layout and the per-signal display settings are
+//! restored on startup and written back when they change. The format, the merge
+//! and the row cap are pure and host-tested; only the `localStorage` call itself
+//! is wasm-only.
 
 pub mod action;
+pub mod persist;
 pub mod reduce;
 pub mod select;
 //the module that defines the State struct lives in state/state.rs, the name the design doc uses
@@ -30,6 +36,8 @@ pub mod types;
 // the call sites do not have to move again
 #[allow(unused_imports)]
 pub use action::{Action, Effect};
+#[allow(unused_imports)]
+pub use persist::{Persister, RowPrefs, Storage};
 #[allow(unused_imports)]
 pub use reduce::reduce;
 #[allow(unused_imports)]

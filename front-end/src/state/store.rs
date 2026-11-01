@@ -21,6 +21,7 @@ use std::rc::Rc;
 use yew::Callback;
 
 use super::action::{Action, Effect};
+use super::persist::Persister;
 use super::reduce::reduce;
 use super::state::State;
 
@@ -40,6 +41,9 @@ struct Inner {
     draining: Cell<bool>,
     version: Cell<u64>,
     next_id: Cell<u64>,
+    /// `None` when the browser denies storage (or on the host target): the
+    /// store then behaves exactly like a plain in-memory one.
+    persister: Option<Rc<Persister>>,
 }
 
 /// The app's store.
@@ -51,13 +55,29 @@ pub struct Store(Rc<Inner>);
 
 impl Store {
     pub fn new() -> Self {
+        Self::with_persister(None)
+    }
+
+    /// The store, with the layout and the per-signal settings restored from the
+    /// last session and written back when they change.
+    ///
+    /// `persister` is `None` when the browser has no usable `localStorage`
+    /// (private mode) — the app then starts with its defaults, exactly like
+    /// [`Store::new`], and nothing panics.
+    pub fn with_persister(persister: Option<Rc<Persister>>) -> Self {
+        let mut state = State::default();
+        if let Some(persister) = &persister {
+            state.layout = persister.restored_layout().clamped();
+            state.row_prefs = persister.restored_rows();
+        }
         Self(Rc::new(Inner {
-            state: RefCell::new(State::default()),
+            state: RefCell::new(state),
             subscribers: RefCell::new(Vec::new()),
             queue: RefCell::new(VecDeque::new()),
             draining: Cell::new(false),
             version: Cell::new(0),
             next_id: Cell::new(0),
+            persister,
         }))
     }
 
@@ -134,6 +154,14 @@ impl Store {
             self.notify();
         }
         self.0.draining.set(false);
+        // Persist the committed values once the queue has drained, never during
+        // the gesture: the persister writes only the slices that changed since
+        // the last write, so a drag committed on mouseup writes once and a
+        // selection change writes nothing.
+        if let Some(persister) = &self.0.persister {
+            let state = self.0.state.borrow();
+            persister.sync(&state);
+        }
         effects
     }
 
@@ -297,5 +325,78 @@ mod tests {
         let c = Store::new();
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn a_persisted_store_restores_the_session_and_writes_committed_changes() {
+        use crate::state::persist::{MemoryStorage, Persister};
+        use crate::state::types::Layout;
+        use wave_insight_lib::data_struct::ShowType;
+
+        let storage = MemoryStorage::new();
+        // a first session: commit a layout and configure one signal
+        let mut setting = crate::state::Settings::new();
+        setting.show_type = ShowType::Bin;
+        setting.analog_active = true;
+        {
+            let persister = StdRc::new(Persister::load(Box::new(storage.clone())));
+            let store = Store::with_persister(Some(persister));
+            store.dispatch(Action::ResizeSidebar {
+                width: 360.0,
+                max: 640.0,
+            });
+            store.dispatch(Action::ToggleDrawer);
+            store.dispatch(Action::RowAdded {
+                path: "top.pc".into(),
+                name: "top.pc".into(),
+                width: 8,
+                load: Vec::new(),
+                drive: Vec::new(),
+                bit: None,
+            });
+            store.dispatch(Action::RowSettingChanged {
+                indices: vec![0],
+                setting: setting.clone(),
+            });
+        }
+
+        // a reload: the layout is back and the row setting is remembered
+        let writes_before_reload = storage.writes();
+        let persister = StdRc::new(Persister::load(Box::new(storage.clone())));
+        let store = Store::with_persister(Some(persister));
+        let layout = store.select(select::layout);
+        assert_eq!(
+            layout,
+            Layout {
+                sidebar_w: 360.0,
+                editor_ratio: Layout::default().editor_ratio,
+                drawer_open: false,
+            }
+        );
+        // reading the stored values back is not a change: nothing is rewritten
+        assert_eq!(storage.writes(), writes_before_reload);
+        // an unrelated action writes nothing either (the throttle)
+        store.dispatch(Action::Status(crate::state::Status::info("loaded")));
+        assert_eq!(storage.writes(), writes_before_reload);
+
+        store.dispatch(Action::RowAdded {
+            path: "top.pc".into(),
+            name: "top.pc".into(),
+            width: 8,
+            load: Vec::new(),
+            drive: Vec::new(),
+            bit: None,
+        });
+        let restored = store.select(|state| state.rows.items[0].setting.clone());
+        assert_eq!(restored, setting);
+
+        // a new commit is written through, and a second reload sees it
+        store.dispatch(Action::ResizeSidebar {
+            width: 420.0,
+            max: 640.0,
+        });
+        let reloaded = Persister::load(Box::new(storage));
+        assert_eq!(reloaded.restored_layout().sidebar_w, 420.0);
+        assert_eq!(reloaded.restored_rows().setting_for("top.pc"), setting);
     }
 }

@@ -11,9 +11,14 @@ native `#[test]`s): layout, status, wave rows and the viewport/cursors are store
 slices, `WaveShow` and the time bar are subscribers, and pointer gestures
 re-render nothing. The language-server problem count is a `nav.problems` slice
 (the bridge publishes it through the store, so only the top bar re-renders); the
-`Effect`/sources accounting below is unchanged by it. The dump handle and its
-derived time range moved into the store as the first increment of step 3. Still open: the `sources`, `design` and
-`focus` slices and the LSP/editor effects (`Effect` is still an empty enum), and
+`Effect`/sources accounting below is unchanged by it. Wave 3 added a
+`row_prefs` slice plus an optional persister (`state/persist.rs`): the layout and
+the per-signal display settings survive a reload through versioned
+`localStorage`; it persists committed slices only and does not add an `Effect`
+(memory of the UI is not I/O the reducer has to ask for). The dump handle and
+its derived time range moved into the store as the first increment of step 3.
+Still open: the `sources`, `design` and `focus` slices and the LSP/editor effects
+(`Effect` is still an empty enum), and
 the legacy component shells / `SharedDesign` / `goto_token` teardown in step 4.
 R1 (canvas renderer) and the self-hosted editor are in; R3 is deleting
 `data_struct::Module`/`ModuleValue` in the library, `file_load/`, `nav/` and
@@ -101,6 +106,7 @@ pub struct State {
     pub rows: Rows,            // the wave rows, their order and per-row settings
     pub view: Viewport,        // committed zoom/pan + cursors
     pub layout: Layout,        // sidebar width, editor ratio, drawer
+    pub row_prefs: RowPrefs,   // per-signal display settings remembered across sessions
     pub focus: Focus,          // signal selected in the wave view, instance in the sidebar
     pub nav: Navigation,       // pending goto, picker candidates, status line
     pub lsp: LspHandle,        // the client handle (see 2.4)
@@ -124,6 +130,12 @@ pub struct Row {
 
 Notes that matter:
 
+- **`layout` and `row_prefs` are the persisted slices.** `state/persist.rs`
+  writes them to `wave-insight.layout.v1` / `wave-insight.rows.v1` (schema 1,
+  version repeated in the payload); a corrupt, future-version or denied store
+  degrades to defaults, row settings are keyed by path and capped to the 2000
+  most recently changed signals, and only committed changes are written. The
+  rows themselves are session state and are never persisted.
 - **Row identity is `(path, bit)`.** `SignalItem.signal: Rc<Signal>` disappears with
   R3; the painter only needs `path` (to resolve `index` and to format) plus
   `width/is_bool/setting`. The `bit` half is what lets an expanded bus and its

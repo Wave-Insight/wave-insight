@@ -21,6 +21,12 @@
 //!   widths recomputed with each instance's parameter values;
 //! * nets and variables (`wire`, `tri`, `reg`, `logic`, `bit`, integer types,
 //!   `real`);
+//! * generate regions, constant generate-for loops (unrolled per iteration with
+//!   distinct paths like `g[2].u`), generate-if/else and generate-case, with
+//!   their declarations and instances in the hierarchy, driver/load tables and
+//!   source spans;
+//! * arrayed instances (`u[3:0]`), expanded to one instance per element with
+//!   Verdi-style `u[3]`, `u[2]`, ... paths;
 //! * instances, `assign`, `always` / `always_comb` / `always_ff` /
 //!   `always_latch` (plus best effort `initial` / `final`) for driver and load
 //!   extraction, and port connections as driver/load references;
@@ -40,8 +46,6 @@
 //! Everything below is skipped with a [`Diagnostic`] (severity
 //! `Warning`/`Error`) instead of aborting the file; it never panics:
 //!
-//! * `generate` regions, loops and conditionals (their contents are not
-//!   elaborated);
 //! * `typedef`, user defined types, structs/unions/enums, type parameters;
 //! * interfaces, interface ports, modports, classes and programs;
 //! * packages (package bodies are not analysed; `import` declarations are
@@ -49,15 +53,29 @@
 //!   inspected, calls inside expressions show up as loads);
 //! * `defparam`, gate/UDP instantiations, `nettype`, `interconnect`,
 //!   `alias`, clocking blocks, `specify` blocks, specparams, assertions,
-//!   `bind`, arrayed instances, dynamic arrays and unsized dimensions;
+//!   `bind`, dynamic arrays and unsized dimensions;
 //! * constant expressions outside a small integer subset (integer literals,
 //!   parameter references, `+ - * / % << >> **`, comparisons, parentheses,
 //!   `$clog2`).  Unsupported width expressions yield `width: None` and an
 //!   `unresolved-width` diagnostic.
 //!
 //! Hierarchical names are resolved relative to the current instance, then
-//! absolutely, then in the parent scope; names that resolve to parameters,
-//! instance names or functions are simply ignored by the driver/load tables.
+//! inside the enclosing generate blocks (innermost first), then absolutely,
+//! then in the parent scope; names that resolve to parameters, genvars,
+//! instance names or functions are ignored by the driver/load tables.
+//!
+//! Driver/load truthfulness: a name that resolves nowhere is reported as an
+//! `unresolved-name` warning (for simple names only, hierarchical member
+//! references such as `u.WIDTH` are filtered), an unresolved `.*` or implicit
+//! `.name` connection is reported with its port and instance, and a port
+//! connected to one plain signal of a different width is reported as
+//! `width-mismatch` - none of them is dropped silently anymore.
+//!
+//! Limitation: generate bounds/conditions are unrolled while parsing, with the
+//! module's *default* parameter values; a per-instance override that changes a
+//! generate shape is therefore not reflected.  Arrayed-instance bounds, in
+//! contrast, are evaluated per instance during elaboration and do honour
+//! overrides.
 //!
 //! # Example
 //!

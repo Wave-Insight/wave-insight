@@ -1242,3 +1242,58 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
   font-family: var(--font-mono);
   font-size: 11px;
 }
+/* ==========================================================================
+   keyboard focus and the accessible tab strip (a11y pass)
+   ========================================================================== */
+
+/* One focus ring for every interactive element. :focus-visible keeps it off
+   mouse clicks (no ring on a button the user just clicked) while making Tab
+   navigation visible. */
+:where(button, input, select, textarea, [tabindex], .sig-row, .tree-row):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* the virtualized wave row is absolutely positioned; an outward ring would be
+   clipped by the scroller, so it goes inside */
+.wave-name-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* the tab strip: .tab is a div now (a button may not contain the close button),
+   so it lays its two real buttons out itself */
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.tab-name,
+.tab-close {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tab-close {
+  opacity: 0.55;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.tab-close:hover,
+.tab-close:focus-visible {
+  opacity: 1;
+  color: var(--danger);
+}
+
+/* the two modals keep their look, but are announced as dialogs */
+.modal:focus-within { outline: none; }
+
+/* a disabled control must still be distinguishable when it is focused */
+:where(button, input):disabled { cursor: not-allowed; opacity: 0.5; }
