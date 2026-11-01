@@ -322,7 +322,7 @@ impl Component for WaveShow {
         changed
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
         // every slice the pane reads (rows, viewport, dump, time range) arrives
         // through its own subscription, so a prop change alone never re-renders.
         // The pane's *size*, however, changes when the source pane grows (the

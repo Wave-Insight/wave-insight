@@ -1,6 +1,6 @@
 # Supply-chain policy for cargo deny check (CI: .github/workflows/audit.yml).
 #
-# Verified locally with cargo-deny 0.20.2 against Cargo.lock on 2026-11-02:
+# Re-verified locally with cargo-deny 0.20.2 after the yew 0.21 migration (2026-11-02):
 #   cargo deny check advisories licenses bans sources
 # The advisory DB is the RustSec repository; the audit workflow refreshes it.
 
@@ -33,6 +33,15 @@ ignore = [
   # build-time proc-macro code; it is not shipped in the app or the wasm
   # bundle, and there is no maintained drop-in in the 0.15 gtk-rs line.
   { id = "RUSTSEC-2024-0370", reason = "unmaintained, build-time only (gtk3-macros via wry/tauri 2 on Linux); not shipped, no safe upgrade in the GTK3 line" },
+  # yew 0.21's dependency graph still reaches two unmaintained crates.
+  # anymap2 is pulled by yew itself (type maps; anymap3 is the replacement but
+  # that is yew's choice, not ours). bincode 1.3.3 is pulled by gloo-worker via
+  # yew's gloo/prokio dependency: our app is a csr build and never instantiates
+  # a worker or deserializes bincode, but the crate is linked into the graph.
+  # Both are unmaintained advisories, not vulnerabilities; drop them when yew
+  # drops gloo-worker/bincode upstream (tracked in docs/roadmap.md).
+  { id = "RUSTSEC-2026-0319", reason = "anymap2 unmaintained; transitive via yew 0.21 (yew owns the replacement decision), no vulnerability, not on our data path" },
+  { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 unmaintained; transitive via gloo-worker (yew/gloo), the app is csr-only and never deserializes bincode, no vulnerability" },
 ]
 
 [licenses]
@@ -68,14 +77,14 @@ allow = ["LGPL-2.1-or-later"]
 ignore = false
 
 [bans]
-# The tauri 2 / yew 0.19 tree legitimately carries duplicate major versions
+# The tauri 2 / yew 0.21 tree legitimately carries duplicate major versions
 # (syn 1/2/3, windows-sys, base64, toml_edit, ...). Report them, do not fail on
 # them: the dependency graph is the yew migration's job, not the audit gate's.
 multiple-versions = "warn"
 # The only wildcard hits are the internal path dependencies
 # (wave-insight-lib = { path = "..." } without a version key in back-end,
 # front-end and src-tauri). That is a manifest question owned by another
-# change: once those carry `version = "0.10.0"`, flip this to "deny".
+# change: once those carry a `version = "0.13.0"` key, flip this to "deny".
 wildcards = "warn"
 workspace-default-features = "allow"
 external-default-features = "allow"

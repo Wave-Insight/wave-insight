@@ -3141,6 +3141,59 @@ scenarios.multiDump = async (cdp) => {
   check('multiDump: the empty state is back after Ctrl+W', !!hintAfterKeys, hintAfterKeys);
   check('multiDump: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
 };
+
+// --- Wave 9: driver bit ranges in the editor hover --------------------------
+// Wave 8 made the per-bit driver ranges visible in the LSP hover
+// ("- driven here: q[3:0], q[7:4]"). This is the browser-level proof that the
+// editor receives it: bit_ranges.sv has two disjoint slices driving `q`, and
+// `y` is driven as a whole signal, so it must not show a driven-here line.
+// No dump is needed: without one the elaborator picks `bit_ranges` as the top
+// (asserted below, so a change in that pick is visible instead of silent).
+scenarios.bitRanges = async (cdp) => {
+  const hover = async (line, column) => {
+    const raw = await cdp.eval('window.__qa.provider("hover", "bit_ranges.sv", ' + line + ', ' + column + ')');
+    if (!raw || raw === 'null' || raw === 'no-hook' || String(raw).startsWith('no-model')) return { raw: raw };
+    try {
+      const parsed = JSON.parse(raw);
+      const contents = parsed && parsed.contents ? parsed.contents : [];
+      const value = contents.map((item) => item.value || '').join('\n');
+      return { value: value, range: parsed.range };
+    } catch (error) {
+      return { raw: String(raw) };
+    }
+  };
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'bit_ranges.sv')]);
+  await waitTabs(cdp, 1);
+  await sleep(3000);
+  const stats = await cdp.eval('window.__waveInsightLsp ? window.__waveInsightLsp.stats() : null');
+  const statsObj = stats ? JSON.parse(stats) : null;
+  note('lsp stats', statsObj);
+  check('bitRanges: the elaborator picks bit_ranges as the top without a dump',
+    !!statsObj && statsObj.top === 'bit_ranges', statsObj && statsObj.top);
+  // `q` is driven in two disjoint slices: the hover on its usage must list both
+  const usage = await hover(14, 12);
+  note('hover on q[3:0]', usage);
+  check('bitRanges: the hover on a driven slice names the elaborated signal',
+    !!usage.value && usage.value.includes('bit_ranges.q'), usage.value);
+  check('bitRanges: the hover lists the driver bit ranges',
+    !!usage.value && usage.value.includes('driven here') && usage.value.includes('[3:0]') && usage.value.includes('[7:4]'), usage.value);
+  check('bitRanges: the hover counts both drivers',
+    !!usage.value && /drivers: 2/.test(usage.value), usage.value);
+  // the declaration position reports the same ranges (the hover is position-based,
+  // not model-based)
+  const declaration = await hover(11, 25);
+  note('hover on the q declaration', declaration);
+  check('bitRanges: the declaration hover carries the same ranges',
+    !!declaration.value && declaration.value.includes('driven here') && declaration.value.includes('[3:0]') && declaration.value.includes('[7:4]'), declaration.value);
+  // `y` is driven as a whole signal: no bit-range line must appear
+  const whole = await hover(16, 12);
+  note('hover on y', whole);
+  check('bitRanges: a whole-signal hover has no driven-here line',
+    !!whole.value && whole.value.includes('bit_ranges.y') && !whole.value.includes('driven here'), whole.value);
+  check('bitRanges: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-bit-ranges.png');
+};
 (async () => {
   const wanted = process.argv.slice(2);
   const names = wanted.length ? wanted : Object.keys(scenarios);

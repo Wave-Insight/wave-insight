@@ -173,7 +173,7 @@ Notes that matter:
 ### 2.2 Slices and how a component subscribes
 
 Deterministic-ish subscription: a selector plus `PartialEq` plus a callback,
-the only approach that works in Yew 0.19 class components without hooks.
+the only approach that works in Yew's class components without hooks.
 
 ```rust
 // state/store.rs
@@ -775,7 +775,8 @@ The task-10 wording, made checkable, with the status at the time of writing:
 - **R3 overlap**: `state/` must stay UI-free, or the deletion pass will have to
   move it. Keep `Row`/`View` free of `wave_show` types (no `Signal`, no
   `Series`).
-- **Yew 0.19 `Callback<S>` ties a subscription to a component scope**: keeping
+- **Yew's `Callback<S>` ties a subscription to a component scope** (still true in
+  0.21): keeping
   the `Subscription` guard in the component struct and dropping it in `destroy`
   is mandatory; forgetting it leaks the callback (and the scope) for the page
   lifetime.

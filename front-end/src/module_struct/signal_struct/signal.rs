@@ -87,7 +87,7 @@ impl Component for SignalStruct {
         }
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
         // A pointer compare on the tree handle: the design/dump tree is an Rc
         // and only replaced when it really changed.
         if self.last_tree.as_ref() != Some(&ctx.props().tree)

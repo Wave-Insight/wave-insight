@@ -10,6 +10,48 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.13.0] - 2026-11-02
+
+### Added
+
+- Language-server completion (server-side). `initialize` now advertises a
+  `completionProvider` (`resolveProvider: false`, `triggerCharacters: ["."]`)
+  and `textDocument/completion` answers identifiers visible at the cursor: the
+  enclosing module is found from the per-file module list by a binary search over
+  line ranges (no elaboration), and the items are ports and signals
+  (`Variable`, generate-scoped ones included), parameters/localparams and genvars
+  (`Field`), instance names (`Reference`) and every module name of the database
+  (`Module`), each with a detail string and a `sortText` that keeps locals before
+  modules. Covered by the server's completion tests. The front end does not call
+  it yet: wiring the Monaco provider is a later wave, so the app has no completion
+  popup today.
+- Browser QA `bitRanges` scenario: the editor hover (through the LSP provider
+  hook) must show `driven here: q[3:0], q[7:4]` for a bit-sliced signal, and a
+  whole-signal hover must show no ranges. The matrix now has 52 scenarios /
+  414 assertions and is green with the R2 layout rules required.
+
+### Changed
+
+- Front end migrated to **Yew 0.21**: `yew = { version = "0.21", features = ["csr"] }`,
+  `start_app` replaced by `yew::Renderer::<App>::new().render()`, five components
+  gained `changed(old_props)`, and the crate-wide `unnecessary_operation` clippy
+  allow is gone (0.21's `html!` expansion is clean). No `html!`/`props`/
+  `Callback` fallout and no store or DOM changes; 179 front-end tests pass,
+  message batching behaves as before (the tier-A render-count and layout gates
+  stay green), and the CI-profile release wasm is 9,953,799 bytes = 9.49 MiB
+  (+3.6% against the 9.60 MB it was before the migration, still inside the 10 MiB
+  budget). A plain `trunk build --release` without
+  `CARGO_PROFILE_RELEASE_OPT_LEVEL=s` builds at the default `opt-level = 3` and
+  produces ~12.36 MiB - that is not a budget regression, and the docs keep
+  pointing at the CI profile command. `docs/migrations/yew-0.21.md` records the
+  result and the corrections to the plan.
+- Supply chain: the Yew 0.21 dependency graph reaches two unmaintained crates
+  (`anymap2` via yew, `bincode 1.3.3` via gloo-worker/gloo). `deny.toml` now
+  carries reasoned ignores for both (unmaintained advisories, no vulnerability,
+  not on the app's data path - the app is a csr build and never instantiates a
+  worker or deserializes bincode); `cargo deny check` is green again. Both go
+  away when yew drops them upstream.
+
 ## [0.12.0] - 2026-11-02
 
 ### Added

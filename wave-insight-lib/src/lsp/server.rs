@@ -9,12 +9,13 @@
 //!
 //! | request | answer |
 //! |---|---|
-//! | `initialize` | capabilities for the four features below, `positionEncoding: utf-16` |
+//! | `initialize` | capabilities for the features below, `positionEncoding: utf-16` |
 //! | `shutdown` / `exit` | lifecycle, as specified |
 //! | `textDocument/definition` | declaration of the signal under the cursor, or the definition of the module name |
 //! | `textDocument/references` | declaration (optional) + every driver/load span, or every instantiation of a module |
 //! | `textDocument/hover` | short markdown/plaintext card: declaration, module, width, direction, driver/load counts |
 //! | `textDocument/documentSymbol` | modules with parameter/port/signal/instance children |
+//! | `textDocument/completion` | identifiers visible at the cursor: ports, signals (generate-scoped too), parameters/localparams, genvars, instances and every module name (locals sort before modules) |
 //!
 //! Client notifications: `initialized`, `textDocument/didOpen`, `didChange`,
 //! `didSave`, `didClose`.  After every document notification the server queues a
@@ -23,7 +24,7 @@
 //! diagnostics (unresolved names, width mismatches, non-constant generate
 //! bounds); `set_top` republishes every open document because a different root
 //! can change those warnings.  The queue is drained with
-//! [`LspServer::take_notifications`].  Completion is still out of scope.
+//! [`LspServer::take_notifications`].
 //!
 //! # Which signal does a position mean?
 //!
@@ -276,6 +277,7 @@ impl LspServer {
             "textDocument/references" => self.references(params),
             "textDocument/hover" => self.hover(params),
             "textDocument/documentSymbol" => self.document_symbol(params),
+            "textDocument/completion" => self.completion(params),
             _ => Err(RpcError::method_not_found(method)),
         }
     }
@@ -319,6 +321,16 @@ impl LspServer {
                     ("referencesProvider", Json::Bool(true)),
                     ("hoverProvider", Json::Bool(true)),
                     ("documentSymbolProvider", Json::Bool(true)),
+                    (
+                        // Signal/instance/module completion; "." (hierarchical
+                        // names) triggers client-side, the server returns its
+                        // whole visible set and lets the client filter.
+                        "completionProvider",
+                        Json::object([
+                            ("resolveProvider", Json::Bool(false)),
+                            ("triggerCharacters", Json::Array(vec![Json::string(".")])),
+                        ]),
+                    ),
                 ]),
             ),
             (
@@ -673,6 +685,100 @@ impl LspServer {
                 .map(|span| self.location_json(span))
                 .collect::<Vec<Json>>(),
         ))
+    }
+
+    /// `textDocument/completion`: identifiers visible at the cursor.
+    ///
+    /// The document and position resolve exactly like hover/definition; the
+    /// enclosing module is found from the per-file module list (the same index
+    /// documentSymbol uses) by comparing line ranges, so no elaboration is
+    /// needed and a big design is O(log n + k) in the number of modules of the
+    /// file plus the items of the enclosing module.  The item set is: ports,
+    /// signals (including generate-scoped ones), module parameters/localparams,
+    /// genvars, instance names and every module name of the database (for
+    /// instantiation).  Locals sort before modules.
+    fn completion(&mut self, params: &Json) -> Result<Json, RpcError> {
+        let Some(query) = self.resolve_position(params)? else {
+            return Ok(Json::Array(Vec::new()));
+        };
+        let modules = self.db.modules_in_file(&query.path);
+        let Some(module) = module_at_position(&modules, query.line) else {
+            // Before the first module (file header comment etc.): nothing is
+            // visible yet, an empty list (not an error) is the right answer.
+            return Ok(Json::Array(Vec::new()));
+        };
+
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut items = Vec::new();
+        let mut push = |label: &str, kind: i64, detail: String, group: &str| {
+            if !seen.insert(label.to_owned()) {
+                return;
+            }
+            items.push(completion_item(
+                label,
+                kind,
+                detail,
+                &format!("{group}{label}"),
+            ));
+        };
+
+        // Ports: Variable, detail direction/type/width.
+        for port in &module.ports {
+            let detail = format!(
+                "{} {}",
+                port.direction.as_str(),
+                type_detail(port.kind.as_str(), &port.packed, port.width)
+            );
+            push(&port.name, COMPLETION_VARIABLE, detail, "0");
+        }
+        // Signals, including declarations inside generate blocks (their scope
+        // is part of the detail so "g[0].x" stays distinguishable).
+        for signal in &module.signals {
+            let mut detail = type_detail(signal.kind.as_str(), &signal.packed, signal.width);
+            if !signal.scope.is_empty() {
+                detail.push_str(&format!(" in {}", signal.scope.join(".")));
+            }
+            push(&signal.name, COMPLETION_VARIABLE, detail, "0");
+        }
+        // Parameters and localparams: Field.
+        for parameter in &module.parameters {
+            let keyword = if parameter.is_local {
+                "localparam"
+            } else {
+                "parameter"
+            };
+            let detail = match &parameter.default {
+                Some(default) => format!("{keyword} = {default}"),
+                None => keyword.to_owned(),
+            };
+            push(&parameter.name, COMPLETION_FIELD, detail, "0");
+        }
+        // Genvars (declarations and generate-loop variables): Field.
+        for genvar in &module.genvars {
+            push(genvar, COMPLETION_FIELD, "genvar".to_owned(), "0");
+        }
+        // Instance names: Reference, detail names the instantiated module.
+        for instance in &module.instances {
+            let mut detail = format!("instance of {}", instance.module);
+            if !instance.array.is_empty() {
+                detail.push_str(" (arrayed)");
+            }
+            if !instance.scope.is_empty() {
+                detail.push_str(&format!(" in {}", instance.scope.join(".")));
+            }
+            push(&instance.name, COMPLETION_REFERENCE, detail, "0");
+        }
+        // Every module of the database: Module kind, sorted after the locals.
+        for definition in self.db.modules() {
+            push(
+                &definition.name,
+                COMPLETION_MODULE,
+                "module".to_owned(),
+                "1",
+            );
+        }
+
+        Ok(Json::Array(items))
     }
 
     fn hover(&mut self, params: &Json) -> Result<Json, RpcError> {
@@ -1062,6 +1168,56 @@ fn normalise_spans(mut spans: Vec<Span>) -> Vec<Span> {
             && left.start_col == right.start_col
     });
     spans
+}
+
+/// LSP `CompletionItemKind` numbers used by the completion handler.
+const COMPLETION_FIELD: i64 = 5;
+const COMPLETION_VARIABLE: i64 = 6;
+const COMPLETION_MODULE: i64 = 9;
+const COMPLETION_REFERENCE: i64 = 18;
+
+/// One completion item: label, kind, a human detail and the sort group
+/// (locals "0", module names "1" so globals come last).
+fn completion_item(label: &str, kind: i64, detail: String, sort_text: &str) -> Json {
+    Json::object([
+        ("label", Json::string(label)),
+        ("kind", Json::Integer(kind)),
+        ("detail", Json::string(detail)),
+        ("sortText", Json::string(sort_text)),
+    ])
+}
+
+/// The module whose source range contains `line`.
+///
+/// [`ModuleDef::span`] only covers the module declaration line, so the end of a
+/// module is the start of the next module in the same file (files are parsed in
+/// order); the last module runs to the end of the file.  Modules cannot nest in
+/// the SystemVerilog subset the front end supports, so this is the innermost
+/// module as well.
+fn module_at_position<'a>(modules: &[&'a ModuleDef], line: u32) -> Option<&'a ModuleDef> {
+    // The per-file list is in declaration order (ascending start lines), so a
+    // binary search finds the last module that starts at or before the cursor.
+    let index = modules.partition_point(|module| module.span.start_line <= line);
+    let module = *modules.get(index.checked_sub(1)?)?;
+    let end = modules
+        .get(index)
+        .map(|next| next.span.start_line)
+        .unwrap_or(u32::MAX);
+    (line < end).then_some(module)
+}
+
+/// Type text for a completion detail: the packed dimensions when declared,
+/// otherwise the width (`logic [7:0]`, `input logic`, `reg 8 bits`).
+fn type_detail(kind: &str, dimensions: &[RangeDim], width: Option<u32>) -> String {
+    let dimensions = dimensions_text(dimensions);
+    if !dimensions.is_empty() {
+        format!("{kind} {dimensions}")
+    } else {
+        match width {
+            Some(1) | None => kind.to_owned(),
+            Some(width) => format!("{kind} {width} bits"),
+        }
+    }
 }
 
 fn dimensions_text(dimensions: &[RangeDim]) -> String {
@@ -2059,6 +2215,186 @@ mod tests {
         );
     }
 
+    // -- completion --------------------------------------------------------
+
+    fn completion_labels(reply: &Json) -> Vec<String> {
+        reply
+            .as_array()
+            .unwrap_or_else(|| panic!("completion result is an array: {reply:?}"))
+            .iter()
+            .filter_map(|item| item.get_str("label").map(str::to_owned))
+            .collect()
+    }
+
+    fn completion_item_named<'a>(reply: &'a Json, label: &str) -> &'a Json {
+        reply
+            .as_array()
+            .expect("completion array")
+            .iter()
+            .find(|item| item.get_str("label") == Some(label))
+            .unwrap_or_else(|| panic!("no completion item {label}: {reply:?}"))
+    }
+
+    #[test]
+    fn completion_inside_a_module_lists_ports_signals_instances_and_modules() {
+        let (mut server, top_uri, _cpu_uri) = fixture_server();
+        let top = fixture_text("top.sv");
+        let position = position_of(&top, "pc;");
+        let reply = request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&top_uri, position),
+        );
+        let labels = completion_labels(&reply);
+        for expected in [
+            "clk", "reset", "instr", "result", // ports
+            "pc", "data_out", "pc16", // signals
+            "u_cpu", "u_cpu16", // instances
+            "top", "cpu", // module names
+        ] {
+            assert!(
+                labels.iter().any(|label| label == expected),
+                "missing {expected} in {labels:?}"
+            );
+        }
+
+        // Kinds and details are useful enough for the editor to group them.
+        let pc = completion_item_named(&reply, "pc");
+        assert_eq!(pc.get_i64("kind"), Some(6), "signal is a Variable: {pc:?}");
+        assert_eq!(pc.get_str("detail"), Some("logic [7:0]"));
+        assert_eq!(pc.get_str("sortText"), Some("0pc"));
+        let clk = completion_item_named(&reply, "clk");
+        assert_eq!(clk.get_i64("kind"), Some(6));
+        assert_eq!(clk.get_str("detail"), Some("input logic"));
+        let instance = completion_item_named(&reply, "u_cpu");
+        assert_eq!(
+            instance.get_i64("kind"),
+            Some(18),
+            "instance is a Reference"
+        );
+        assert_eq!(instance.get_str("detail"), Some("instance of cpu"));
+        let module = completion_item_named(&reply, "cpu");
+        assert_eq!(module.get_i64("kind"), Some(9), "module is kind Module");
+        assert_eq!(module.get_str("sortText"), Some("1cpu"));
+    }
+
+    #[test]
+    fn completion_on_the_cpu_fixture_lists_parameters_and_ports() {
+        let (mut server, _top_uri, cpu_uri) = fixture_server();
+        let cpu = fixture_text("cpu.sv");
+        let position = position_of(&cpu, "assign active");
+        let reply = request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&cpu_uri, position),
+        );
+        let labels = completion_labels(&reply);
+        for expected in [
+            "WIDTH", "DEPTH", "STEP", "clk", "reset", "instr", "next_pc", "pc_reg", "active",
+        ] {
+            assert!(
+                labels.iter().any(|label| label == expected),
+                "missing {expected} in {labels:?}"
+            );
+        }
+        assert_eq!(
+            completion_item_named(&reply, "WIDTH").get_str("detail"),
+            Some("parameter = 8")
+        );
+        assert_eq!(
+            completion_item_named(&reply, "STEP").get_str("detail"),
+            Some("localparam = 1")
+        );
+        assert_eq!(
+            completion_item_named(&reply, "WIDTH").get_i64("kind"),
+            Some(5),
+            "parameter is a Field"
+        );
+    }
+
+    #[test]
+    fn completion_on_generate_and_arrayed_fixtures_does_not_crash() {
+        let mut server = LspServer::new();
+        initialize(&mut server);
+        let generate_uri = open_fixture(&mut server, "generate.sv");
+        let generate = fixture_text("generate.sv");
+        let position = position_of(&generate, "assign done");
+        let reply = request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&generate_uri, position),
+        );
+        let labels = completion_labels(&reply);
+        for expected in ["done", "busy", "flag", "u_leaf", "i", "gen_top"] {
+            assert!(
+                labels.iter().any(|label| label == expected),
+                "missing {expected} in {labels:?}"
+            );
+        }
+        // Generate-scoped signals name their block in the detail.
+        let done = completion_item_named(&reply, "done");
+        assert!(
+            done.get_str("detail")
+                .unwrap_or_default()
+                .contains("in wide"),
+            "{done:?}"
+        );
+
+        let arrayed_uri = open_fixture(&mut server, "arrayed.sv");
+        let arrayed = fixture_text("arrayed.sv");
+        let position = position_of(&arrayed, "arr_leaf u[1:0]");
+        let reply = request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&arrayed_uri, position),
+        );
+        let labels = completion_labels(&reply);
+        for expected in ["u", "v", "arr_leaf"] {
+            assert!(
+                labels.iter().any(|label| label == expected),
+                "missing {expected} in {labels:?}"
+            );
+        }
+        let arrayed_instance = completion_item_named(&reply, "u");
+        assert!(
+            arrayed_instance
+                .get_str("detail")
+                .unwrap_or_default()
+                .contains("arrayed"),
+            "{arrayed_instance:?}"
+        );
+    }
+
+    #[test]
+    fn completion_outside_a_module_or_for_an_unknown_document_is_empty() {
+        let mut server = LspServer::new();
+        initialize(&mut server);
+        let top_uri = open_fixture(&mut server, "top.sv");
+        // Line 1 is the file's leading comment: before the first module.
+        let reply = request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&top_uri, Position::new(0, 0)),
+        );
+        assert_eq!(
+            reply.as_array().map(<[Json]>::len),
+            Some(0),
+            "no module yet: {reply:?}"
+        );
+
+        let unknown = uri::to_uri(&fixture("legacy.v"));
+        let reply = request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&unknown, Position::new(0, 0)),
+        );
+        assert_eq!(
+            reply.as_array().map(<[Json]>::len),
+            Some(0),
+            "unknown document: {reply:?}"
+        );
+    }
+
     // -- protocol and lifecycle --------------------------------------------
 
     #[test]
@@ -2082,6 +2418,11 @@ mod tests {
         assert_eq!(capabilities.get_bool("referencesProvider"), Some(true));
         assert_eq!(capabilities.get_bool("hoverProvider"), Some(true));
         assert_eq!(capabilities.get_bool("documentSymbolProvider"), Some(true));
+        let completion = capabilities
+            .get("completionProvider")
+            .expect("completion capability");
+        assert_eq!(completion.get_bool("resolveProvider"), Some(false));
+        assert!(completion.get("triggerCharacters").is_some());
         assert_eq!(
             initialize_result
                 .get("serverInfo")
@@ -2098,7 +2439,7 @@ mod tests {
 
         let error = request_error(
             &mut server,
-            "textDocument/completion",
+            "textDocument/formatting",
             document_params("file:///tmp/x.sv"),
         );
         assert_eq!(

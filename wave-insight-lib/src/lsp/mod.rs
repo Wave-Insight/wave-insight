@@ -18,16 +18,19 @@
 //! `initialize`, `initialized`, `shutdown`, `exit`,
 //! `textDocument/didOpen|didChange|didSave|didClose`,
 //! `textDocument/definition`, `textDocument/references`,
-//! `textDocument/hover`, `textDocument/documentSymbol`.
+//! `textDocument/hover`, `textDocument/documentSymbol`,
+//! `textDocument/completion`.
 //!
 //! The server pushes `textDocument/publishDiagnostics` notifications for the
 //! edited document, merging [`DesignDb::diagnostics`] with the elaboration
 //! diagnostics from [`ElaboratedDesign::diagnostics`] (unresolved names, width
 //! mismatches, generate warnings) and mapping both to LSP ranges.  They are
 //! queued and drained with [`LspServer::take_notifications`] so
-//! [`LspServer::handle_message`] keeps returning replies only.  Completion is
-//! still not implemented; unknown requests are answered with JSON-RPC `-32601`,
-//! unknown notifications are ignored.
+//! [`LspServer::handle_message`] keeps returning replies only.  Completion
+//! answers the identifiers visible in the enclosing module (ports, signals,
+//! parameters, genvars, instances and module names) from the indexed design
+//! without elaborating it.  Unknown requests are answered with JSON-RPC
+//! `-32601`, unknown notifications are ignored.
 //!
 //! # Coordinates
 //!

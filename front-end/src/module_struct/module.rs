@@ -116,7 +116,7 @@ impl Component for ModuleStruct {
         this
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
         // Props only carry the tree (and a callback); a parent re-render with
         // the same tree must not re-render 20k rows.
         if self.tree.as_ref() != ctx.props().tree.as_ref() {

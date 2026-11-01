@@ -32,6 +32,11 @@ need the wasm target:
 rustup target add wasm32-unknown-unknown
 ```
 
+The front end is **Yew 0.21** with the `csr` renderer (`features = ["csr"]`,
+`yew::Renderer::<App>::new().render()`); the 0.19 -> 0.21 migration and its
+result (5 `changed()` impls, the dropped clippy workaround, 179 front-end tests)
+are recorded in [`docs/migrations/yew-0.21.md`](docs/migrations/yew-0.21.md).
+
 ### test and lint
 
 ```bash
@@ -109,14 +114,15 @@ a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
-and asserts the user-visible behaviour (the current matrix has **51 scenarios /
-407 assertions**; `--list` prints them). The full matrix is green with the R2
-layout rules required. The newest scenarios cover the generated/arrayed design tree in the
-sidebar, elaboration diagnostics reaching the editor and the top-bar chip, the
-TXT export matching the CSV for the same row, multi-dump tabs, and the
-`corruption` regression: deterministic truncated-FST / flipped-FST-length /
-header-truncated-VCD fixtures must produce an actionable error and recover to a
-valid dump instead of crashing the page. Build the front end first, then run:
+and asserts the user-visible behaviour (the current matrix has **52 scenarios /
+414 assertions**; `--list` prints them). The full matrix is green with the R2
+layout rules required. The newest scenarios cover the generated/arrayed design
+tree in the sidebar, elaboration diagnostics reaching the editor and the top-bar
+chip, the TXT export matching the CSV for the same row, multi-dump tabs, the
+driver/load bit ranges in the editor hover (`bitRanges`), and the `corruption`
+regression: deterministic truncated-FST / flipped-FST-length / header-truncated-
+VCD fixtures must produce an actionable error and recover to a valid dump
+instead of crashing the page. Build the front end first, then run:
 
 ```bash
 node qa/run.mjs                 # full matrix against front-end/dist
@@ -144,12 +150,16 @@ cd front-end
 CARGO_PROFILE_RELEASE_OPT_LEVEL=s trunk serve --release
 ```
 
-The release wasm is about 9.6 MB (about 2 MB over the wire, because GitHub Pages
-serves the assets gzip-compressed). CI pins trunk 0.22.1 and fails the build if
-the release wasm grows past **10 MiB** (`WASM_SIZE_BUDGET` in the Rust
-workflow), so a size blow-up shows up before it ships. The site itself is
-deployed from the same workflow with `trunk build --release --public-url
-/wave-insight/` so every asset resolves under the Pages sub-path.
+The release wasm with the CI profile is **9,953,799 bytes = 9.49 MiB**
+(about 2 MB over the wire, because GitHub Pages serves the assets
+gzip-compressed). CI pins trunk 0.22.1 and fails the build if the release wasm
+grows past **10 MiB** (`WASM_SIZE_BUDGET` in the Rust workflow), so a size
+blow-up shows up before it ships. Keep the `CARGO_PROFILE_RELEASE_OPT_LEVEL=s`
+part of the command: a plain `trunk build --release` uses the default
+`opt-level = 3` and produces a ~12.36 MiB bundle that *looks* like a budget
+regression. The site itself is deployed from the same workflow with
+`trunk build --release --public-url /wave-insight/` so every asset resolves under
+the Pages sub-path.
 
 ### tauri version
 
@@ -181,14 +191,14 @@ repository's environment the desktop build is **compile-verified only**
 the IPC commands, drag-and-drop and `cargo tauri build` bundles are validated by
 the tag workflow on the real runners, not by a desktop runtime test here.
 
-### planned dependency migrations
+### dependency migrations
 
-The Tauri 1.x -> 2.x migration landed in Wave 7; its plan and the
-'phase 1 result'/'phase 2 result' sections live in
-[`docs/migrations/tauri-2.md`](docs/migrations/tauri-2.md). The remaining plan is
-[`docs/migrations/yew-0.21.md`](docs/migrations/yew-0.21.md) (yew 0.19 -> 0.21:
-the 12 class components, 74 `html!` sites and the breaking-change list), a later
-wave in [`docs/roadmap.md`](docs/roadmap.md).
+Both planned migrations are done and their plans record the results: Tauri
+1.x -> 2.x landed in Wave 7
+([`docs/migrations/tauri-2.md`](docs/migrations/tauri-2.md), phase 1/phase 2
+results) and Yew 0.19 -> 0.21 landed in Wave 9
+([`docs/migrations/yew-0.21.md`](docs/migrations/yew-0.21.md), `Result (Wave 9)`).
+Each plan keeps the breaker list, the steps and the verification that was run.
 
 ## Usage
 
@@ -308,9 +318,13 @@ closer is a real button, and the wave list and candidate picker expose
   `width-mismatch`, non-constant generate bounds) merged with the parser/front-end
   ones per document, deduplicated and republished when the top module changes. A
   skipped construct may still be reported as a warning even though the source is
-  valid SystemVerilog. One documented gap: only the picked top module is
-  elaborated, so an elaboration diagnostic that depends on another top (for
-  example the width-mismatch fixture) is not surfaced in the editor yet.
+  valid SystemVerilog. Completion is implemented **server-side**
+  (`textDocument/completion` plus an advertised `completionProvider`); the
+  browser editor does not call it yet - wiring the Monaco provider is a later
+  wave, so there is no completion popup in the app today. One documented gap:
+  only the picked top module is elaborated, so an elaboration diagnostic that
+  depends on another top (for example the width-mismatch fixture) is not
+  surfaced in the editor yet.
 * **Corrupt dumps are recovered on a best-effort basis.** The readers validate
   input and turn bad files into an error message instead of panicking: FST files
   get a structural pre-parse check (block lengths against EOF, plus gzip /
@@ -359,7 +373,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 51 scenarios / 407 assertions, own fixtures) with an advisory CI smoke job
+- [x] browser QA suite moved into the repository (`qa/`, 52 scenarios / 414 assertions, own fixtures) with an advisory CI smoke job
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
@@ -375,16 +389,19 @@ Done in the next release (unreleased at the time of writing):
 - [x] fast dump open: the VCD time range is found from the header plus a bounded tail scan instead of the whole body (~20x cheaper on the 8.3 MB benchmark)
 - [x] migration plans for yew 0.21 and Tauri 2 added under `docs/migrations/` (breaker lists, steps, verification)
 - [x] LSP/design position queries indexed: `textDocument/definition` answers in ~12 us on the synthetic 100-module design (byte-identical to the old scan, differential-tested) with a new `bench lsp` suite
-- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs, and corruption recovery (truncated/flipped FST, header-truncated VCD) - 51 scenarios / 407 assertions
+- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs, driver/load bit ranges in the editor hover, and corruption recovery (truncated/flipped FST, header-truncated VCD) - 52 scenarios / 414 assertions
 - [x] multi-dump + split-view design note under `docs/design/multi-dump.md` (planned Wave 8)
 - [x] Tauri 2 migration: v2 config + capabilities, `__TAURI__.core` IPC and `onDragDropEvent` drag-and-drop, Linux webkit2gtk-4.1 prerequisites, CI on Ubuntu 24.04 (compile-verified; runtime and bundles are validated by the tag workflow)
 - [x] waveform hardening: a corrupt/truncated FST is rejected by a structural pre-parse validator instead of aborting the viewer; aliased signals stream under the requested variable index; deterministic VCD/FST fuzz and query-tier differential tests cover the entry points
 - [x] R2 step 3b: `State.design` (DesignDb + elaboration cache + top), the derived module tree, `focus.instance` + module-tree selection, and editor edits dispatched as `SourceReloaded` (re-elaborate + LSP change)
 - [x] open several dumps at once: a dump tab strip (one tab per open dump; closing the last one returns to the empty state), per-tab rows/viewport/focus/session restore, dedupe by file identity, close-activates-a-neighbour, a 1.5 GiB open-dumps budget and the status line's "N dumps open, M MB"
 - [x] driver/load bit ranges recorded from selects and shown in the source hover ("driven here: q[3:0], q[7:4]"; limits in Known limitations)
+- [x] Yew 0.21 migration: `features = ["csr"]`, `yew::Renderer` instead of `start_app`, the 5 `changed(old_props)` impls, the old crate-wide clippy allow removed, 179 front-end tests green; the CI-profile wasm is 9.49 MiB (inside the 10 MiB budget)
+- [x] LSP completion server-side: `textDocument/completion` answers ports/signals, parameters/localparams/genvars, instances and module names with details/sortText (no elaboration needed); the Monaco wiring is still to come
 
 Still open:
 
+- [ ] wire the LSP completion into the Monaco editor (the server side is ready)
 - [ ] side-by-side split view of two dumps (`docs/design/multi-dump.md`, step 3)
 - [ ] inline python for writing your own process on signal values
 - [ ] signal bundles (AXI, Avalon and so on)

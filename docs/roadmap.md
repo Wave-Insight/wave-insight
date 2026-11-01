@@ -8,20 +8,19 @@ does not duplicate them.
 
 ## Where we are
 
-The last tagged release is **0.11.0** (2026-11-02): one-canvas waveform
+The last tagged release is **0.12.0** (2026-11-02): one-canvas waveform
 renderer, R2 state store, Verdi-style navigation, CI gate, fixed-point display,
 search options, CSV/TXT/MAT export, chunked large-dump loading, LSP diagnostics
 in the editor, the browser QA suite in `qa/`, generate/arrayed elaboration,
 sidebar virtualization, persistence, the accessibility/keyboard pass, the Verdi
 find-value flow, indexed LSP/design queries, the R3 legacy deletion, the Tauri 2
-desktop shell and the waveform hardening (FST validator, fuzz tests). **Wave 8**
-is landing in this wave on `main` (commit follows 0.11.0): multi-dump (several
-dumps open as tabs with per-tab rows/viewport/focus/session restore, a tab strip,
-dedupe/close semantics and a 1.5 GiB open-dumps budget), driver/load bit ranges
-in the source hover, and browser-level corruption coverage. The side-by-side
-split view is the remaining part of the multi-dump note. The `Unreleased`
+desktop shell, the waveform hardening and multi-dump tabs. **Wave 9** is landing
+in this wave on `main` (commit follows 0.12.0): the Yew 0.21 migration (csr
+renderer, 179 front-end tests, the old clippy workaround removed), language-server
+completion (server side; the Monaco wiring is still to come), and the browser
+`bitRanges` QA scenario (52 scenarios / 414 assertions). The `Unreleased`
 section of [`CHANGELOG.md`](../CHANGELOG.md) is the authoritative list of what is
-on `main` beyond 0.11.0.
+on `main` beyond 0.12.0.
 
 ## How a wave works
 
@@ -51,18 +50,20 @@ cut when the accumulated waves are coherent for users; no wave promises a date.
 | **5** | released in 0.9.0 | R2 step 3 (sources/focus/goto/jump_token slices + real LSP/editor `Effect`s); fast VCD open; Verdi find-value in the ruler box; semver-compatible dependency refresh + CI deploy job split out |
 | **6** | released in 0.10.0 | R3 legacy data-model deletion; R2 step 3b partial (picker/dialog slices); indexed design/LSP span structure + `bench lsp` suite; three QA scenarios -> 49 scenarios / 356 assertions; multi-dump/split-view design note |
 | **7** | released in 0.11.0 | Tauri 2 migration (v2 config/capabilities/IPC, CI on Ubuntu 24.04 + webkit2gtk-4.1, deny.toml cleanup); R2 step 3b finished; waveform hardening (structural FST validator, hierarchy depth bound, aliased-signal streaming, deterministic fuzz tests) |
-| **8** | shipped in this wave | multi-dump steps 1-2: per-tab store model (`State.dumps` + scratch slices for sources-only sessions), dump tab strip (one tab per open dump; closing the last one returns to the empty state and re-opening restores its rows), dedupe/close-a-neighbour, 1.5 GiB open-dumps budget, status line tab/size hint; driver/load bit ranges + source-hover lines; browser corruption coverage (truncated/byte-flipped FST, header-truncated VCD) |
-| **9** | chosen for the next wave, not started | side-by-side split view of two dumps (step 3 of [`docs/design/multi-dump.md`](design/multi-dump.md)); yew 0.21 migration ([`docs/migrations/yew-0.21.md`](migrations/yew-0.21.md)) |
-| **10** | later candidates | signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
+| **8** | released in 0.12.0 | multi-dump steps 1-2 (per-tab `State.dumps` + scratch slices, dump tab strip, dedupe/close semantics, per-tab session restore, 1.5 GiB budget, status hint); driver/load bit ranges + source-hover lines; browser corruption coverage (truncated/byte-flipped FST, header-truncated VCD) |
+| **9** | shipped in this wave | Yew 0.21 migration (csr renderer, `changed(old_props)`, old clippy allow removed, 179 front-end tests, 9.49 MiB wasm inside the 10 MiB budget); language-server completion (server side: ports/signals, params, genvars, instances, modules); browser `bitRanges` QA scenario -> 52 scenarios / 414 assertions |
+| **10** | chosen for the next wave, not started | side-by-side split view of two dumps (step 3 of [`docs/design/multi-dump.md`](design/multi-dump.md)); wiring the LSP completion into the Monaco editor |
+| **11** | later candidates | signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
 
 Statuses are honest: *released* means a tagged release, *shipped in this wave*
 means committed on `main` and waiting for the next release, *chosen* means the
 next wave's agreed top items (not started), and *later candidates* are unordered.
 Items can move between waves when the tree says a wave should be smaller.
 
-Wave 9's top items, in order: the side-by-side split view on top of the
-per-dump model that just landed, then the yew 0.21 migration. The multi-dump note
-records what shipped in Wave 8 and what step 3 still has to do.
+Wave 10's top items, in order: the side-by-side split view on top of the
+per-dump model, then wiring the (already working) server-side completion into the
+Monaco editor. The multi-dump note records what shipped and what step 3 still has
+to do.
 
 ## Invariants every wave keeps
 

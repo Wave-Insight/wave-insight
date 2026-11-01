@@ -10,7 +10,9 @@ authors.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-yew = "0.19"
+# 0.21's default feature set is empty: this is a client-side app, so `csr`
+# (the renderer + the DOM backend) has to be asked for explicitly.
+yew = { version = "0.21", features = ["csr"] }
 wave-insight-lib = { path = "../wave-insight-lib" }
 
 serde = { version = "1.0", features = ["derive"] }

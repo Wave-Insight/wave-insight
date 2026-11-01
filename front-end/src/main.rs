@@ -1,9 +1,3 @@
-//Yew 0.19 expands `html!` into code that trips `unnecessary_operation` on every
-//prop (`value={expr}` becomes a bare `expr;` statement in the expansion). The
-//lint cannot tell that apart from a real mistake, so it is allowed for the whole
-//crate rather than sprinkled over ~68 macro sites. Everything else stays on.
-#![allow(clippy::unnecessary_operation)]
-
 use app::App;
 
 mod app;
@@ -17,5 +11,8 @@ mod top_bar;
 mod wave_show;
 
 fn main() {
-    yew::start_app::<App>();
+    // Yew 0.20 removed `start_app` in favour of an explicit renderer; `render()`
+    // mounts to the document body, exactly like `start_app` did, and keeps the
+    // panic hook. `csr` (Cargo.toml) is what makes the renderer available.
+    yew::Renderer::<App>::new().render();
 }

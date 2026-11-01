@@ -216,7 +216,7 @@ impl Component for Time {
         }
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
         if (self.width - ctx.props().width).abs() > 0.5 {
             self.width = ctx.props().width;
             self.rebuild();
