@@ -4,18 +4,13 @@ use serde::{Deserialize, Serialize};
 ///
 /// This is a display preference, not part of the waveform backend: the value is
 /// the same, only its text changes.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, Default)]
 pub enum ShowType {
+    #[default]
     Hex,
     UInt,
     SInt,
     Oct,
     Bin,
     Ascii,
-}
-
-impl Default for ShowType {
-    fn default() -> Self {
-        ShowType::Hex
-    }
 }

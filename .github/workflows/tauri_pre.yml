@@ -1,13 +1,19 @@
-name: Tauri
+name: Tauri (manual build)
 
 #publishing happens on a `v*` tag in tauri.yml, this one is for building the
-#desktop app on demand. It used to run on every push to main on three runners,
-#which is a lot of CI time for a job nobody reads.
+#desktop app on demand (artifacts only, it never creates a release). It used to
+#run on every push to main on three runners, which is a lot of CI time for a
+#job nobody reads.
 on:
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  #same size profile as the web build, see tauri.yml
+  CARGO_PROFILE_RELEASE_OPT_LEVEL: s
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -16,8 +22,10 @@ jobs:
       matrix:
         platform: [macos-latest, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
 
     steps:
+    #ubuntu-22.04 is pinned for webkit2gtk-4.0, see tauri.yml
     - name: Install dependencies (ubuntu only)
       if: startsWith(matrix.platform, 'ubuntu')
       run: |
@@ -35,14 +43,18 @@ jobs:
     - name: Install trunk
       uses: taiki-e/install-action@v2
       with:
-        tool: trunk
+        tool: trunk@0.22.1
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: tauri-pre
 
     - name: Build the app
       run: |
         cd front-end
         trunk build --no-default-features --features tauri --release
         cd ..
-        cargo build --release -p app
+        cargo build --release -p app --locked
 
     - name: Upload the binary
       uses: actions/upload-artifact@v4

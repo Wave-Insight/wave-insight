@@ -10,6 +10,16 @@ members = [
 #crates here are edition 2021, keep feature unification the way it is meant to be
 resolver = "2"
 
+#one source of truth for the metadata every member inherits with `field.workspace = true`
+#(the version used to be repeated in five places: four manifests + tauri.conf.json)
+[workspace.package]
+version = "0.5.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Wave-Insight/wave-insight"
+authors = ["Wave Insight contributors"]
+description = "A wave viewer and debugger for Verilog/SystemVerilog dumps (VCD/FST/GHW)"
+
 #profiles are only read from the workspace root, per-crate `[profile.release]`
 #is silently ignored by cargo
 [profile.release]

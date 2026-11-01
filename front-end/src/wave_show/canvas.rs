@@ -12,7 +12,7 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 use wave_insight_lib::data_struct::ShowType;
 use wave_insight_lib::waveform::{BitValue, WaveValue};
 
-use crate::wave_show::geometry::{ROW_HEIGHT, Time, View};
+use crate::wave_show::geometry::{Time, View, ROW_HEIGHT};
 use crate::wave_show::util::signal_things::{RowKind, SignalItem};
 use crate::wave_show::Settings;
 
@@ -263,7 +263,6 @@ fn draw_bool_row(
     context.set_line_width(WAVE_LINE);
     context.set_line_join("round");
 
-    let low = top + ROW_HEIGHT - ROW_PAD;
     let mut level = match item.values.value_at(start) {
         Some(value) => bool_level(value, top),
         None => f64::NAN,
@@ -292,7 +291,6 @@ fn draw_bool_row(
         context.line_to(trace_end_x(frame, width), level);
         context.stroke();
     }
-    let _ = low;
 }
 
 fn draw_bus_row(
@@ -403,7 +401,8 @@ impl Band {
         open_end: bool,
     ) {
         let length = to - from;
-        if !(length > 0.0) {
+        // `NaN` (an unset cursor) and an empty range draw nothing
+        if length.is_nan() || length <= 0.0 {
             return;
         }
         let full_slant = BUS_SLANT.min(length / 2.0);
@@ -485,13 +484,13 @@ fn draw_analog_row(
     // seed the left edge with the value in effect at the window start, so the
     // trace is not empty until the first in-window change
     if let Some(value) = item.values.value_at(start) {
-        let point = analog_number(value, &item.setting).map(|number| y_of(number));
+        let point = analog_number(value, &item.setting).map(&y_of);
         analog_point(context, &mut last, 0.0, point);
     }
     item.values
         .for_each_change(start, end, &frame.view, width, |x, value| {
             stats.changes += 1;
-            let point = analog_number(value, &item.setting).map(|number| y_of(number));
+            let point = analog_number(value, &item.setting).map(&y_of);
             analog_point(context, &mut last, x, point);
         });
     if let Some(previous) = last {
@@ -506,7 +505,12 @@ fn draw_analog_row(
 ///
 /// A sample is a step: the trace stays on the previous level until the change
 /// position, then jumps vertically to the new one.
-fn analog_point(context: &CanvasRenderingContext2d, last: &mut Option<f64>, x: f64, point: Option<f64>) {
+fn analog_point(
+    context: &CanvasRenderingContext2d,
+    last: &mut Option<f64>,
+    x: f64,
+    point: Option<f64>,
+) {
     match point {
         Some(y) => {
             match *last {
@@ -554,17 +558,26 @@ fn analog_number(value: &WaveValue, setting: &Settings) -> Option<f64> {
     }
 }
 
-/// The label of one value: bit vectors follow the row's `ShowType`, reals and
-/// strings are printed as they are, events have no text.
+/// The label of one value: bit vectors follow the row's `ShowType` (or its
+/// fixed-point scale), reals and strings are printed as they are, events have no
+/// text.
 ///
 /// Delegates to [`crate::nav::value_text`] so the band labels, the value column
-/// and the editor inlay hints can never disagree about radix or formatting.
+/// and the editor inlay hints can never disagree about radix, formatting or the
+/// fixed-point scale.
 pub(crate) fn value_text(value: &WaveValue, width: usize, setting: &Settings) -> Option<String> {
-    crate::nav::value_text(value, width, &setting.show_type)
+    crate::nav::value_text(
+        value,
+        width,
+        &crate::nav::ValueFormat::from_setting(setting),
+    )
 }
 
 /// Draw the value of one bus segment in the middle of its band, if the text fits
 /// between `from` and `to`.
+//the arguments are the drawing frame, the band, the label text and its geometry;
+//a struct for a single private helper would not make it clearer
+#[allow(clippy::too_many_arguments)]
 fn label_segment(
     context: &CanvasRenderingContext2d,
     value: &WaveValue,
@@ -593,7 +606,7 @@ fn label_segment(
     }
     context.set_fill_style_str(palette::TEXT);
     let y = (upper + lower) / 2.0;
-    let _ = context.set_text_baseline("middle");
+    context.set_text_baseline("middle");
     //centred in the band, like every waveform viewer draws a bus value
     let _ = context.fill_text(&text, from + (segment - text_width) / 2.0, y);
 }
@@ -708,11 +721,13 @@ pub fn publish_debug(info: &DebugInfo) {
     );
     set(
         "cursor1",
-        info.cursor1.map_or(JsValue::NULL, |cursor| JsValue::from_f64(cursor as f64)),
+        info.cursor1
+            .map_or(JsValue::NULL, |cursor| JsValue::from_f64(cursor as f64)),
     );
     set(
         "cursor2",
-        info.cursor2.map_or(JsValue::NULL, |cursor| JsValue::from_f64(cursor as f64)),
+        info.cursor2
+            .map_or(JsValue::NULL, |cursor| JsValue::from_f64(cursor as f64)),
     );
     // R2: the shell's re-render counter, written by `App::rendered` into
     // `__waveRenderCount`. Carried over here because this function replaces the

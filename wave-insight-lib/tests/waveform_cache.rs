@@ -99,7 +99,10 @@ fn a_second_call_reuses_the_cached_decode() {
     assert_eq!(after_second.decoded_signals, 1);
     assert_eq!(after_second.decoded_changes, first.len());
     assert_eq!(after_second.loaded_signals, 1);
-    assert_eq!(after_second.decoded_bytes(), first.len() * std::mem::size_of::<Change>());
+    assert_eq!(
+        after_second.decoded_bytes(),
+        first.len() * std::mem::size_of::<Change>()
+    );
 
     //decoding another signal adds to the cache instead of replacing it
     let other = waveform.signal_by_path("top.clk").unwrap().index();
@@ -134,7 +137,10 @@ fn the_cached_decode_does_not_re_read_the_file() {
     let error = waveform
         .changes_in_window(signal, 0, None)
         .expect_err("the streaming path needs the file");
-    assert!(matches!(error, WaveformError::Io(_)), "unexpected error: {error:?}");
+    assert!(
+        matches!(error, WaveformError::Io(_)),
+        "unexpected error: {error:?}"
+    );
 
     let _ = fs::remove_file(&path);
 }
@@ -156,12 +162,18 @@ fn a_large_history_can_be_sliced_and_unloaded() {
     assert_eq!(window[0].0, 10_000);
     assert_eq!(window[5].0, 10_050);
     assert!(decoded.value_at(10_005).is_some());
-    assert_eq!(decoded.value_at(10_005).unwrap(), decoded.value_at(10_000).unwrap());
+    assert_eq!(
+        decoded.value_at(10_005).unwrap(),
+        decoded.value_at(10_000).unwrap()
+    );
 
     let stats = waveform.cache_stats();
     assert_eq!(stats.decoded_signals, 1);
     assert_eq!(stats.decoded_changes, CHANGES);
-    assert_eq!(stats.decoded_bytes(), CHANGES * std::mem::size_of::<Change>());
+    assert_eq!(
+        stats.decoded_bytes(),
+        CHANGES * std::mem::size_of::<Change>()
+    );
     assert!(stats.time_steps > 0);
     //this is the documented cost of the cache: ~40 bytes per change
     assert_eq!(std::mem::size_of::<Change>(), 40);
@@ -202,7 +214,12 @@ fn value_at_agrees_before_and_after_decoding() {
             .clone()
             .map(|time| waveform.value_at(signal.index(), time).unwrap())
             .collect();
-        assert_eq!(before, after, "{}: value_at changed once decoded", signal.path());
+        assert_eq!(
+            before,
+            after,
+            "{}: value_at changed once decoded",
+            signal.path()
+        );
 
         //the cached slice and the accessor agree with each other
         for time in times.clone() {

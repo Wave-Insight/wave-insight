@@ -318,7 +318,12 @@ impl SignalThings {
             let RowValues::Backend(decoded) = &item.values else {
                 continue;
             };
-            out.extend(decoded.window(start, Some(end)).iter().map(|(time, _)| *time));
+            out.extend(
+                decoded
+                    .window(start, Some(end))
+                    .iter()
+                    .map(|(time, _)| *time),
+            );
         }
     }
 
@@ -431,7 +436,10 @@ mod tests {
     }
 
     fn synced(paths: &[(&str, usize)]) -> SignalThings {
-        let rows: Vec<Row> = paths.iter().map(|(path, width)| store_row(path, *width)).collect();
+        let rows: Vec<Row> = paths
+            .iter()
+            .map(|(path, width)| store_row(path, *width))
+            .collect();
         let mut things = SignalThings::new();
         things.sync(&rows, None);
         things
@@ -514,9 +522,18 @@ mod tests {
         //keep row 1 only: the others go back to "no data" and are unloaded
         let unload = things.drop_outside(1..2);
         assert_eq!(unload, vec![1, 3]);
-        assert!(!things[1].values.is_empty(), "row inside the window survives");
-        assert!(things[0].values.is_empty(), "row before the window was dropped");
-        assert!(things[2].values.is_empty(), "row after the window was dropped");
+        assert!(
+            !things[1].values.is_empty(),
+            "row inside the window survives"
+        );
+        assert!(
+            things[0].values.is_empty(),
+            "row before the window was dropped"
+        );
+        assert!(
+            things[2].values.is_empty(),
+            "row after the window was dropped"
+        );
     }
 
     #[test]
@@ -593,7 +610,11 @@ mod tests {
             (12, nibble([BitValue::One, BitValue::One])),
         ]);
         let times = |signal: &DecodedSignal| {
-            signal.changes().iter().map(|(time, _)| *time).collect::<Vec<_>>()
+            signal
+                .changes()
+                .iter()
+                .map(|(time, _)| *time)
+                .collect::<Vec<_>>()
         };
         assert_eq!(times(&derive_bit(&parent, 0)), vec![0, 5, 9, 12]);
         // bit 1 is 0,0,1,1: only the first value and the jump at 9
@@ -602,7 +623,10 @@ mod tests {
         let constant = derive_bit(&parent, 3);
         assert_eq!(times(&constant), vec![0]);
         // and a derived bit is one bit wide, so it is drawn as a digital row
-        assert_eq!(constant.first_change().map(|(_, value)| value.width()), Some(Some(1)));
+        assert_eq!(
+            constant.first_change().map(|(_, value)| value.width()),
+            Some(Some(1))
+        );
         // a bit the bus does not have (an empty history) does not panic
         assert!(derive_bit(&parent, 40).is_empty());
     }

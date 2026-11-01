@@ -40,7 +40,12 @@ fn detects_fst_and_its_metadata() {
     assert_eq!(waveform.file_format(), WaveFormat::Fst);
     assert_eq!(waveform.date(), "Fri Dec 27 10:44:19 2024");
     assert_eq!(waveform.version(), "fstWriter");
-    assert_eq!(waveform.path().map(|path| path.ends_with("io_mode_wave.fst")), Some(true));
+    assert_eq!(
+        waveform
+            .path()
+            .map(|path| path.ends_with("io_mode_wave.fst")),
+        Some(true)
+    );
 
     let timescale = waveform.timescale().expect("FST stores a timescale");
     assert_eq!(timescale.factor, 1);
@@ -71,11 +76,15 @@ fn hierarchy_is_resolved_from_the_fst_header() {
     assert_eq!(waveform.signal_count(), 60);
 
     //variables of the sub scope are addressable by their full path
-    assert!(waveform.signal_by_path("TOP.SpiMasterCtrlContinuous.clk").is_some());
+    assert!(waveform
+        .signal_by_path("TOP.SpiMasterCtrlContinuous.clk")
+        .is_some());
     assert!(waveform.signal_by_path("TOP.clk").is_some());
     //the same local name can exist in different scopes
     let a = waveform.signal_by_path("TOP.clk").unwrap();
-    let b = waveform.signal_by_path("TOP.SpiMasterCtrlContinuous.clk").unwrap();
+    let b = waveform
+        .signal_by_path("TOP.SpiMasterCtrlContinuous.clk")
+        .unwrap();
     assert_ne!(a.index(), b.index());
 }
 
@@ -101,7 +110,9 @@ fn signal_widths_ranges_and_variable_types() {
     let mode = waveform.signal_by_path("TOP.io_cmd_payload_mode").unwrap();
     assert_eq!(mode.index_range(), Some((0, 0)));
 
-    let timer = waveform.signal_by_path("TOP.SpiMasterCtrlContinuous.timer_counter").unwrap();
+    let timer = waveform
+        .signal_by_path("TOP.SpiMasterCtrlContinuous.timer_counter")
+        .unwrap();
     assert_eq!(timer.width(), 8);
     assert_eq!(timer.index_range(), Some((7, 0)));
     assert_eq!(timer.var_type(), "Logic");
@@ -177,12 +188,20 @@ fn value_at_and_window_queries() {
     let clk = waveform.signal_by_path("TOP.clk").unwrap().index();
 
     //the clock toggles every 50000 ticks once the reset is released
-    let bits_at = |time| waveform.value_at(clk, time).unwrap().map(|value| bits_of(&value));
+    let bits_at = |time| {
+        waveform
+            .value_at(clk, time)
+            .unwrap()
+            .map(|value| bits_of(&value))
+    };
     assert_eq!(bits_at(0).as_deref(), Some("0"));
     assert_eq!(bits_at(1_699_999).as_deref(), Some("0"));
     assert_eq!(bits_at(1_700_000).as_deref(), Some("1"));
     assert_eq!(bits_at(1_750_000).as_deref(), Some("0"));
-    assert!(bits_at(13_800_000).is_some(), "the clock keeps a value to the end");
+    assert!(
+        bits_at(13_800_000).is_some(),
+        "the clock keeps a value to the end"
+    );
 
     let window = waveform
         .changes_in_window(clk, 1_700_000, Some(1_800_000))
@@ -201,9 +220,7 @@ fn value_at_and_window_queries() {
     );
 
     //nothing happens in a quiet window
-    let quiet = waveform
-        .changes_in_window(clk, 100, Some(1000))
-        .unwrap();
+    let quiet = waveform.changes_in_window(clk, 100, Some(1000)).unwrap();
     assert!(quiet.is_empty());
 }
 
@@ -215,13 +232,18 @@ fn streaming_reports_only_the_requested_signals() {
 
     let mut changes = Vec::new();
     waveform
-        .stream_changes(&ValueQuery::for_signals([clk, ss]), |signal, time, value| {
-            changes.push((signal, time, bits_of(&value)));
-            true
-        })
+        .stream_changes(
+            &ValueQuery::for_signals([clk, ss]),
+            |signal, time, value| {
+                changes.push((signal, time, bits_of(&value)));
+                true
+            },
+        )
         .unwrap();
 
-    assert!(changes.iter().all(|(signal, _, _)| *signal == clk || *signal == ss));
+    assert!(changes
+        .iter()
+        .all(|(signal, _, _)| *signal == clk || *signal == ss));
     //the clock changes in between the two `io_spi_ss` changes
     assert!(changes.iter().all(|(_, time, _)| *time <= 13_800_000));
     let ss_times: Vec<_> = changes
@@ -248,7 +270,10 @@ fn bytes_and_path_sources_agree() {
     let from_bytes = Waveform::open_bytes(FIXTURE_BYTES).expect("FST from bytes should open");
 
     assert_eq!(from_path.signal_count(), from_bytes.signal_count());
-    assert_eq!(from_path.end_time().unwrap(), from_bytes.end_time().unwrap());
+    assert_eq!(
+        from_path.end_time().unwrap(),
+        from_bytes.end_time().unwrap()
+    );
 
     let clk = from_path.signal_by_path("TOP.clk").unwrap().index();
     assert_eq!(
@@ -277,7 +302,10 @@ fn the_time_range_comes_from_the_header() {
     //and it agrees with the exact accessors
     assert_eq!(waveform.start_time().unwrap(), Some(0));
     assert_eq!(waveform.end_time().unwrap(), Some(13_800_000));
-    assert_eq!(waveform.time_range_hint().unwrap().unwrap().span(), 13_800_000);
+    assert_eq!(
+        waveform.time_range_hint().unwrap().unwrap().span(),
+        13_800_000
+    );
 }
 
 #[test]
@@ -319,7 +347,10 @@ fn values_render_with_the_show_types() {
 
     //a width that is not a multiple of eight: the display has to drop the
     //padding bits in the first byte
-    let args = waveform.signal_by_path("TOP.io_cmd_payload_args").unwrap().index();
+    let args = waveform
+        .signal_by_path("TOP.io_cmd_payload_args")
+        .unwrap()
+        .index();
     let args_changes = waveform.all_changes(args).unwrap();
     assert_eq!(
         args_changes[0].1.render(9, &ShowType::Bin).as_deref(),
@@ -355,5 +386,11 @@ fn unloading_a_signal_frees_the_cache_but_keeps_the_values() {
     //decoding again gives the same result, so the cache was rebuilt
     let second = waveform.all_changes(clk).unwrap();
     assert_eq!(first, second);
-    assert_eq!(waveform.value_at(clk, 1_700_000).unwrap().map(|v| bits_of(&v)), Some("1".to_string()));
+    assert_eq!(
+        waveform
+            .value_at(clk, 1_700_000)
+            .unwrap()
+            .map(|v| bits_of(&v)),
+        Some("1".to_string())
+    );
 }

@@ -51,16 +51,14 @@ fn value_style(cursor: usize) -> String {
     )
 }
 
-pub struct SignalName {
-}
+pub struct SignalName {}
 
 impl Component for SignalName {
     type Message = Msg;
     type Properties = SignalNameProps;
 
     fn create(_ctx: &Context<Self>) -> Self {
-        Self {
-        }
+        Self {}
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
@@ -70,13 +68,17 @@ impl Component for SignalName {
                 event.prevent_default();
                 props.menu.emit(());
                 true
-            },
+            }
         }
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
-        let class = if ctx.props().choose {"wave-name-cell chosen"} else {"wave-name-cell"};
+        let class = if ctx.props().choose {
+            "wave-name-cell chosen"
+        } else {
+            "wave-name-cell"
+        };
         let style = format!("top:{:.1}px", ctx.props().top);
         let value = ctx.props().value.clone().unwrap_or_default();
         let value2 = ctx.props().value2.clone();

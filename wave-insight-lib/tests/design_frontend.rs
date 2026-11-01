@@ -20,7 +20,11 @@ fn line_of(source: &str, needle: &str) -> u32 {
     let index = source
         .find(needle)
         .unwrap_or_else(|| panic!("`{needle}` not found in source"));
-    source[..index].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1
+    source[..index]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count() as u32
+        + 1
 }
 
 fn col_of(source: &str, needle: &str) -> u32 {
@@ -77,8 +81,14 @@ fn non_ansi_port_declarations_are_merged_in_header_order() {
             ("z", Direction::Output, Some(1), SignalKind::Wire),
         ]
     );
-    assert_eq!(module.signal("bus").map(|signal| signal.width), Some(Some(8)));
-    assert_eq!(module.signal("r").map(|signal| signal.kind), Some(SignalKind::Reg));
+    assert_eq!(
+        module.signal("bus").map(|signal| signal.width),
+        Some(Some(8))
+    );
+    assert_eq!(
+        module.signal("r").map(|signal| signal.kind),
+        Some(SignalKind::Reg)
+    );
 }
 
 #[test]
@@ -100,12 +110,18 @@ fn packed_vectors_and_scalar_types() {
     assert_eq!(matrix.packed.len(), 2);
     assert_eq!(matrix.width, Some(32)); // [3:0][7:0]
 
-    assert_eq!(module.signal("pair").map(|signal| signal.width), Some(Some(2)));
+    assert_eq!(
+        module.signal("pair").map(|signal| signal.width),
+        Some(Some(2))
+    );
     assert_eq!(
         module.signal("count").map(|signal| signal.kind),
         Some(SignalKind::Integer)
     );
-    assert_eq!(module.signal("flag").map(|signal| signal.width), Some(Some(1)));
+    assert_eq!(
+        module.signal("flag").map(|signal| signal.width),
+        Some(Some(1))
+    );
 }
 
 #[test]
@@ -150,7 +166,10 @@ fn source_spans_point_at_the_declaration() {
     assert_eq!(pc_reg.span.start_col, col_of(&text, "pc_reg;"));
 
     let instr = module.port("instr").expect("instr port");
-    assert_eq!(instr.span.start_line, line_of(&text, "input  logic [WIDTH-1:0] instr,"));
+    assert_eq!(
+        instr.span.start_line,
+        line_of(&text, "input  logic [WIDTH-1:0] instr,")
+    );
     assert_eq!(instr.span.start_col, col_of(&text, "instr,"));
 
     let module_span = module.span.clone();

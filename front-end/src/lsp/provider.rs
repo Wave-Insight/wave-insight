@@ -62,12 +62,16 @@ fn register(monaco: &JsValue, bridge: LspBridge) {
             move |model: JsValue, position: JsValue, _token: JsValue| -> JsValue {
                 Promise::resolve(&provide_definition(&bridge, &monaco, &model, &position)).into()
             },
-        ) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> JsValue>)
+        )
+            as Box<dyn FnMut(JsValue, JsValue, JsValue) -> JsValue>)
     };
     set(
         &definition,
         "provideDefinition",
-        definition_provider.as_ref().unchecked_ref::<Function>().into(),
+        definition_provider
+            .as_ref()
+            .unchecked_ref::<Function>()
+            .into(),
     );
     definition_provider.forget();
 
@@ -83,12 +87,16 @@ fn register(monaco: &JsValue, bridge: LspBridge) {
                   -> JsValue {
                 Promise::resolve(&provide_references(&bridge, &monaco, &model, &position)).into()
             },
-        ) as Box<dyn FnMut(JsValue, JsValue, JsValue, JsValue) -> JsValue>)
+        )
+            as Box<dyn FnMut(JsValue, JsValue, JsValue, JsValue) -> JsValue>)
     };
     set(
         &references,
         "provideReferences",
-        references_provider.as_ref().unchecked_ref::<Function>().into(),
+        references_provider
+            .as_ref()
+            .unchecked_ref::<Function>()
+            .into(),
     );
     references_provider.forget();
 
@@ -99,7 +107,8 @@ fn register(monaco: &JsValue, bridge: LspBridge) {
             move |model: JsValue, position: JsValue, _token: JsValue| -> JsValue {
                 Promise::resolve(&provide_hover(&bridge, &model, &position)).into()
             },
-        ) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> JsValue>)
+        )
+            as Box<dyn FnMut(JsValue, JsValue, JsValue) -> JsValue>)
     };
     set(
         &hover,
@@ -131,7 +140,8 @@ fn register(monaco: &JsValue, bridge: LspBridge) {
         move |model: JsValue, range: JsValue, _token: JsValue| -> JsValue {
             super::inlay::provide(&model, &range)
         },
-    ) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> JsValue>);
+    )
+        as Box<dyn FnMut(JsValue, JsValue, JsValue) -> JsValue>);
     set(
         &inlay,
         "provideInlayHints",
@@ -348,11 +358,11 @@ const LSP_OBJECT: i64 = 19;
 /// LSP `SymbolKind` → `monaco.languages.SymbolKind`.
 fn symbol_kind(kind: i64) -> f64 {
     match kind {
-        LSP_MODULE => 1.0,   // Module
-        LSP_FIELD => 7.0,    // Field
+        LSP_MODULE => 1.0,    // Module
+        LSP_FIELD => 7.0,     // Field
         LSP_VARIABLE => 12.0, // Variable
         LSP_CONSTANT => 13.0, // Constant
-        LSP_OBJECT => 18.0,  // Object
+        LSP_OBJECT => 18.0,   // Object
         other => other as f64,
     }
 }
@@ -367,13 +377,7 @@ fn symbol_kind(kind: i64) -> f64 {
 /// headless driver calls these very functions (the ones monaco dispatches to)
 /// to inspect definition, hover, references, documentSymbol and inlay hint
 /// results directly.
-fn publish(
-    definition: Object,
-    references: Object,
-    hover: Object,
-    symbols: Object,
-    inlay: Object,
-) {
+fn publish(definition: Object, references: Object, hover: Object, symbols: Object, inlay: Object) {
     let Some(window) = web_sys::window() else {
         return;
     };
@@ -385,13 +389,21 @@ fn publish(
     set(&hook, "inlayHints", inlay.into());
 
     let to_uri = Closure::<dyn Fn(String) -> String>::new(|file: String| document_uri(&file));
-    set(&hook, "documentUri", to_uri.as_ref().unchecked_ref::<Function>().into());
+    set(
+        &hook,
+        "documentUri",
+        to_uri.as_ref().unchecked_ref::<Function>().into(),
+    );
     to_uri.forget();
 
     let to_file = Closure::<dyn Fn(String) -> String>::new(|uri: String| {
         file_of_uri(&uri).unwrap_or_default()
     });
-    set(&hook, "fileOf", to_file.as_ref().unchecked_ref::<Function>().into());
+    set(
+        &hook,
+        "fileOf",
+        to_file.as_ref().unchecked_ref::<Function>().into(),
+    );
     to_file.forget();
 
     let _ = Reflect::set(&window, &JsValue::from_str("__waveInsightProviders"), &hook);

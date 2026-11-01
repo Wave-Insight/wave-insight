@@ -356,14 +356,18 @@ mod tests {
     #[test]
     fn chunk_keeps_the_bit_order() {
         //0b1010 as a four state vector, msb first
-        let bits =
-            Bits::new_msb_first(vec![BitValue::One, BitValue::Zero, BitValue::One, BitValue::Zero]);
+        let bits = Bits::new_msb_first(vec![
+            BitValue::One,
+            BitValue::Zero,
+            BitValue::One,
+            BitValue::Zero,
+        ]);
         assert_eq!(bits.to_chunk(), vec![(0, 0b1010)]);
         assert_eq!(bits.render(4, &crate::data_struct::ShowType::Bin), "1010");
 
         //nine bits: two bytes with the padding in the first one
         let mut msb_first = vec![BitValue::One];
-        msb_first.extend(std::iter::repeat(BitValue::Zero).take(8));
+        msb_first.extend(std::iter::repeat_n(BitValue::Zero, 8));
         let nine = Bits::new_msb_first(msb_first);
         assert_eq!(nine.to_chunk(), vec![(0, 0b0000_0001), (0, 0)]);
         assert_eq!(nine.as_u64(), Some(0x100));

@@ -8,7 +8,9 @@
 #To move to a newer rust: run `cargo update` first, fix what breaks, then bump
 #the channel below and the three workflows in .github/workflows.
 #
-#The wasm build additionally needs:
-#  rustup target add wasm32-unknown-unknown
+#`rustup show` (what CI runs) installs the components and targets declared here,
+#so rustfmt/clippy and the wasm target do not need separate install steps.
 [toolchain]
 channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

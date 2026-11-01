@@ -1,8 +1,8 @@
-use yew::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_wasm_bindgen::{to_value, from_value};
+use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
+use yew::prelude::*;
 
 use crate::state::types::DumpHandle;
 
@@ -33,9 +33,13 @@ fn kind_of(name: &str) -> Kind {
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw") {
         Kind::Waveform
-    }else if lower.ends_with(".sv") || lower.ends_with(".v") || lower.ends_with(".svh") || lower.ends_with(".vh") {
+    } else if lower.ends_with(".sv")
+        || lower.ends_with(".v")
+        || lower.ends_with(".svh")
+        || lower.ends_with(".vh")
+    {
         Kind::Source
-    }else {
+    } else {
         Kind::Other
     }
 }
@@ -72,15 +76,18 @@ pub struct FileList {
 
 impl FileList {
     fn reload(&self, ctx: &Context<Self>) {
-        let args = to_value(&GetFileListArgs { name: self.path.clone() }).unwrap_or(JsValue::NULL);
+        let args = to_value(&GetFileListArgs {
+            name: self.path.clone(),
+        })
+        .unwrap_or(JsValue::NULL);
         let link = ctx.link().clone();
         spawn_local(async move {
             let ret = invoke("get_file_list", args).await;
             match from_value::<Vec<FileEntry>>(ret) {
                 Ok(list) => link.send_message(Msg::SetList(list)),
-                Err(_) => link.send_message(Msg::Failed(
-                    "the folder could not be read".to_string()
-                )),
+                Err(_) => {
+                    link.send_message(Msg::Failed("the folder could not be read".to_string()))
+                }
             }
         });
     }
@@ -130,7 +137,7 @@ impl Component for FileList {
                     Err(_) => {
                         self.error = Some(format!("{name}: invalid path"));
                         return true;
-                    },
+                    }
                 };
                 match kind_of(&name) {
                     Kind::Waveform => {
@@ -141,8 +148,8 @@ impl Component for FileList {
                         spawn_local(async move {
                             //the command returns the bytes; the webview parses
                             //them with the same path the browser uses
-                            let bytes: Vec<u8> = from_value(invoke("choose_vcd", args).await)
-                                .unwrap_or_default();
+                            let bytes: Vec<u8> =
+                                from_value(invoke("choose_vcd", args).await).unwrap_or_default();
                             if bytes.is_empty() {
                                 onerror.emit(format!("{file}: the dump could not be read"));
                                 return;
@@ -155,7 +162,7 @@ impl Component for FileList {
                                 Err(error) => onerror.emit(format!("{file}: {}", error.message())),
                             }
                         });
-                    },
+                    }
                     Kind::Source => {
                         let link_verilog = ctx.props().ongetverilog.clone();
                         let onerror = ctx.props().onerror.clone();
@@ -166,15 +173,17 @@ impl Component for FileList {
                                 Ok(text) => {
                                     link_verilog.emit((file, text));
                                     exit.emit(());
-                                },
-                                Err(_) => onerror.emit(format!("{file}: the source could not be read")),
+                                }
+                                Err(_) => {
+                                    onerror.emit(format!("{file}: the source could not be read"))
+                                }
                             }
                         });
-                    },
+                    }
                     Kind::Other => {
                         self.error = Some(format!("{name}: not a waveform or source file"));
                         return true;
-                    },
+                    }
                 }
                 true
             }
@@ -195,7 +204,7 @@ impl Component for FileList {
         let link = ctx.link();
         let here = if self.path.is_empty() {
             ".".to_string()
-        }else {
+        } else {
             self.path.join("/")
         };
 

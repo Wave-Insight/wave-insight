@@ -271,14 +271,26 @@ mod tests {
         for byte in vcd.as_bytes() {
             scanner.feed(&[*byte]);
         }
-        assert_eq!(scanner.finish(), Some(TimeRange { start: 1, end: 1_234_567 }));
+        assert_eq!(
+            scanner.finish(),
+            Some(TimeRange {
+                start: 1,
+                end: 1_234_567
+            })
+        );
     }
 
     #[test]
     fn a_command_token_must_be_whole() {
         //`$endx` inside a command does not close it
-        assert_eq!(scan("$comment keep going $endx\n#777\n$end\n#3\n0!\n"), Some(TimeRange { start: 3, end: 3 }));
+        assert_eq!(
+            scan("$comment keep going $endx\n#777\n$end\n#3\n0!\n"),
+            Some(TimeRange { start: 3, end: 3 })
+        );
         //`$end` followed by a newline does
-        assert_eq!(scan("$comment a b c $end\n#4\n0!\n"), Some(TimeRange { start: 4, end: 4 }));
+        assert_eq!(
+            scan("$comment a b c $end\n#4\n0!\n"),
+            Some(TimeRange { start: 4, end: 4 })
+        );
     }
 }

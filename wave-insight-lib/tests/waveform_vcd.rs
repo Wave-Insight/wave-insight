@@ -177,7 +177,10 @@ fn values_keep_x_and_z_apart() {
     //a fully unknown bus
     let data = waveform.signal_by_path("top.data").unwrap();
     let data_changes = waveform.all_changes(data.index()).unwrap();
-    assert_eq!(data_changes[2].1.to_bit_string().as_deref(), Some("xxxxxxxx"));
+    assert_eq!(
+        data_changes[2].1.to_bit_string().as_deref(),
+        Some("xxxxxxxx")
+    );
 
     //fully defined values convert to numbers
     assert_eq!(data_changes[1].1.to_u64(), Some(0xaa));
@@ -290,13 +293,10 @@ fn streaming_can_stop_early_and_filter_signals() {
     //`max_changes` stops the stream without decoding the rest
     let mut count = 0;
     waveform
-        .stream_changes(
-            &ValueQuery::all().with_max_changes(2),
-            |_, _, _| {
-                count += 1;
-                true
-            },
-        )
+        .stream_changes(&ValueQuery::all().with_max_changes(2), |_, _, _| {
+            count += 1;
+            true
+        })
         .unwrap();
     assert_eq!(count, 2);
 
@@ -350,15 +350,17 @@ fn unknown_signals_are_reported() {
 
     let error = waveform.all_changes(99).unwrap_err();
     assert!(
-        matches!(error, wave_insight_lib::waveform::WaveformError::UnknownSignal(_)),
+        matches!(
+            error,
+            wave_insight_lib::waveform::WaveformError::UnknownSignal(_)
+        ),
         "expected UnknownSignal, got {error:?}"
     );
 }
 
 #[test]
 fn reader_input_works_like_bytes_input() {
-    let from_reader =
-        Waveform::open_reader(VCD.as_bytes()).expect("VCD from a reader should open");
+    let from_reader = Waveform::open_reader(VCD.as_bytes()).expect("VCD from a reader should open");
     assert_eq!(from_reader.file_format(), WaveFormat::Vcd);
     assert_eq!(from_reader.signal_count(), 5);
     assert_eq!(first_bits(&from_reader, "top.data"), "00000000");
@@ -394,7 +396,9 @@ fn real_string_and_event_values_are_distinguished() {
     let waveform = Waveform::open_bytes(MISC_VCD).expect("misc fixture should parse");
     let temp = waveform.signal_by_path("misc.temp").expect("real signal");
     let ev = waveform.signal_by_path("misc.ev").expect("event signal");
-    let label = waveform.signal_by_path("misc.label").expect("string signal");
+    let label = waveform
+        .signal_by_path("misc.label")
+        .expect("string signal");
 
     assert_eq!(temp.kind(), SignalKind::Real);
     assert_eq!(temp.width(), 0);
@@ -425,13 +429,21 @@ fn real_string_and_event_values_are_distinguished() {
 #[test]
 fn short_binary_literals_are_padded_to_the_declared_width() {
     let waveform = Waveform::open_bytes(MISC_VCD).expect("misc fixture should parse");
-    let short = waveform.signal_by_path("misc.short").expect("16 bit signal");
+    let short = waveform
+        .signal_by_path("misc.short")
+        .expect("16 bit signal");
     assert_eq!(short.width(), 16);
 
     let changes = waveform.all_changes(short.index()).unwrap();
-    assert_eq!(changes[0].1.to_bit_string().as_deref(), Some("0000000000000101"));
+    assert_eq!(
+        changes[0].1.to_bit_string().as_deref(),
+        Some("0000000000000101")
+    );
     assert_eq!(changes[0].1.to_u64(), Some(5));
-    assert_eq!(changes[1].1.to_bit_string().as_deref(), Some("0000000000000001"));
+    assert_eq!(
+        changes[1].1.to_bit_string().as_deref(),
+        Some("0000000000000001")
+    );
 }
 
 /* ------------------------------------------------------------------------- */
@@ -471,7 +483,8 @@ $enddefinitions $end
 #[test]
 fn malformed_vcd_is_reported_and_never_panics() {
     //truncated header
-    let truncated = "$scope module top $end\n$var wire 8 ! data $end\n$enddefinitions $end\n#0\nb1010";
+    let truncated =
+        "$scope module top $end\n$var wire 8 ! data $end\n$enddefinitions $end\n#0\nb1010";
     let result = Waveform::open_bytes(truncated.as_bytes());
     if let Ok(waveform) = result {
         //if wellen accepted it, querying must not panic either

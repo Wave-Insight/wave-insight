@@ -109,8 +109,7 @@ impl SignalInfo {
 
     /// `"[7:0]"` if the file declares an index range.
     pub fn range_string(&self) -> Option<String> {
-        self.index_range
-            .map(|(msb, lsb)| format!("[{msb}:{lsb}]"))
+        self.index_range.map(|(msb, lsb)| format!("[{msb}:{lsb}]"))
     }
 
     /// wellen's variable type name, e.g. `"Wire"` or `"Parameter"`.
@@ -274,7 +273,9 @@ impl Builder {
         path: &str,
     ) -> ScopeNode {
         let mut node = ScopeNode {
-            name: scope.map(|s| hierarchy[s].name(hierarchy).to_string()).unwrap_or_default(),
+            name: scope
+                .map(|s| hierarchy[s].name(hierarchy).to_string())
+                .unwrap_or_default(),
             path: path.to_string(),
             signals: Vec::new(),
             children: Vec::new(),
@@ -310,7 +311,10 @@ impl Builder {
         //wellen tells us the encoding per signal; fall back to the declared
         //length for files without encoding information
         let (kind, width) = match hierarchy.get_signal_tpe(signal_ref) {
-            Some(encoding) => (SignalKind::from_encoding(encoding), encoding.length().unwrap_or(0)),
+            Some(encoding) => (
+                SignalKind::from_encoding(encoding),
+                encoding.length().unwrap_or(0),
+            ),
             None => match var.length(hierarchy) {
                 Some(0) => (SignalKind::Event, 0),
                 Some(width) => (SignalKind::BitVector, width),

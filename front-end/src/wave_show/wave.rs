@@ -13,7 +13,7 @@ use crate::state::{self, select, Cursors, RowsSlice, Store, Subscription, View, 
 
 use super::canvas;
 use super::ctrl::Ctrl;
-use super::geometry::{self, content_height, visible_rows, ROW_HEIGHT, Time};
+use super::geometry::{self, content_height, visible_rows, Time, ROW_HEIGHT};
 use super::settings::Settings;
 use super::signal::SignalName;
 use super::time::{build_axis, Time as TimeBar};
@@ -29,8 +29,13 @@ const KEEP_ROWS: usize = geometry::PREFETCH_ROWS * 4;
 /// fast scroll does not pop.
 const NAME_OVERSCAN: usize = 4;
 /// Width of the label column (signal name + cursor value), in css pixels. Also
-/// what a double click on the column's grip restores.
-const DEFAULT_NAMES_W: f64 = 330.0;
+/// what a double click on the column's grip restores. Must agree with
+/// `--names-w` in `styles.css`: the inline style this component writes always
+/// wins, so a different number here would make the stylesheet a lie.
+const DEFAULT_NAMES_W: f64 = 220.0;
+/// The range the label-column splitter may drag to, in css pixels.
+const NAMES_W_MIN: f64 = 200.0;
+const NAMES_W_MAX: f64 = 640.0;
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct WaveShowProps {
@@ -203,7 +208,6 @@ pub struct WaveShow {
     /// also fires mousedown/mouseup) is not mistaken for a reorder drag
     name_start_y: f64,
 
-
     /// what the last `view` was measured with, so `rendered` can notice a moved layout
     used: RefCell<Metrics>,
     /// rows that were decoded by the last redraw, for the debug hook
@@ -230,12 +234,10 @@ impl Component for WaveShow {
     fn create(ctx: &Context<Self>) -> Self {
         let store = ctx.props().store.clone();
         let rows_sub = store.subscribe(select::rows, ctx.link().callback(Msg::Rows));
-        let viewport_sub =
-            store.subscribe(select::viewport, ctx.link().callback(Msg::Viewport));
+        let viewport_sub = store.subscribe(select::viewport, ctx.link().callback(Msg::Viewport));
         let dump_sub = store.subscribe(select::time_range, ctx.link().callback(Msg::TimeRange));
         // the dump handle is store state now: no prop, one subscription
-        let waveform_sub =
-            store.subscribe(select::dump_waveform, ctx.link().callback(Msg::Dump));
+        let waveform_sub = store.subscribe(select::dump_waveform, ctx.link().callback(Msg::Dump));
         // The pane's height depends on the editor ratio: when the source pane
         // expands (for example a dump was loaded before any source), the wave
         // pane shrinks without any props changing, so without this subscription
@@ -277,7 +279,6 @@ impl Component for WaveShow {
             name_choose_valid: false,
             name_choose: 0,
             name_start_y: 0.0,
-
 
             used: RefCell::new(Metrics::default()),
             last_decoded: 0,
@@ -373,10 +374,8 @@ impl Component for WaveShow {
                 );
             }
             if let Some(keyup) = self.keyup.as_ref() {
-                let _ = window.remove_event_listener_with_callback(
-                    "keyup",
-                    keyup.as_ref().unchecked_ref(),
-                );
+                let _ = window
+                    .remove_event_listener_with_callback("keyup", keyup.as_ref().unchecked_ref());
             }
             if let Some(onresize) = self.onresize.as_ref() {
                 let _ = window.remove_event_listener_with_callback(
@@ -614,7 +613,11 @@ impl WaveShow {
                 if choosed_idx.contains(&idx) {
                     self.on_setting_idx = choosed_idx;
                 } else {
-                    self.dispatch(state::Action::RowSelected { index: idx, ctrl: false, shift: false });
+                    self.dispatch(state::Action::RowSelected {
+                        index: idx,
+                        ctrl: false,
+                        shift: false,
+                    });
                     self.on_setting_idx = vec![idx];
                     // the snapshot arrives through the subscription; settings read
                     // the next frame, exactly like before
@@ -655,25 +658,11 @@ impl WaveShow {
             }
             Msg::NamesMove(e) => {
                 if let Some((start_x, start_w)) = self.names_drag {
-                    let width = (start_w + (e.x() as f64 - start_x)).clamp(200.0, 640.0);
+                    let width =
+                        (start_w + (e.x() as f64 - start_x)).clamp(NAMES_W_MIN, NAMES_W_MAX);
                     self.names_preview.set(width);
                     // tier A: write the css variable directly, no re-render
-                    if let Some(element) = web_sys::window()
-                        .and_then(|window| window.document())
-                        .and_then(|document| document.get_element_by_id("wave-pane"))
-                    {
-                        if let Ok(style) = js_sys::Reflect::get(&element, &JsValue::from_str("style")) {
-                            if let Ok(set_property) =
-                                js_sys::Reflect::get(&style, &JsValue::from_str("setProperty"))
-                                    .and_then(|function| function.dyn_into::<js_sys::Function>())
-                            {
-                                let args = js_sys::Array::new();
-                                args.push(&JsValue::from_str("--names-w"));
-                                args.push(&JsValue::from_str(&format!("{width:.0}px")));
-                                let _ = set_property.apply(&style, &args);
-                            }
-                        }
-                    }
+                    write_names_width(width);
                 }
                 false
             }
@@ -780,24 +769,10 @@ impl WaveShow {
             Msg::MouseMove(e) => {
                 if let Some((start_x, start_w)) = self.names_drag {
                     // tier A: the css variable moves, the component does not render
-                    let width = (start_w + (e.x() as f64 - start_x)).clamp(200.0, 640.0);
+                    let width =
+                        (start_w + (e.x() as f64 - start_x)).clamp(NAMES_W_MIN, NAMES_W_MAX);
                     self.names_preview.set(width);
-                    if let Some(element) = web_sys::window()
-                        .and_then(|window| window.document())
-                        .and_then(|document| document.get_element_by_id("wave-pane"))
-                    {
-                        if let Ok(style) = js_sys::Reflect::get(&element, &JsValue::from_str("style")) {
-                            if let Ok(set_property) =
-                                js_sys::Reflect::get(&style, &JsValue::from_str("setProperty"))
-                                    .and_then(|function| function.dyn_into::<js_sys::Function>())
-                            {
-                                let args = js_sys::Array::new();
-                                args.push(&JsValue::from_str("--names-w"));
-                                args.push(&JsValue::from_str(&format!("{width:.0}px")));
-                                let _ = set_property.apply(&style, &args);
-                            }
-                        }
-                    }
+                    write_names_width(width);
                     return false;
                 }
                 if let Some(which) = self.cursor_drag {
@@ -859,8 +834,7 @@ impl WaveShow {
                         return true;
                     }
                     let metrics = self.measure();
-                    let location =
-                        (e.y() as f64 - metrics.body_top + self.scroll_top) / ROW_HEIGHT;
+                    let location = (e.y() as f64 - metrics.body_top + self.scroll_top) / ROW_HEIGHT;
                     if location < 0.0 {
                         return true;
                     }
@@ -871,7 +845,10 @@ impl WaveShow {
                         (location + 0.5) as usize
                     };
                     if current < self.rows.len() && dest < self.rows.len() && dest != current {
-                        self.dispatch(state::Action::RowsReordered { from: current, to: dest });
+                        self.dispatch(state::Action::RowsReordered {
+                            from: current,
+                            to: dest,
+                        });
                     }
                     return true;
                 }
@@ -916,8 +893,16 @@ impl WaveShow {
                 let ctrl = self.key(17);
                 let shift = self.key(16);
                 // the store owns the selection; read the path before it changes
-                let path = self.signal_things.iter().nth(idx).map(|item| item.path.clone());
-                self.dispatch(state::Action::RowSelected { index: idx, ctrl, shift });
+                let path = self
+                    .signal_things
+                    .iter()
+                    .nth(idx)
+                    .map(|item| item.path.clone());
+                self.dispatch(state::Action::RowSelected {
+                    index: idx,
+                    ctrl,
+                    shift,
+                });
                 self.sync_rows();
                 if let Some(path) = path {
                     // the inspector follows the last clicked row
@@ -957,7 +942,6 @@ impl WaveShow {
             Msg::ValuesReady => true,
         }
     }
-
 
     /// Move cursor 1 to the next (`direction > 0`) or previous value change of
     /// the selected rows, or of every visible row when nothing is selected.
@@ -999,7 +983,10 @@ impl WaveShow {
                 changes.get(index).map(|(time, _)| *time)
             } else {
                 let index = changes.partition_point(|(time, _)| *time < current);
-                index.checked_sub(1).and_then(|index| changes.get(index)).map(|(time, _)| *time)
+                index
+                    .checked_sub(1)
+                    .and_then(|index| changes.get(index))
+                    .map(|(time, _)| *time)
             };
             let Some(candidate) = candidate else {
                 continue;
@@ -1022,7 +1009,7 @@ impl WaveShow {
             self.commit_view(View::new(axis, self.view.size));
         }
         let mut cursors = self.cursors;
-        cursors.one = Some(target.min(i32::MAX as Time as u64) as i32);
+        cursors.one = Some(target.min(i32::MAX as Time) as i32);
         self.commit_cursors(cursors);
     }
 
@@ -1098,7 +1085,7 @@ impl WaveShow {
             let Some(cursor) = cursor else { continue };
             let distance = (self.view.x_of(cursor.max(0) as Time) - x).abs();
             if distance <= geometry::CURSOR_GRAB_PX
-                && best.map_or(true, |(best_distance, _)| distance < best_distance)
+                && best.is_none_or(|(best_distance, _)| distance < best_distance)
             {
                 best = Some((distance, which));
             }
@@ -1127,11 +1114,7 @@ impl WaveShow {
             return;
         };
         let count = JsValue::from_f64(f64::from(self.pane_render_count.get()));
-        let _ = js_sys::Reflect::set(
-            &window,
-            &JsValue::from_str("__wavePaneRenderCount"),
-            &count,
-        );
+        let _ = js_sys::Reflect::set(&window, &JsValue::from_str("__wavePaneRenderCount"), &count);
     }
 
     /// One store change; the resulting snapshot arrives as `Msg::Rows`.
@@ -1151,7 +1134,6 @@ impl WaveShow {
             }
         }
     }
-
 
     fn key(&self, code: usize) -> bool {
         self.key_press.borrow().get(code).copied().unwrap_or(false)
@@ -1306,9 +1288,7 @@ impl WaveShow {
             grid: &axis.labels,
             cursor1: cursors.one,
             cursor2: cursors.two,
-            drag: if self.mouse_press
-                && (self.mouse_current_x - self.mouse_start_x).abs() > 1.0
-            {
+            drag: if self.mouse_press && (self.mouse_current_x - self.mouse_start_x).abs() > 1.0 {
                 Some((self.mouse_start_x, self.mouse_current_x))
             } else {
                 None
@@ -1422,10 +1402,8 @@ impl WaveShow {
         //window handlers when the editor takes focus, and a property handler is
         //simply replaced (which is why Delete stopped working once the source
         //pane existed)
-        let _ = window.add_event_listener_with_callback(
-            "keydown",
-            keydown.as_ref().unchecked_ref(),
-        );
+        let _ =
+            window.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
 
         let key_press = Rc::clone(&self.key_press);
         let keyup = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
@@ -1439,7 +1417,8 @@ impl WaveShow {
         let onresize = Closure::wrap(Box::new(move |_: JsValue| {
             on_resize.emit(());
         }) as Box<dyn FnMut(JsValue)>);
-        let _ = window.add_event_listener_with_callback("resize", onresize.as_ref().unchecked_ref());
+        let _ =
+            window.add_event_listener_with_callback("resize", onresize.as_ref().unchecked_ref());
 
         self.keydown = Some(keydown);
         self.keyup = Some(keyup);
@@ -1457,6 +1436,30 @@ fn surface_element() -> Option<web_sys::HtmlCanvasElement> {
         .get_element_by_id("wave-surface")?
         .dyn_into::<web_sys::HtmlCanvasElement>()
         .ok()
+}
+
+/// Write the label-column width straight to the pane's css variable.
+///
+/// Tier A: the splitter drags the column at pointer speed and commits the width
+/// to the component state (and the store does not own it) only on mouseup, so
+/// nothing here may go through Yew.
+fn write_names_width(width: f64) {
+    let Some(element) = document().and_then(|document| document.get_element_by_id("wave-pane"))
+    else {
+        return;
+    };
+    let Ok(style) = js_sys::Reflect::get(&element, &JsValue::from_str("style")) else {
+        return;
+    };
+    let Ok(set_property) = js_sys::Reflect::get(&style, &JsValue::from_str("setProperty"))
+        .and_then(|function| function.dyn_into::<js_sys::Function>())
+    else {
+        return;
+    };
+    let args = js_sys::Array::new();
+    args.push(&JsValue::from_str("--names-w"));
+    args.push(&JsValue::from_str(&format!("{width:.0}px")));
+    let _ = set_property.apply(&style, &args);
 }
 
 /// Current scroll offset of the row list.

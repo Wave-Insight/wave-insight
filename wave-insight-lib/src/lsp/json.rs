@@ -54,7 +54,12 @@ impl Json {
 
     /// A JSON object; the entries keep their insertion order.
     pub fn object<K: Into<String>>(entries: impl IntoIterator<Item = (K, Json)>) -> Json {
-        Json::Object(entries.into_iter().map(|(key, value)| (key.into(), value)).collect())
+        Json::Object(
+            entries
+                .into_iter()
+                .map(|(key, value)| (key.into(), value))
+                .collect(),
+        )
     }
 
     /// A JSON array.
@@ -492,10 +497,7 @@ impl Parser<'_> {
                 }
             }
             other => {
-                return Err(self.error(format!(
-                    "unknown escape sequence `\\{}`",
-                    char::from(other)
-                )))
+                return Err(self.error(format!("unknown escape sequence `\\{}`", char::from(other))))
             }
         }
         Ok(())
@@ -595,8 +597,13 @@ mod tests {
         .expect("valid message");
         assert_eq!(message.get_str("method"), Some("textDocument/hover"));
         assert_eq!(message.get_i64("id"), Some(7));
-        let position = message.get("params").and_then(|params| params.get("position"));
-        assert_eq!(position.and_then(|position| position.get_i64("line")), Some(12));
+        let position = message
+            .get("params")
+            .and_then(|params| params.get("position"));
+        assert_eq!(
+            position.and_then(|position| position.get_i64("line")),
+            Some(12)
+        );
         assert_eq!(
             message
                 .get("params")
@@ -619,10 +626,7 @@ mod tests {
         assert_eq!(value.get_i64("big"), Some(9_007_199_254_740_993));
         assert_eq!(value.get("d"), Some(&Json::Float(1.5)));
         assert_eq!(value.get("e"), Some(&Json::Float(2000.0)));
-        assert_eq!(
-            value.get_str("s"),
-            Some("a\"b\\c/d\n\t\u{e9}\u{1f600}")
-        );
+        assert_eq!(value.get_str("s"), Some("a\"b\\c/d\n\t\u{e9}\u{1f600}"));
         assert_eq!(value.get_array("a").map(<[Json]>::len), Some(3));
         assert_eq!(
             value.get_array("a").and_then(|items| items[1].as_array()),
@@ -663,7 +667,11 @@ mod tests {
 
     #[test]
     fn rejects_deep_nesting_instead_of_overflowing_the_stack() {
-        let deep = format!("{}1{}", "[".repeat(MAX_DEPTH + 2), "]".repeat(MAX_DEPTH + 2));
+        let deep = format!(
+            "{}1{}",
+            "[".repeat(MAX_DEPTH + 2),
+            "]".repeat(MAX_DEPTH + 2)
+        );
         let error = Json::parse(&deep).expect_err("must be rejected");
         assert!(error.message().contains("nesting"), "{error}");
         // One level less is fine.

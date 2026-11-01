@@ -131,7 +131,10 @@ fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             }
             // This server never sends requests, so a response cannot be for it.
             Message::Response(response) => {
-                eprintln!("lsp: ignoring an unexpected response for id {}", response.id);
+                eprintln!(
+                    "lsp: ignoring an unexpected response for id {}",
+                    response.id
+                );
             }
         }
         if server.exit_requested() {
@@ -294,16 +297,20 @@ mod tests {
 
         // A null id cannot become a `RequestId`; this is a transport-level
         // limitation documented in the module docs.
-        assert!(
-            decode_reply(r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"x"}}"#)
-                .is_err()
-        );
+        assert!(decode_reply(
+            r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"x"}}"#
+        )
+        .is_err());
     }
 
     #[test]
     fn a_request_round_trips_through_the_protocol_core() {
         let mut server = LspServer::new();
-        let request = Request::new(RequestId::from(1), "initialize".to_owned(), serde_json::json!({}));
+        let request = Request::new(
+            RequestId::from(1),
+            "initialize".to_owned(),
+            serde_json::json!({}),
+        );
         let replies = server.handle_message(&request_text(&request));
         assert_eq!(replies.len(), 1);
         match decode_reply(&replies[0]).expect("valid reply") {

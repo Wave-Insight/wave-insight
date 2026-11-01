@@ -26,7 +26,11 @@ fn line_of(source: &str, needle: &str) -> u32 {
     let index = source
         .find(needle)
         .unwrap_or_else(|| panic!("`{needle}` not found in source"));
-    source[..index].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1
+    source[..index]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count() as u32
+        + 1
 }
 
 fn col_of(source: &str, needle: &str) -> u32 {
@@ -141,7 +145,10 @@ fn deserialized_db_update_source_still_detects_duplicate_modules() {
         restored.diagnostics()
     );
     assert_eq!(restored.modules().len(), 1);
-    assert_eq!(restored.module("shared").expect("shared").span.file, PathBuf::from("first.sv"));
+    assert_eq!(
+        restored.module("shared").expect("shared").span.file,
+        PathBuf::from("first.sv")
+    );
 
     // The rebuilt per-file ownership still releases a name when its file is
     // renamed.
@@ -183,9 +190,7 @@ fn signals_at_returns_every_instance_of_a_shared_module_body() {
     );
 
     // A position outside every declaration/usage yields nothing.
-    assert!(db
-        .signals_at(&design, fixture("cpu.sv"), 1, 1)
-        .is_empty());
+    assert!(db.signals_at(&design, fixture("cpu.sv"), 1, 1).is_empty());
 }
 
 #[test]
@@ -275,10 +280,7 @@ fn item_at_in_instance_keeps_module_and_child_instance_answers() {
 #[test]
 fn update_source_replaces_only_one_files_modules() {
     let mut db = DesignDb::new();
-    assert!(db.add_source(
-        "leaf.sv",
-        "module leaf(input logic a); endmodule"
-    ));
+    assert!(db.add_source("leaf.sv", "module leaf(input logic a); endmodule"));
     assert!(db.add_source(
         "top.sv",
         "module top(input logic a); leaf u(.a(a)); endmodule"
@@ -298,7 +300,11 @@ fn update_source_replaces_only_one_files_modules() {
     // The updated database still elaborates the untouched file.
     let design = db.elaborate("top");
     assert!(design.instance("top.u").is_some());
-    assert!(design.diagnostics().is_empty(), "{:?}", design.diagnostics());
+    assert!(
+        design.diagnostics().is_empty(),
+        "{:?}",
+        design.diagnostics()
+    );
 }
 
 #[test]
@@ -346,7 +352,7 @@ fn item_at_resolves_an_instance_declaration() {
     match db.item_at(&design, &file, declaration_line, module_col) {
         Some(wave_insight_lib::design::SourceItem::Module { name, .. }) => {
             assert_eq!(name, "cpu");
-        },
+        }
         other => panic!("expected the module under the instance type, got {other:?}"),
     }
 
@@ -355,7 +361,7 @@ fn item_at_resolves_an_instance_declaration() {
     match db.item_at(&design, &file, declaration_line, instance_col) {
         Some(wave_insight_lib::design::SourceItem::Instance { path, .. }) => {
             assert!(path.ends_with("u_cpu"), "got {path}");
-        },
+        }
         other => panic!("expected the instance declaration, got {other:?}"),
     }
 }

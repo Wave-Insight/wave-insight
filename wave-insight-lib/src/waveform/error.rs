@@ -1,12 +1,15 @@
 //! Error type for the waveform backend.
 //!
-//! Everything in [`crate::waveform`] returns [`Result`] instead of panicking on
-//! malformed input: the magic bytes are checked before wellen sees a file, and
-//! a panic raised inside `wellen`/`fst-reader` while parsing is caught and
-//! reported as [`WaveformError::Corrupt`] (they contain `assert!`/`todo!()` on
-//! data they consider impossible, which a hand crafted or half written file can
-//! reach). The only panics that are *not* caught are the ones raised by a
-//! caller supplied callback.
+//! Everything in [`crate::waveform`] returns [`Result`] for malformed input
+//! instead of panicking: the magic bytes are checked before wellen sees a file,
+//! every value query is checked, and a panic raised inside `wellen`/`fst-reader`
+//! while parsing is caught and reported as [`WaveformError::Corrupt`] (they
+//! contain `assert!`/`todo!()` on data they consider impossible, which a hand
+//! crafted or half written file can reach).  The panic catching is *best
+//! effort*: it needs a build where Rust can unwind, and the shipped release
+//! profile sets `panic = "abort"` (for wasm size), so in release builds such a
+//! panic aborts the app/webview instead of becoming an error.  The only panics
+//! that are never caught are the ones raised by a caller supplied callback.
 
 use std::fmt;
 
@@ -63,9 +66,7 @@ impl WaveformError {
                 format,
                 operation,
                 detail,
-            } => format!(
-                "corrupt {format} file: `{operation}` failed while parsing it ({detail})"
-            ),
+            } => format!("corrupt {format} file: `{operation}` failed while parsing it ({detail})"),
             WaveformError::UnknownFormat => {
                 "unknown waveform format (expected VCD, FST or GHW)".to_string()
             }
@@ -124,9 +125,11 @@ pub(crate) fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
 /// [`WaveformError::Corrupt`].
 ///
 /// `wellen`/`fst-reader` contain `assert!`/`todo!()` on data they consider
-/// impossible. A corrupt file must not take the viewer down, so a panic here is
-/// a corrupt file, not a crash. Only use this around *library* code - never
-/// around a caller supplied callback, whose panics must propagate.
+/// impossible. A corrupt file should not take the viewer down, so a panic here
+/// is reported as a corrupt file. This is best effort: `panic = "abort"` (the
+/// release profile) and targets that cannot unwind make it a process abort
+/// instead. Only use this around *library* code - never around a caller supplied
+/// callback, whose panics must propagate.
 pub(crate) fn catch_parse<T>(
     format: WaveFormat,
     operation: &'static str,

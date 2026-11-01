@@ -64,7 +64,10 @@ impl RpcError {
     }
 
     pub fn method_not_found(method: &str) -> RpcError {
-        RpcError::new(METHOD_NOT_FOUND, format!("method `{method}` is not supported"))
+        RpcError::new(
+            METHOD_NOT_FOUND,
+            format!("method `{method}` is not supported"),
+        )
     }
 
     pub fn server_not_initialized(method: &str) -> RpcError {
@@ -205,10 +208,7 @@ impl Range {
     }
 
     pub fn to_json(self) -> Json {
-        Json::object([
-            ("start", self.start.to_json()),
-            ("end", self.end.to_json()),
-        ])
+        Json::object([("start", self.start.to_json()), ("end", self.end.to_json())])
     }
 }
 
@@ -256,8 +256,8 @@ mod tests {
             other => panic!("expected a request, got {other:?}"),
         }
 
-        let notification = parse_incoming(r#"{"jsonrpc":"2.0","method":"exit"}"#)
-            .expect("notification");
+        let notification =
+            parse_incoming(r#"{"jsonrpc":"2.0","method":"exit"}"#).expect("notification");
         assert_eq!(
             notification,
             Incoming::Notification {
@@ -280,7 +280,10 @@ mod tests {
     fn malformed_messages_carry_the_right_error_code() {
         let parse_error = parse_incoming("{").expect_err("broken JSON");
         assert_eq!(parse_error.code, PARSE_ERROR);
-        assert!(parse_error.message.contains("invalid JSON"), "{parse_error}");
+        assert!(
+            parse_error.message.contains("invalid JSON"),
+            "{parse_error}"
+        );
 
         let invalid = parse_incoming("[1,2]").expect_err("not an object");
         assert_eq!(invalid.code, INVALID_REQUEST);

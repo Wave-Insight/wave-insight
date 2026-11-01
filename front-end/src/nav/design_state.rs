@@ -103,10 +103,7 @@ impl DesignState {
     /// Recompute the elaborated design from the current database.
     pub fn rebuild(&mut self) {
         self.top = self.pick_top();
-        self.design = self
-            .top
-            .as_ref()
-            .map(|top| self.db.elaborate(top.as_str()));
+        self.design = self.top.as_ref().map(|top| self.db.elaborate(top.as_str()));
         self.version = self.version.wrapping_add(1);
     }
 
@@ -125,7 +122,12 @@ impl DesignState {
 
     /// Number of problems the parser/elaborator reported.
     pub fn diagnostic_count(&self) -> usize {
-        self.db.diagnostics().len() + self.design.as_ref().map(|d| d.diagnostics().len()).unwrap_or(0)
+        self.db.diagnostics().len()
+            + self
+                .design
+                .as_ref()
+                .map(|d| d.diagnostics().len())
+                .unwrap_or(0)
     }
 
     /// The flat signal table entry for a hierarchical path.
@@ -244,7 +246,11 @@ impl DesignState {
                 .push(signal);
         }
 
-        Some(SidebarTree::new(build_row(design, &by_instance, design.root())))
+        Some(SidebarTree::new(build_row(
+            design,
+            &by_instance,
+            design.root(),
+        )))
     }
 
     /// Which module to elaborate.
@@ -362,20 +368,28 @@ mod tests {
     fn resolve_prefers_exact_then_hierarchical_suffix() {
         let state = design();
         assert_eq!(
-            state.resolve_path("top.clk").map(|signal| signal.path.as_str()),
+            state
+                .resolve_path("top.clk")
+                .map(|signal| signal.path.as_str()),
             Some("top.clk")
         );
         assert_eq!(
-            state.resolve_path("top.u_c.clk").map(|signal| signal.path.as_str()),
+            state
+                .resolve_path("top.u_c.clk")
+                .map(|signal| signal.path.as_str()),
             Some("top.u_c.clk")
         );
         // the dump can have an extra testbench level above the elaborated top
         assert_eq!(
-            state.resolve_path("tb_top.clk").map(|signal| signal.path.as_str()),
+            state
+                .resolve_path("tb_top.clk")
+                .map(|signal| signal.path.as_str()),
             Some("top.clk")
         );
         assert_eq!(
-            state.resolve_path("tb_top.u_c.clk").map(|signal| signal.path.as_str()),
+            state
+                .resolve_path("tb_top.u_c.clk")
+                .map(|signal| signal.path.as_str()),
             Some("top.u_c.clk")
         );
         assert!(state.resolve_path("tb_top.nope").is_none());

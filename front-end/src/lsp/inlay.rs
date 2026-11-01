@@ -32,7 +32,7 @@ use wave_insight_lib::data_struct::ShowType;
 use wave_insight_lib::waveform::Waveform;
 
 use crate::code_reader::monaco_glue::model_uri;
-use crate::nav::{value_text, SharedDesign};
+use crate::nav::{value_text, SharedDesign, ValueFormat};
 use crate::state::{select, DumpHandle, Store};
 
 use super::bridge::file_of_uri;
@@ -138,7 +138,13 @@ pub fn provide(model: &JsValue, range: &JsValue) -> JsValue {
     let hints = Array::new();
     let mut counters = Counters::default();
     let (has_context, cursor, lines) = fill_hints(model, range, &hints, &mut counters);
-    publish_debug(has_context, cursor, lines, &counters, hints.length() as usize);
+    publish_debug(
+        has_context,
+        cursor,
+        lines,
+        &counters,
+        hints.length() as usize,
+    );
 
     let result = Object::new();
     set(&result, "hints", hints.into());
@@ -169,12 +175,13 @@ fn fill_hints(
         return (true, Some(cursor), last - first + 1);
     };
 
-    // The row settings (base formats) and the row paths (used to disambiguate a
-    // shared module body) are read once per request, never per identifier.
+    // The row formats (base format + fixed-point scale) and the row paths (used
+    // to disambiguate a shared module body) are read once per request, never per
+    // identifier.
     let rows = store.select(select::rows);
-    let mut formats: HashMap<&str, ShowType> = HashMap::new();
+    let mut formats: HashMap<&str, ValueFormat> = HashMap::new();
     for row in rows.items.iter() {
-        formats.insert(row.path.as_str(), row.setting.show_type.clone());
+        formats.insert(row.path.as_str(), ValueFormat::from_setting(&row.setting));
     }
 
     for line in first..=last {
@@ -212,7 +219,7 @@ fn fill_hints(
 fn hint_at(
     design: &SharedDesign,
     waveform: &Waveform,
-    formats: &HashMap<&str, ShowType>,
+    formats: &HashMap<&str, ValueFormat>,
     file: &str,
     line: u32,
     start: u32,
@@ -254,11 +261,11 @@ fn hint_at(
         .ok()
         .flatten()?;
     counters.values += 1;
-    let show = formats
+    let format = formats
         .get(dump_path.as_str())
         .cloned()
-        .unwrap_or(ShowType::Hex);
-    let text = value_text(&value, width, &show)?;
+        .unwrap_or_else(|| ValueFormat::base(ShowType::Hex));
+    let text = value_text(&value, width, &format)?;
 
     let position = Object::new();
     set_f64(&position, "lineNumber", f64::from(line));
@@ -282,7 +289,7 @@ fn hint_at(
 /// must never show the value of a random instance.
 fn pick_candidate(
     waveform: &Waveform,
-    formats: &HashMap<&str, ShowType>,
+    formats: &HashMap<&str, ValueFormat>,
     candidates: &[String],
 ) -> Option<String> {
     if candidates.len() == 1 {

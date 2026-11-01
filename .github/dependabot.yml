@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  #the lockfile is committed and the tree carries 464 packages, so drift is
+  #invisible without this (yew 0.19 / tauri 1.x were two eras behind)
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  #workflow actions are pinned to floating major tags today; this bumps them
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]

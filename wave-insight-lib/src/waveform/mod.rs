@@ -113,10 +113,13 @@
 //!   not guaranteed to have one change per VCD line.
 //! * `wellen`/`fst-reader` contain `assert!`/`todo!()` on input they consider
 //!   impossible, so a hand crafted or half written file can reach one.
-//!   [`Waveform`] catches those panics and reports [`WaveformError::Corrupt`]
-//!   instead (the default panic hook still prints the message to stderr); a
-//!   panic raised by your own [`Waveform::stream_changes`] visitor is re-raised,
-//!   not swallowed.
+//!   [`Waveform`] makes a best effort to catch those panics and report
+//!   [`WaveformError::Corrupt`] instead (the default panic hook still prints the
+//!   message to stderr).  That only works in builds where Rust can unwind: the
+//!   shipped release profile sets `panic = "abort"` (for wasm size), so in the
+//!   released web/desktop builds such a panic aborts the app/webview instead.
+//!   A panic raised by your own [`Waveform::stream_changes`] visitor is
+//!   re-raised, not swallowed.
 
 mod decoded;
 mod error;
@@ -131,7 +134,7 @@ mod value;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use wellen::{LoadOptions, Signal, SignalRef, SignalSource, Time};
 
@@ -203,7 +206,10 @@ impl fmt::Debug for Waveform {
             .field("source", &self.source)
             .field("signals", &self.hierarchy.len())
             .field("timescale", &self.timescale)
-            .field("body_loaded", &self.body.lock().map(|b| b.is_some()).unwrap_or(false))
+            .field(
+                "body_loaded",
+                &self.body.lock().map(|b| b.is_some()).unwrap_or(false),
+            )
             .finish()
     }
 }
@@ -245,11 +251,15 @@ impl Waveform {
         let header = catch_parse(detected, "read header", || {
             Ok(wellen::viewers::read_header(reader, &options)?)
         })?;
-        let format = WaveFormat::from_wellen(header.file_format).ok_or(WaveformError::UnknownFormat)?;
+        let format =
+            WaveFormat::from_wellen(header.file_format).ok_or(WaveformError::UnknownFormat)?;
         let hierarchy = HierarchyView::build(&header.hierarchy);
         let date = header.hierarchy.date().to_string();
         let version = header.hierarchy.version().to_string();
-        let timescale = header.hierarchy.timescale().and_then(Timescale::from_wellen);
+        let timescale = header
+            .hierarchy
+            .timescale()
+            .and_then(Timescale::from_wellen);
         Ok(Self {
             source,
             format,
@@ -402,19 +412,19 @@ impl Waveform {
         let body = self.ensure_body(&mut guard)?;
         body.ensure_loaded(signal_ref)?;
 
+        let format = body.format;
         let time_table = &body.time_table;
-        let packed = body
-            .packed(signal_ref)
-            .ok_or_else(|| WaveformError::Backend(format!("signal `{}` did not decode", self.path_of(signal))))?;
-        Ok(packed
-            .iter_changes()
-            .map(|(time_index, value)| {
-                (
-                    time_table[time_index as usize],
-                    WaveValue::from_wellen(value),
-                )
-            })
-            .collect())
+        let packed = body.packed(signal_ref).ok_or_else(|| {
+            WaveformError::Backend(format!("signal `{}` did not decode", self.path_of(signal)))
+        })?;
+        let mut changes = Vec::new();
+        for (time_index, value) in packed.iter_changes() {
+            changes.push((
+                change_time(format, time_table, time_index)?,
+                WaveValue::from_wellen(value),
+            ));
+        }
+        Ok(changes)
     }
 
     /// The decoded history of one variable, cached and shared.
@@ -568,6 +578,15 @@ impl Waveform {
     ///
     /// GHW cannot be streamed by wellen; the same result is produced by
     /// materialising the requested signals one by one (documented fallback).
+    ///
+    /// # Aliased variables
+    ///
+    /// Several variables can share one signal (the same VCD identifier or FST
+    /// handle).  The visitor then receives the index of the *first* variable
+    /// that uses the signal for every change, not the alias that was requested;
+    /// [`ValueQuery::includes_signal`] does not distinguish aliases either.  Use
+    /// [`Waveform::decoded_changes_many`] when the exact requested row indices
+    /// are needed.
     pub fn stream_changes<F>(&self, query: &ValueQuery, mut visit: F) -> Result<()>
     where
         F: FnMut(usize, Time, WaveValue) -> bool,
@@ -689,7 +708,11 @@ impl Waveform {
                 if !visit(index, time, value) {
                     return Ok(());
                 }
-                if query.max_changes.map(|limit| emitted >= limit).unwrap_or(false) {
+                if query
+                    .max_changes
+                    .map(|limit| emitted >= limit)
+                    .unwrap_or(false)
+                {
                     return Ok(());
                 }
             }
@@ -862,23 +885,20 @@ impl EagerBody {
     /// The decoded history of a signal, building and caching it on first use.
     fn decoded(&mut self, signal: SignalRef) -> Result<DecodedSignal> {
         self.ensure_loaded(signal)?;
+        let format = self.format;
         let time_table = &self.time_table;
         let cached = self.signals.get_mut(&signal).ok_or_else(|| {
             WaveformError::Backend(format!("signal #{} is not cached", signal.index()))
         })?;
         if cached.decoded.is_none() {
-            let changes: Arc<[Change]> = cached
-                .packed
-                .iter_changes()
-                .map(|(time_index, value)| {
-                    (
-                        time_table[time_index as usize],
-                        WaveValue::from_wellen(value),
-                    )
-                })
-                .collect::<Vec<Change>>()
-                .into();
-            cached.decoded = Some(DecodedSignal::new(changes));
+            let mut changes: Vec<Change> = Vec::new();
+            for (time_index, value) in cached.packed.iter_changes() {
+                changes.push((
+                    change_time(format, time_table, time_index)?,
+                    WaveValue::from_wellen(value),
+                ));
+            }
+            cached.decoded = Some(DecodedSignal::new(changes.into()));
         }
         cached
             .decoded
@@ -938,9 +958,71 @@ impl EagerBody {
     }
 }
 
+/// Time stamp of one packed change, guarding the time-table lookup.
+///
+/// The packed change carries an index into the body time table.  wellen derives
+/// both from the same body, so a valid file cannot produce an out-of-range
+/// index, but a corrupt or truncated one might.  Indexing the table directly
+/// would panic from this crate (and the `catch_parse` guard does not wrap the
+/// value conversion), so the lookup is checked and reported like any other
+/// corrupt input instead.
+fn change_time(format: WaveFormat, time_table: &[Time], time_index: u32) -> Result<Time> {
+    time_table
+        .get(time_index as usize)
+        .copied()
+        .ok_or_else(|| WaveformError::Corrupt {
+            format,
+            operation: "decode value change",
+            detail: format!(
+                "change time index {} is outside the {} time steps of the body",
+                time_index,
+                time_table.len()
+            ),
+        })
+}
+
 /// Sanity check that the shared waveform handle can be put into a Tauri state.
 #[allow(dead_code)]
 fn assert_send_sync() {
     fn is_send_sync<T: Send + Sync>() {}
     is_send_sync::<Waveform>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A real corrupt FST whose packed signal points past the body time table is
+    // not something the public constructors can build (wellen derives both from
+    // the same body today), so the guard is tested directly.  The old code
+    // indexed the table and would have panicked in this situation.
+    #[test]
+    fn an_out_of_range_change_time_is_corrupt_not_a_panic() {
+        assert_eq!(change_time(WaveFormat::Vcd, &[0, 10, 20], 2).unwrap(), 20);
+
+        let error = change_time(WaveFormat::Fst, &[0], 3).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                WaveformError::Corrupt {
+                    format: WaveFormat::Fst,
+                    operation: "decode value change",
+                    ..
+                }
+            ),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("outside the 1 time steps"),
+            "{error}"
+        );
+
+        // An empty time table (a body with no time steps at all) is the same
+        // error, not an index panic.
+        let error = change_time(WaveFormat::Vcd, &[], 0).unwrap_err();
+        assert!(
+            matches!(error, WaveformError::Corrupt { .. }),
+            "unexpected error: {error:?}"
+        );
+    }
 }

@@ -6,18 +6,15 @@ use yew::prelude::*;
 
 use crate::code_reader::CodeReader;
 use crate::lsp::LspBridge;
-use crate::nav::{
-    match_dump_candidates,
-    DesignState,
-    Goto,
-    PathPicker,
-    SharedDesign,
-    SidebarTree,
-    SignalInspector,
-    SourceClick};
-use crate::state::{self, Action, Cursors, DumpHandle, Layout, RowsSlice, Status, Store, Subscription};
-use crate::wave_show::WaveShow;
 use crate::module_struct::ModuleStruct;
+use crate::nav::{
+    match_dump_candidates, DesignState, Goto, PathPicker, SharedDesign, SidebarTree,
+    SignalInspector, SourceClick,
+};
+use crate::state::{
+    self, Action, Cursors, DumpHandle, Layout, RowsSlice, Status, Store, Subscription,
+};
+use crate::wave_show::WaveShow;
 
 use crate::top_bar::TopBar;
 
@@ -27,15 +24,15 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 #[cfg(feature = "tauri")]
+use crate::file_load::{invoke, listen};
+#[cfg(feature = "tauri")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "tauri")]
-use serde_wasm_bindgen::{to_value, from_value};
+use serde_wasm_bindgen::{from_value, to_value};
 #[cfg(feature = "tauri")]
 use wasm_bindgen::prelude::*;
 #[cfg(feature = "tauri")]
 use wasm_bindgen_futures::spawn_local;
-#[cfg(feature = "tauri")]
-use crate::file_load::{invoke, listen};
 
 pub enum Msg {
     #[cfg(feature = "tauri")]
@@ -174,7 +171,7 @@ pub struct App {
     /// page-wide hint context without rendering anything.
     _cursors_sub: Subscription,
     _rows_sub: Subscription,
-    verilog_source: Vec<(String,String)>,
+    verilog_source: Vec<(String, String)>,
     /// Hierarchical path of the signal selected in the wave view.
     selected: Option<String>,
     picker: Option<Picker>,
@@ -200,7 +197,6 @@ impl Component for App {
 
     #[allow(unused_variables)] // `ctx` is only used by the tauri/server transports
     fn create(ctx: &Context<Self>) -> Self {
-
         #[cfg(feature = "tauri")]
         let file_drop_callback = ctx.link().callback(Msg::FileDrop);
 
@@ -215,8 +211,8 @@ impl Component for App {
                 id: f64,
             }
             let closure = Closure::<dyn FnMut(JsValue)>::new(move |x: JsValue| {
-                let tauri_event: TauriEvent = serde_wasm_bindgen::from_value(x).unwrap();//TODO:do not unwrap
-                //console::log_1(&format!("callback: {:?}", tauri_event).into());
+                let tauri_event: TauriEvent = serde_wasm_bindgen::from_value(x).unwrap(); //TODO:do not unwrap
+                                                                                          //console::log_1(&format!("callback: {:?}", tauri_event).into());
                 file_drop_callback.emit(tauri_event.payload);
             });
             let ret = listen("tauri://file-drop", &closure).await;
@@ -236,10 +232,7 @@ impl Component for App {
         // from now on; the panes are still wired with props (later steps).
         let store = Store::new();
         let layout = store.select(state::select::layout);
-        let layout_sub = store.subscribe(
-            state::select::layout,
-            ctx.link().callback(Msg::Layout),
-        );
+        let layout_sub = store.subscribe(state::select::layout, ctx.link().callback(Msg::Layout));
         // The editor's inlay hints show the value at cursor 1; the context is
         // page state (the provider runs inside a monaco callback), so it is
         // updated from subscriptions and never triggers a Yew render.
@@ -290,7 +283,8 @@ impl Component for App {
         // components have their own subscriptions and do not bump this; keep it
         // that way, the splitter assertion is written against it.
         if changed {
-            self.render_count.set(self.render_count.get().wrapping_add(1));
+            self.render_count
+                .set(self.render_count.get().wrapping_add(1));
         }
         changed
     }
@@ -307,13 +301,10 @@ impl Component for App {
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
         if let (Some(window), Some(listener)) = (web_sys::window(), self.resize_listener.take()) {
-            let _ = window.remove_event_listener_with_callback(
-                "resize",
-                listener.as_ref().unchecked_ref(),
-            );
+            let _ = window
+                .remove_event_listener_with_callback("resize", listener.as_ref().unchecked_ref());
         }
     }
-
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
@@ -523,15 +514,17 @@ impl App {
                 }
                 path.into_iter().for_each(|p| {
                     let lower = p.to_ascii_lowercase();
-                    if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw") {
+                    if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw")
+                    {
                         let args = to_value(&GetFileListArgs { path: p }).unwrap();
                         let onwaveform = ctx.link().callback(Msg::GetWaveform);
                         let onerror = ctx.link().callback(Msg::Error);
                         spawn_local(async move {
                             //the command returns the file bytes; the webview
                             //parses them exactly like a browser upload
-                            let bytes: Vec<u8> = from_value(invoke("choose_vcd_absolute", args).await)
-                                .unwrap_or_default();
+                            let bytes: Vec<u8> =
+                                from_value(invoke("choose_vcd_absolute", args).await)
+                                    .unwrap_or_default();
                             if bytes.is_empty() {
                                 onerror.emit("the dump could not be read".to_string());
                                 return;
@@ -547,7 +540,8 @@ impl App {
                         let onerror = ctx.link().callback(Msg::Error);
                         spawn_local(async move {
                             let text: String =
-                                from_value(invoke("choose_verilog_absolute", args).await).unwrap_or_default();
+                                from_value(invoke("choose_verilog_absolute", args).await)
+                                    .unwrap_or_default();
                             if text.is_empty() {
                                 onerror.emit(format!("{p}: the source could not be read"));
                                 return;
@@ -599,7 +593,7 @@ impl App {
                         max: sidebar_max(),
                     });
                     false
-                }else {
+                } else {
                     self.splitter_start = Some((e.x() as f64, self.layout.sidebar_w));
                     // the dragged class and the shield are part of the render
                     true
@@ -627,7 +621,10 @@ impl App {
                         // the commit goes through the store; the layout
                         // subscription re-renders the shell once, so returning
                         // `false` here keeps the commit to a single render
-                        self.store.dispatch(Action::ResizeSidebar { width, max: sidebar_max() });
+                        self.store.dispatch(Action::ResizeSidebar {
+                            width,
+                            max: sidebar_max(),
+                        });
                         false
                     }
                     // a click without a drag still has to remove the shield
@@ -704,18 +701,35 @@ impl App {
                 self.design.borrow_mut().set_top_hint(top_hint);
                 // the store owns the handle and derives the time range from it
                 // (that is what the ruler and the fit zoom read)
-                self.store
-                    .dispatch(Action::DumpOpened { waveform: waveform.clone() });
+                self.store.dispatch(Action::DumpOpened {
+                    waveform: waveform.clone(),
+                });
+                // GHW has no cheap time-range hint: the store fell back to one
+                // body scan, so say where the ruler's numbers came from instead
+                // of reporting a plain load.
+                let range_note = if self.store.select(|state| state.dump.range_from_body) {
+                    let format = format!("{:?}", waveform.waveform().file_format()).to_uppercase();
+                    Some(format!("{format}: time range read from the body"))
+                } else {
+                    None
+                };
                 // the inlay hints can only show values once a dump is open
                 crate::lsp::inlay::set_waveform(Some(waveform));
                 self.refresh_tree();
                 self.sync_lsp_top();
-                self.note(Status::info("waveform loaded"));
+                match range_note {
+                    Some(note) => self.note(Status::info(note)),
+                    None => self.note(Status::info("waveform loaded")),
+                }
                 true
             }
             Msg::GetVerilog((file, text)) => {
                 self.design.borrow_mut().add_source(&file, &text);
-                match self.verilog_source.iter_mut().find(|(name,_)| name == &file) {
+                match self
+                    .verilog_source
+                    .iter_mut()
+                    .find(|(name, _)| name == &file)
+                {
                     Some(entry) => entry.1 = text.clone(),
                     None => self.verilog_source.push((file.clone(), text.clone())),
                 }
@@ -753,7 +767,9 @@ impl App {
                 match candidates.len() {
                     0 => {
                         self.note(Status::info(format!(
-                            "`{}` is not a signal of the elaborated design", click.word)));
+                            "`{}` is not a signal of the elaborated design",
+                            click.word
+                        )));
                     }
                     1 => {
                         // Verdi behaviour: clicking a name in the source adds it
@@ -762,7 +778,10 @@ impl App {
                     }
                     _ => {
                         self.note(Status::info(format!(
-                            "{} signals match `{}`", candidates.len(), click.word)));
+                            "{} signals match `{}`",
+                            candidates.len(),
+                            click.word
+                        )));
                         self.picker = Some(Picker {
                             title: format!("{} signals match `{}`", candidates.len(), click.word),
                             paths: candidates,
@@ -850,10 +869,9 @@ impl App {
             &wasm_bindgen::JsValue::from_str("__waveRenderCount"),
             &count,
         );
-        if let Ok(debug) = js_sys::Reflect::get(
-            &window,
-            &wasm_bindgen::JsValue::from_str("__waveDebug"),
-        ) {
+        if let Ok(debug) =
+            js_sys::Reflect::get(&window, &wasm_bindgen::JsValue::from_str("__waveDebug"))
+        {
             if debug.is_object() {
                 let _ = js_sys::Reflect::set(
                     &debug,
@@ -868,9 +886,7 @@ impl App {
     /// fallback so the module list is usable before a dump is loaded.
     fn refresh_tree(&mut self) {
         self.tree = match self.dump() {
-            Some(waveform) => Some(SidebarTree::from_hierarchy(
-                waveform.waveform().hierarchy(),
-            )),
+            Some(waveform) => Some(SidebarTree::from_hierarchy(waveform.waveform().hierarchy())),
             None => self.design.borrow().sidebar_tree(),
         };
     }
@@ -893,10 +909,13 @@ impl App {
 
     /// Where `path` is declared, when the design knows it.
     fn declare_target(&self, path: &str) -> Option<(String, u32, u32)> {
-        self.design
-            .borrow()
-            .declaration(path)
-            .map(|span| (span.file.display().to_string(), span.start_line, span.start_col))
+        self.design.borrow().declaration(path).map(|span| {
+            (
+                span.file.display().to_string(),
+                span.start_line,
+                span.start_col,
+            )
+        })
     }
 
     /// Ask the source pane to show one position.
@@ -906,12 +925,18 @@ impl App {
         }
         if !self.verilog_source.iter().any(|(name, _)| name == &file) {
             self.note(Status::error(format!(
-                "{file} is not open in the source pane — open it from the file picker again")));
+                "{file} is not open in the source pane — open it from the file picker again"
+            )));
             return;
         }
         self.goto_token = self.goto_token.wrapping_add(1);
         self.note(Status::info(format!("{file}:{line}:{col}")));
-        self.goto = Some(Goto { file, line, col, token: self.goto_token });
+        self.goto = Some(Goto {
+            file,
+            line,
+            col,
+            token: self.goto_token,
+        });
     }
 
     /// Build the legacy signal row for a hierarchical path.
@@ -925,16 +950,26 @@ impl App {
                 file_name: flat.declaration.file.display().to_string(),
                 line: flat.declaration.start_line,
             };
-            signal.drive = flat.drivers.iter().map(|driver| driver.span.to_string()).collect();
-            signal.load = flat.loads.iter().map(|load| load.span.to_string()).collect();
+            signal.drive = flat
+                .drivers
+                .iter()
+                .map(|driver| driver.span.to_string())
+                .collect();
+            signal.load = flat
+                .loads
+                .iter()
+                .map(|load| load.span.to_string())
+                .collect();
         }
         // The dump is what gets drawn, so its width wins when the two disagree
         // (a truncated vector would otherwise be formatted at the declared
         // width, which the legacy formatters cannot do).
-        if let Some(width) = self
-            .dump()
-            .and_then(|waveform| waveform.waveform().signal_by_path(path).map(|info| info.width()))
-        {
+        if let Some(width) = self.dump().and_then(|waveform| {
+            waveform
+                .waveform()
+                .signal_by_path(path)
+                .map(|info| info.width())
+        }) {
             signal.size = width.max(1) as usize;
         }
         signal
@@ -1036,7 +1071,11 @@ impl App {
                 .take(4)
                 .map(|signal| signal.path.as_str())
                 .collect();
-            let more = if candidates.len() > names.len() { ", ..." } else { "" };
+            let more = if candidates.len() > names.len() {
+                ", ..."
+            } else {
+                ""
+            };
             self.note(Status::error(format!(
                 "ambiguous: {} signals match `{path}` — {}{more}",
                 candidates.len(),
@@ -1127,7 +1166,7 @@ impl App {
             let exact = design.signals_at(&click.file, click.line, click.col);
             if exact.is_empty() {
                 design.signals_matching(&click.word)
-            }else {
+            } else {
                 exact
             }
         };
@@ -1146,12 +1185,11 @@ impl App {
     }
 
     fn file_button(&self, ctx: &Context<Self>) -> Html {
-        html!{
+        html! {
             <FileLoad
                 ongetwaveform={ctx.link().callback(Msg::GetWaveform)}
                 ongetverilog={ctx.link().callback(Msg::GetVerilog)}
                 onerror={ctx.link().callback(Msg::Error)} />
         }
     }
-    
 }

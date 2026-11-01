@@ -20,6 +20,8 @@
 pub mod action;
 pub mod reduce;
 pub mod select;
+//the module that defines the State struct lives in state/state.rs, the name the design doc uses
+#[allow(clippy::module_inception)]
 pub mod state;
 pub mod store;
 pub mod types;

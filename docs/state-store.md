@@ -4,10 +4,19 @@ Design for the R2 step of [`rebuild-plan.md`](rebuild-plan.md): replace the
 props-and-`Rc<RefCell<_>>` plumbing with one store, and use the same move to fix
 the pane layout.
 
-Status: **proposal, no code yet.** R1 (canvas renderer) and the self-hosted
-editor are in; R3 is deleting `data_struct::Module`/`ModuleValue` in the
-library, `file_load/`, `nav/` and `wave_show/` — so this document deliberately
-touches only `app.rs`, the component boundaries and a new `state/` module.
+Status: **steps 1 and 2 implemented, first increment of step 3 in; step 3's
+sources/design/focus/LSP effects and half of step 4 are still open.** The store
+lives in `front-end/src/state/` (seven modules, about 1.6k lines of Rust with 30
+native `#[test]`s): layout, status, wave rows and the viewport/cursors are store
+slices, `WaveShow` and the time bar are subscribers, and pointer gestures
+re-render nothing. The dump handle and its derived time range moved into the
+store as the first increment of step 3. Still open: the `sources`, `design` and
+`focus` slices and the LSP/editor effects (`Effect` is still an empty enum), and
+the legacy component shells / `SharedDesign` / `goto_token` teardown in step 4.
+R1 (canvas renderer) and the self-hosted editor are in; R3 is deleting
+`data_struct::Module`/`ModuleValue` in the library, `file_load/`, `nav/` and
+`wave_show/` — so this document deliberately touches only `app.rs`, the
+component boundaries and a new `state/` module.
 
 ---
 
@@ -539,6 +548,8 @@ working unchanged.
 
 ### Step 1 — the store exists, layout and status move in (no visual change)
 
+**Status: done.**
+
 - add `state/{mod,state,action,reduce,store,select,types}.rs`; move `Goto`,
   `SourceClick`, `Picker`, `Status` out of `nav/` (re-exported there);
 - `App` owns `Store` and the small executor; `App::update` becomes
@@ -556,6 +567,8 @@ New assertions: `layout: splitter drag re-renders nothing` (count draws via
 the default width`.
 
 ### Step 2 — the wave pane becomes a subscriber (rows, viewport, cursors)
+
+**Status: done.**
 
 - `Rows`, `View`, `Row` and per-row `Settings` move into `State`;
   `SignalThings` is reduced to `Rc<Vec<Row>>` plus a version;
@@ -580,6 +593,10 @@ Delete (obsolete by construction): the `added_seq` note inside
 
 ### Step 3 — documents, design and LSP effects
 
+**Status: first increment done** — the dump handle and its time range live in `State.dump`.
+The `sources`, `design` and `focus` slices and the LSP/editor `Effect`s are not
+implemented yet (`Effect` is still an empty enum).
+
 - `sources` (name, text, language, version, active tab) is the only document
   list; `App.verilog_source`, `LspBridge.documents` and `SharedDesign` are
   removed;
@@ -603,6 +620,13 @@ New assertion: `design: adding a source re-parses exactly once` (version seam).
 
 ### Step 4 — layout and the legacy teardown
 
+**Status: partial.** The layout rules of §3.4 (collapsed editor, 120 px minimum,
+75 % ratio clamp, four-row wave minimum, the wave-frame tab strip) are
+implemented and asserted by the browser matrix; `Rc<ModuleValue>`, `Rc<Module>`,
+`signal_value`, `added_seq` and `SharedWaveform` are gone. The legacy component
+shells (`module_struct/`, `nav/`), `SharedDesign`, `goto_token` and the local
+drag-preview fields (`splitter_start`) remain.
+
 - `--editor-h`, `.wave-splitter`, collapse rule and the wave frame's tab strip
   (the load/drive view shares the frame with the waveform, §3);
 - delete `Rc<RefCell<ModuleValue>>`, `Rc<Module>`, `signal_value`, the
@@ -622,19 +646,28 @@ the editor and the waveform)`.
 
 ## 6. Acceptance
 
-The task-10 wording, made checkable:
+The task-10 wording, made checkable, with the status at the time of writing:
 
-- `grep -R "RefCell<ModuleValue>" front-end/src` → nothing;
-- `grep -R "Rc<Module>" front-end/src` → nothing;
+- `grep -R "RefCell<ModuleValue>" front-end/src` → nothing; **done**
+- `grep -R "Rc<Module>" front-end/src` → nothing; **done**
 - `SharedDesign`, `SharedWaveform`, `signal_add`, `signal_add_seq`, `added_seq`,
-  `goto_token`, `splitter_start` → nothing;
+  `goto_token`, `splitter_start` → nothing; **partial** — `SharedWaveform`,
+  `signal_add_seq` and `added_seq` are gone, but `SharedDesign`, `goto_token` and
+  the drag-preview `splitter_start` fields are still there (step 4)
 - each pane component has a `Subscription` field, and no `struct` field that
-  duplicates a `State` field (the table in §2.2 is the checklist);
+  duplicates a `State` field (the table in §2.2 is the checklist); **done for the
+  panes migrated so far** (`TopBar`, `WaveShow`, the time bar) — the sidebar tree
+  (`ModuleStruct`) and `CodeReader` only migrate in step 3
 - the layout constants of §3.4 hold, and `window.__waveDebug.render_count` does
-  not move during a splitter drag (it counts shell re-renders only);
+  not move during a splitter drag (it counts shell re-renders only); **done** —
+  asserted by the browser matrix's `layoutRules` scenario
 - `cargo test -p front-end --bins` covers `reduce` (row add/remove/reorder,
-  document open/close, dump switch, jump, picker) — no DOM needed;
-- the 140-assertion browser matrix passes, with the rewires listed above.
+  document open/close, dump switch, jump, picker); **partially** — 30 native
+  tests cover layout, rows, viewport/cursors and the dump; document/jump/picker
+  reducers do not exist yet (step 3)
+- the browser matrix passes, with the rewires listed above; **done** — it has
+  grown from the 140 assertions of the original task to 266 and is green against
+  this tree.
 
 ---
 

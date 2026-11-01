@@ -246,7 +246,9 @@ mod tests {
         let decoded = history();
         assert!(decoded.value_at(0).is_some());
         //before the first change there is no value
-        assert!(DecodedSignal::new(vec![(10, bit(1))].into()).value_at(9).is_none());
+        assert!(DecodedSignal::new(vec![(10, bit(1))].into())
+            .value_at(9)
+            .is_none());
         assert_eq!(decoded.value_at(9).unwrap(), &bit(0));
         assert_eq!(decoded.value_at(10).unwrap(), &bit(1));
         assert_eq!(decoded.value_at(19).unwrap(), &bit(1));

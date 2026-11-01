@@ -34,7 +34,12 @@ pub struct Document {
 }
 
 impl Document {
-    pub fn new(uri: impl Into<String>, path: PathBuf, version: i64, text: impl Into<String>) -> Self {
+    pub fn new(
+        uri: impl Into<String>,
+        path: PathBuf,
+        version: i64,
+        text: impl Into<String>,
+    ) -> Self {
         Document {
             uri: uri.into(),
             path,
@@ -134,9 +139,7 @@ impl Document {
         match range {
             None => self.text = text.to_owned(),
             Some(range) => {
-                let start = self
-                    .byte_offset_of(range.start)
-                    .unwrap_or(self.text.len());
+                let start = self.byte_offset_of(range.start).unwrap_or(self.text.len());
                 let end = self
                     .byte_offset_of(range.end)
                     .unwrap_or(self.text.len())
@@ -193,10 +196,7 @@ mod tests {
     fn positions_past_the_end_are_clamped_or_rejected() {
         let document = document("abc\r\ndef\r\n");
         // Line 0 has three characters; asking for column 40 means "end of line".
-        assert_eq!(
-            document.source_position(Position::new(0, 40)),
-            Some((1, 4))
-        );
+        assert_eq!(document.source_position(Position::new(0, 40)), Some((1, 4)));
         // The `\r` is not part of the line.
         assert_eq!(document.source_position(Position::new(1, 3)), Some((2, 4)));
         // Below the last line there is nothing to answer with.

@@ -69,7 +69,10 @@ impl Component for SignalInspector {
                 })
                 .unwrap_or_default();
             (
-                props.path.as_deref().and_then(|path| design.signal_details(path)),
+                props
+                    .path
+                    .as_deref()
+                    .and_then(|path| design.signal_details(path)),
                 !design.is_empty(),
                 design.top().map(str::to_string),
                 design.diagnostic_count(),
@@ -145,7 +148,10 @@ impl SignalInspector {
             };
         };
 
-        let mut width = details.width.map(|w| format!("{w} bit")).unwrap_or_else(|| "?".to_string());
+        let mut width = details
+            .width
+            .map(|w| format!("{w} bit"))
+            .unwrap_or_else(|| "?".to_string());
         if let Some(direction) = &details.direction {
             width = format!("{direction} · {width}");
         }

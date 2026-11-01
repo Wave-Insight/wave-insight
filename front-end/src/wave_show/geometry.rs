@@ -8,16 +8,11 @@
 //! Time is in wave units (the dump's time steps, `u64`); `x` is in css pixels
 //! inside the wave surface, `0` being the left edge of the visible window.
 
-pub use crate::state::types::{Time, View};
 #[cfg(test)]
 use crate::state::types::{clamp_i32, clamp_time};
+pub use crate::state::types::{Time, View};
 
 use wave_insight_lib::waveform::Change;
-
-/// A time stamp in wave units.
-///
-/// The library's [`Change`] is `(Time, WaveValue)` with `Time = u64`; the alias
-/// is not re-exported, so the renderer uses its own name for it.
 
 /// Height of one signal row, in css pixels.
 ///
@@ -55,18 +50,14 @@ pub const CURSOR_GRAB_PX: f64 = 4.0;
 /// unconditionally. An exact tie between the edge before and the edge after `x`
 /// keeps the earlier one, which makes repeated clicks deterministic.
 pub fn snap_x_to_edges(x: f64, edges: &[Time], view: &View, tolerance_px: f64) -> Option<Time> {
-    if edges.is_empty()
-        || !tolerance_px.is_finite()
-        || tolerance_px <= 0.0
-        || !x.is_finite()
-    {
+    if edges.is_empty() || !tolerance_px.is_finite() || tolerance_px <= 0.0 || !x.is_finite() {
         return None;
     }
     let mut best: Option<(f64, Time)> = None;
     for &edge in edges {
         let distance = (view.x_of(edge).round() - x).abs();
         if distance <= tolerance_px
-            && best.map_or(true, |(best_distance, _)| distance < best_distance)
+            && best.is_none_or(|(best_distance, _)| distance < best_distance)
         {
             best = Some((distance, edge));
         }
@@ -183,7 +174,8 @@ pub fn for_each_pixel_stamped<'a, T: Stamped>(
         let bucket_end = ((x / bucket).floor() + 1.0) * bucket;
         //`partition_point` is a binary search, so a bucket with thousands of
         //changes costs log(n), not n
-        let end = index + window[index..].partition_point(|item| view.x_of(item.stamp()) <= bucket_end);
+        let end =
+            index + window[index..].partition_point(|item| view.x_of(item.stamp()) <= bucket_end);
         let last = end.max(index + 1) - 1;
         visit(
             view.x_of(window[last].stamp()).clamp(0.0, width),
@@ -204,10 +196,7 @@ mod tests {
         } else {
             BitValue::One
         };
-        (
-            time,
-            WaveValue::Bits(Bits::new_msb_first(vec![value])),
-        )
+        (time, WaveValue::Bits(Bits::new_msb_first(vec![value])))
     }
 
     fn history(times: &[Time]) -> Vec<Change> {
@@ -330,7 +319,10 @@ mod tests {
     fn slice_window_bounds_are_inclusive() {
         let changes = history(&[0, 10, 20, 30, 30]);
         let times = |slice: &[Change]| slice.iter().map(|(time, _)| *time).collect::<Vec<_>>();
-        assert_eq!(times(slice_window_stamped(&changes, 0, 30)), vec![0, 10, 20, 30, 30]);
+        assert_eq!(
+            times(slice_window_stamped(&changes, 0, 30)),
+            vec![0, 10, 20, 30, 30]
+        );
         assert_eq!(times(slice_window_stamped(&changes, 10, 20)), vec![10, 20]);
         assert_eq!(
             times(slice_window_stamped(&changes, 11, 19)),
@@ -357,10 +349,14 @@ mod tests {
     #[test]
     fn pixel_buckets_collapse_a_dense_history() {
         //20000 changes over 1 time step each, drawn 1000 px wide: 20 changes/pixel
-        let changes: Vec<Change> = (0..20_000u64).map(|time| change(time, (time % 2) as u8)).collect();
+        let changes: Vec<Change> = (0..20_000u64)
+            .map(|time| change(time, (time % 2) as u8))
+            .collect();
         let view = View::new(0.0, 1000.0 / 20_000.0);
         let mut drawn = Vec::new();
-        for_each_pixel_change(&changes, &view, 1000.0, |x, change| drawn.push((x, change.0)));
+        for_each_pixel_change(&changes, &view, 1000.0, |x, change| {
+            drawn.push((x, change.0))
+        });
 
         //at most one change per pixel (plus the bucket alignment)
         assert!(drawn.len() <= 1002, "drew {} points", drawn.len());

@@ -33,22 +33,26 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
         Action::ClearStatus => {
             state.nav.status = None;
         }
-        Action::RowAdded { path, name, width, load, drive, bit } => {
+        Action::RowAdded {
+            path,
+            name,
+            width,
+            load,
+            drive,
+            bit,
+        } => {
             if !path.is_empty() {
                 let mut items = (*state.rows.items).clone();
                 // a row is identified by its path *and* the bit it shows, so the
                 // bus and its expanded bits can coexist
-                if !items
-                    .iter()
-                    .any(|row| row.path == path && row.bit == bit)
-                {
+                if !items.iter().any(|row| row.path == path && row.bit == bit) {
                     // insert after the last chosen row, like the old push()
                     let insert_at = items
                         .iter()
                         .enumerate()
                         .filter(|(_, row)| row.chosen)
                         .map(|(index, _)| index)
-                        .last()
+                        .next_back()
                         .map(|index| index + 1)
                         .unwrap_or(items.len());
                     items.insert(
@@ -74,7 +78,7 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 return Vec::new();
             };
             // only a bus, and only once
-            if row.bit.is_some() || width < 2 || width > 64 {
+            if row.bit.is_some() || !(2..=64).contains(&width) {
                 return Vec::new();
             }
             if items
@@ -166,9 +170,14 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
         }
         Action::DumpOpened { waveform } => {
             // the range is derived from the handle, never hand-written into the
-            // store: the reducer is the one place that may compute it
-            let time_range = waveform.waveform().time_range_hint().ok().flatten();
-            state.dump = Dump { waveform: Some(waveform), time_range };
+            // store: the reducer is the one place that may compute it, and the
+            // handle knows the GHW fallback (one body scan) behind one helper
+            let (time_range, range_from_body) = waveform.time_range();
+            state.dump = Dump {
+                waveform: Some(waveform),
+                time_range,
+                range_from_body,
+            };
         }
         Action::ViewCommitted(view) => {
             state.viewport.view = view;
@@ -248,7 +257,9 @@ fn choose(items: &mut [Row], index: usize, ctrl: bool, shift: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::types::{DumpHandle, Layout, Settings, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN};
+    use crate::state::types::{
+        DumpHandle, Layout, Settings, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN,
+    };
 
     fn state() -> State {
         State::default()
@@ -269,7 +280,12 @@ mod tests {
     }
 
     fn paths(state: &State) -> Vec<String> {
-        state.rows.items.iter().map(|row| row.path.clone()).collect()
+        state
+            .rows
+            .items
+            .iter()
+            .map(|row| row.path.clone())
+            .collect()
     }
 
     #[test]
@@ -278,7 +294,12 @@ mod tests {
         add(&mut state, "top.pc");
         reduce(&mut state, Action::RowsBitExpanded { index: 0, width: 4 });
         assert_eq!(
-            state.rows.items.iter().map(|row| row.bit).collect::<Vec<_>>(),
+            state
+                .rows
+                .items
+                .iter()
+                .map(|row| row.bit)
+                .collect::<Vec<_>>(),
             vec![None, Some(3), Some(2), Some(1), Some(0)]
         );
         assert!(state.rows.items.iter().all(|row| row.path == "top.pc"));
@@ -289,7 +310,12 @@ mod tests {
         // collapsing removes exactly the block below the bus
         reduce(&mut state, Action::RowsBitCollapsed { index: 0 });
         assert_eq!(
-            state.rows.items.iter().map(|row| row.bit).collect::<Vec<_>>(),
+            state
+                .rows
+                .items
+                .iter()
+                .map(|row| row.bit)
+                .collect::<Vec<_>>(),
             vec![None]
         );
         // and a bit row is not the bus, so it is not a duplicate either
@@ -322,11 +348,29 @@ mod tests {
     #[test]
     fn resize_sidebar_clamps_into_the_window() {
         let mut state = state();
-        reduce(&mut state, Action::ResizeSidebar { width: 340.0, max: 640.0 });
+        reduce(
+            &mut state,
+            Action::ResizeSidebar {
+                width: 340.0,
+                max: 640.0,
+            },
+        );
         assert_eq!(state.layout.sidebar_w, 340.0);
-        reduce(&mut state, Action::ResizeSidebar { width: 5000.0, max: 640.0 });
+        reduce(
+            &mut state,
+            Action::ResizeSidebar {
+                width: 5000.0,
+                max: 640.0,
+            },
+        );
         assert_eq!(state.layout.sidebar_w, 640.0);
-        reduce(&mut state, Action::ResizeSidebar { width: 10.0, max: 640.0 });
+        reduce(
+            &mut state,
+            Action::ResizeSidebar {
+                width: 10.0,
+                max: 640.0,
+            },
+        );
         assert_eq!(state.layout.sidebar_w, SIDEBAR_MIN);
     }
 
@@ -354,7 +398,11 @@ mod tests {
         let mut state = state();
         reduce(
             &mut state,
-            Action::Layout(Layout { sidebar_w: 4000.0, editor_ratio: 0.02, drawer_open: false }),
+            Action::Layout(Layout {
+                sidebar_w: 4000.0,
+                editor_ratio: 0.02,
+                drawer_open: false,
+            }),
         );
         assert_eq!(state.layout.sidebar_w, 4000.0_f64.max(SIDEBAR_MIN));
         assert_eq!(state.layout.editor_ratio, EDITOR_RATIO_MIN);
@@ -365,7 +413,10 @@ mod tests {
     fn status_is_set_and_cleared() {
         let mut state = state();
         assert_eq!(state.nav.status, None);
-        reduce(&mut state, Action::Status(Status::error("top.sv: not utf-8")));
+        reduce(
+            &mut state,
+            Action::Status(Status::error("top.sv: not utf-8")),
+        );
         let status = state.nav.status.clone().expect("status");
         assert_eq!(status.tone, StatusTone::Error);
         assert_eq!(status.text, "top.sv: not utf-8");
@@ -395,7 +446,14 @@ mod tests {
         let mut state = state();
         add(&mut state, "a");
         add(&mut state, "b");
-        reduce(&mut state, Action::RowSelected { index: 0, ctrl: false, shift: false });
+        reduce(
+            &mut state,
+            Action::RowSelected {
+                index: 0,
+                ctrl: false,
+                shift: false,
+            },
+        );
         add(&mut state, "c");
         assert_eq!(paths(&state), vec!["a", "c", "b"]);
     }
@@ -406,7 +464,12 @@ mod tests {
         add(&mut state, "a");
         add(&mut state, "b");
         add(&mut state, "c");
-        reduce(&mut state, Action::RowsRemoved { indices: vec![2, 0, 9] });
+        reduce(
+            &mut state,
+            Action::RowsRemoved {
+                indices: vec![2, 0, 9],
+            },
+        );
         assert_eq!(paths(&state), vec!["b"]);
     }
 
@@ -444,7 +507,13 @@ mod tests {
         add(&mut state, "b");
         let mut setting = Settings::new();
         setting.fixed_active = true;
-        reduce(&mut state, Action::RowSettingChanged { indices: vec![0, 1], setting });
+        reduce(
+            &mut state,
+            Action::RowSettingChanged {
+                indices: vec![0, 1],
+                setting,
+            },
+        );
         assert!(state.rows.items[0].setting.fixed_active);
         assert!(state.rows.items[1].setting.fixed_active);
         assert!(!state.rows.items[0].chosen);
@@ -455,11 +524,25 @@ mod tests {
         let mut state = state();
         add(&mut state, "a");
         add(&mut state, "b");
-        reduce(&mut state, Action::RowSelected { index: 1, ctrl: false, shift: false });
+        reduce(
+            &mut state,
+            Action::RowSelected {
+                index: 1,
+                ctrl: false,
+                shift: false,
+            },
+        );
         assert!(!state.rows.items[0].chosen);
         assert!(state.rows.items[1].chosen);
         // clicking the same row again clears it
-        reduce(&mut state, Action::RowSelected { index: 1, ctrl: false, shift: false });
+        reduce(
+            &mut state,
+            Action::RowSelected {
+                index: 1,
+                ctrl: false,
+                shift: false,
+            },
+        );
         assert!(!state.rows.items[1].chosen);
     }
 
@@ -490,11 +573,32 @@ mod tests {
         let mut state = state();
         add(&mut state, "a");
         add(&mut state, "b");
-        reduce(&mut state, Action::RowSelected { index: 0, ctrl: false, shift: false });
-        reduce(&mut state, Action::RowSelected { index: 1, ctrl: true, shift: false });
+        reduce(
+            &mut state,
+            Action::RowSelected {
+                index: 0,
+                ctrl: false,
+                shift: false,
+            },
+        );
+        reduce(
+            &mut state,
+            Action::RowSelected {
+                index: 1,
+                ctrl: true,
+                shift: false,
+            },
+        );
         assert!(state.rows.items[0].chosen);
         assert!(state.rows.items[1].chosen);
-        reduce(&mut state, Action::RowSelected { index: 0, ctrl: true, shift: false });
+        reduce(
+            &mut state,
+            Action::RowSelected {
+                index: 0,
+                ctrl: true,
+                shift: false,
+            },
+        );
         assert!(!state.rows.items[0].chosen);
         assert!(state.rows.items[1].chosen);
     }
@@ -502,12 +606,18 @@ mod tests {
     #[test]
     fn the_viewport_and_cursors_are_committed_values() {
         let mut state = state();
-        reduce(&mut state, Action::ViewCommitted(crate::state::types::View::new(120.0, 4.0)));
+        reduce(
+            &mut state,
+            Action::ViewCommitted(crate::state::types::View::new(120.0, 4.0)),
+        );
         assert_eq!(state.viewport.view.x_axis, 120.0);
         assert_eq!(state.viewport.view.size, 4.0);
         reduce(
             &mut state,
-            Action::CursorsChanged(crate::state::types::Cursors { one: Some(10), two: None }),
+            Action::CursorsChanged(crate::state::types::Cursors {
+                one: Some(10),
+                two: None,
+            }),
         );
         assert_eq!(state.viewport.cursors.one, Some(10));
         assert_eq!(state.viewport.cursors.two, None);
@@ -527,7 +637,12 @@ mod tests {
         let mut state = state();
         assert_eq!(state.dump.waveform, None);
         assert_eq!(state.dump.time_range, None);
-        reduce(&mut state, Action::DumpOpened { waveform: handle.clone() });
+        reduce(
+            &mut state,
+            Action::DumpOpened {
+                waveform: handle.clone(),
+            },
+        );
         assert_eq!(state.dump.time_range, expected);
         // the handle is the identity: same file, same handle
         assert_eq!(state.dump.waveform, Some(handle));
@@ -545,12 +660,33 @@ mod tests {
         for path in ["a", "b", "c", "d"] {
             add(&mut state, path);
         }
-        reduce(&mut state, Action::RowSelected { index: 0, ctrl: false, shift: false });
-        reduce(&mut state, Action::RowSelected { index: 3, ctrl: false, shift: true });
+        reduce(
+            &mut state,
+            Action::RowSelected {
+                index: 0,
+                ctrl: false,
+                shift: false,
+            },
+        );
+        reduce(
+            &mut state,
+            Action::RowSelected {
+                index: 3,
+                ctrl: false,
+                shift: true,
+            },
+        );
         let chosen: Vec<bool> = state.rows.items.iter().map(|row| row.chosen).collect();
         assert_eq!(chosen, vec![true, true, true, true]);
         // shift inside the range clears it
-        reduce(&mut state, Action::RowSelected { index: 2, ctrl: false, shift: true });
+        reduce(
+            &mut state,
+            Action::RowSelected {
+                index: 2,
+                ctrl: false,
+                shift: true,
+            },
+        );
         assert!(state.rows.items.iter().all(|row| !row.chosen));
     }
 }

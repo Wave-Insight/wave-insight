@@ -54,8 +54,8 @@ pub fn document_uri(file: &str) -> String {
     let mut uri = String::with_capacity(DOCUMENT_URI_PREFIX.len() + file.len());
     uri.push_str(DOCUMENT_URI_PREFIX);
     for byte in file.bytes() {
-        let safe = byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':');
+        let safe =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':');
         if safe {
             uri.push(char::from(byte));
         } else {
@@ -465,7 +465,10 @@ impl LspBridge {
     pub fn symbols(&self, file: &str) -> Vec<Value> {
         let uri = document_uri(file);
         let mut bridge = self.0.borrow_mut();
-        match bridge.request("textDocument/documentSymbol", json!({ "textDocument": { "uri": uri } })) {
+        match bridge.request(
+            "textDocument/documentSymbol",
+            json!({ "textDocument": { "uri": uri } }),
+        ) {
             Ok(Value::Array(symbols)) => symbols,
             Ok(_) => Vec::new(),
             Err(error) => {
@@ -496,10 +499,7 @@ impl LspBridge {
     fn signal_at(&self, file: &str, line: u32, column: u32) -> Option<String> {
         let design = self.design();
         let state = design.borrow();
-        state
-            .signals_at(file, line, column)
-            .into_iter()
-            .next()
+        state.signals_at(file, line, column).into_iter().next()
     }
 
     fn declaration_fallback(&self, file: &str, line: u32, column: u32) -> Option<Location> {
@@ -588,7 +588,11 @@ fn publish_debug_hook(state: Rc<RefCell<Bridge>>) {
     let handle = Closure::<dyn FnMut(String) -> String>::new(move |message: String| {
         handle_text(&mut shared.borrow_mut(), &message)
     });
-    set(&hook, "handle", handle.as_ref().unchecked_ref::<Function>().into());
+    set(
+        &hook,
+        "handle",
+        handle.as_ref().unchecked_ref::<Function>().into(),
+    );
     handle.forget();
 
     let shared = Rc::clone(&state);
@@ -611,7 +615,11 @@ fn publish_debug_hook(state: Rc<RefCell<Bridge>>) {
         }
         Value::Object(entries).to_string()
     });
-    set(&hook, "documents", documents.as_ref().unchecked_ref::<Function>().into());
+    set(
+        &hook,
+        "documents",
+        documents.as_ref().unchecked_ref::<Function>().into(),
+    );
     documents.forget();
 
     let shared = Rc::clone(&state);
@@ -627,7 +635,11 @@ fn publish_debug_hook(state: Rc<RefCell<Bridge>>) {
         })
         .to_string()
     });
-    set(&hook, "stats", stats.as_ref().unchecked_ref::<Function>().into());
+    set(
+        &hook,
+        "stats",
+        stats.as_ref().unchecked_ref::<Function>().into(),
+    );
     stats.forget();
 
     let _ = Reflect::set(&window, &JsValue::from_str("__waveInsightLsp"), &hook);

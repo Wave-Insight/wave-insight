@@ -342,7 +342,7 @@ fn apply_binary(op: BinOp, lhs: i64, rhs: i64) -> Option<i64> {
         BinOp::Shl => lhs.checked_shl(rhs.try_into().ok()?)?,
         BinOp::Shr => lhs.checked_shr(rhs.try_into().ok()?)?,
         BinOp::Pow => {
-            if rhs < 0 || rhs > 62 {
+            if !(0..=62).contains(&rhs) {
                 return None;
             }
             lhs.checked_pow(rhs as u32)?

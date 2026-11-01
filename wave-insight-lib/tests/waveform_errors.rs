@@ -40,7 +40,7 @@ fn missing_file_is_an_io_error() {
     );
     //the source of the error is the io error, so `?`/`anyhow` chains stay useful
     let source: &dyn Error = error.source().expect("io error as source");
-    assert!(source.to_string().len() > 0);
+    assert!(!source.to_string().is_empty());
 }
 
 #[test]

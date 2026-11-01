@@ -48,7 +48,11 @@ pub enum Action {
     /// Remove the given rows (indices; the reducer sorts and dedupes them).
     RowsRemoved { indices: Vec<usize> },
     /// A name cell was clicked; `ctrl`/`shift` are the modifier state.
-    RowSelected { index: usize, ctrl: bool, shift: bool },
+    RowSelected {
+        index: usize,
+        ctrl: bool,
+        shift: bool,
+    },
     /// `Ctrl+A`: every row is selected (so one Delete removes all of them).
     RowsAllSelected,
     /// `Esc`: nothing is selected any more.
@@ -56,7 +60,10 @@ pub enum Action {
     /// A row was dragged to another position.
     RowsReordered { from: usize, to: usize },
     /// A presentation setting was changed for the given rows.
-    RowSettingChanged { indices: Vec<usize>, setting: Settings },
+    RowSettingChanged {
+        indices: Vec<usize>,
+        setting: Settings,
+    },
 
     /// A dump was opened; the store owns the handle and derives the time range.
     DumpOpened { waveform: DumpHandle },

@@ -144,10 +144,7 @@ fn build_instance(
 
     let mut children = Vec::new();
     for (child_decl_index, child_declaration) in module.instances.iter().enumerate() {
-        let Some(child_module) = modules
-            .get(child_declaration.module.as_str())
-            .copied()
-        else {
+        let Some(child_module) = modules.get(child_declaration.module.as_str()).copied() else {
             design.diagnostics.push(Diagnostic::error(
                 DiagnosticKind::UnresolvedModule,
                 format!(
@@ -321,12 +318,7 @@ fn build_port_bindings(
 
     let named: HashMap<&str, &PortConnectionDecl> = connections
         .iter()
-        .filter_map(|connection| {
-            connection
-                .port
-                .as_deref()
-                .map(|port| (port, connection))
-        })
+        .filter_map(|connection| connection.port.as_deref().map(|port| (port, connection)))
         .filter(|(port, _)| *port != "*")
         .collect();
     let wildcard = connections
@@ -471,6 +463,15 @@ fn collect_usage(design: &mut ElaboratedDesign, instance_path: &str, usage: &Sig
     }
 }
 
+/// Add the driver/load references of every port connection.
+///
+/// A connection adds one reference per resolved *parent* signal (the signal the
+/// connection reads or drives) and one for the *child port* itself, both at the
+/// connection's span.  The span covers `.port(expression)` for named
+/// connections (see [`PortConnectionDecl::span`]), so definition/hover on the
+/// port name or on the expression answer with the connected signal; the parent
+/// signal is registered first, so on the shared span it is the answer that wins
+/// over the child port.
 fn link_connections(design: &mut ElaboratedDesign, modules: &HashMap<&str, &ModuleDef>) {
     for child_index in 0..design.instances.len() {
         let (parent_index, decl_index, child_path) = {
@@ -570,11 +571,7 @@ fn add_reference(
 }
 
 /// Resolve a source name inside an instance scope to a flat signal path.
-fn resolve_name(
-    instance_path: &str,
-    name: &str,
-    index: &HashMap<String, usize>,
-) -> Option<String> {
+fn resolve_name(instance_path: &str, name: &str, index: &HashMap<String, usize>) -> Option<String> {
     if name.is_empty() {
         return None;
     }

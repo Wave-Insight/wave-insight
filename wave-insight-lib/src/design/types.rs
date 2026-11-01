@@ -246,8 +246,13 @@ pub struct PortConnectionDecl {
     /// Connection expression source text.  `None` for `.a`, `.a()` and empty
     /// positional slots.
     pub expression: Option<String>,
-    /// Span of the connection expression, or of the port name for implicit
-    /// connections.
+    /// Source range used for "what is under the cursor" queries.
+    ///
+    /// For a named connection with an expression this covers
+    /// `.port(expression)`, so a cursor on the port name or on the expression
+    /// resolves to the connection (a parenthesis in between is included too);
+    /// a positional connection spans its expression and an implicit `.a`
+    /// connection spans the name.
     pub span: Span,
     /// Signal names referenced by the connection expression.
     pub names: Vec<NameRef>,

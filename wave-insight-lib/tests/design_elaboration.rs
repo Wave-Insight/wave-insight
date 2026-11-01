@@ -4,9 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use wave_insight_lib::design::{
-    DesignDb, DiagnosticKind, Direction, SourceItem, UsageKind,
-};
+use wave_insight_lib::design::{DesignDb, DiagnosticKind, Direction, SourceItem, UsageKind};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -23,7 +21,11 @@ fn line_of(source: &str, needle: &str) -> u32 {
     let index = source
         .find(needle)
         .unwrap_or_else(|| panic!("`{needle}` not found in source"));
-    source[..index].bytes().filter(|byte| *byte == b'\n').count() as u32 + 1
+    source[..index]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count() as u32
+        + 1
 }
 
 fn col_of(source: &str, needle: &str) -> u32 {
@@ -234,7 +236,10 @@ fn flat_signal_table_has_declarations_drivers_and_loads() {
         .any(|driver| driver.kind == UsageKind::PortConnection));
 
     // Accessors mirror the table.
-    assert_eq!(design.drivers("top.u_cpu.pc_reg").len(), pc_reg.drivers.len());
+    assert_eq!(
+        design.drivers("top.u_cpu.pc_reg").len(),
+        pc_reg.drivers.len()
+    );
     assert_eq!(design.loads("top.u_cpu.pc_reg").len(), pc_reg.loads.len());
     assert!(design.signals().len() >= 20);
     assert!(design.signal("top.not_a_signal").is_none());
@@ -256,7 +261,10 @@ fn declaration_and_source_item_queries() {
         declaration.start_line,
         line_of(&cpu_source, "reg   [WIDTH-1:0] pc_reg;")
     );
-    assert_eq!(db.declaration_of(&design, "top.u_cpu.pc_reg"), Some(declaration));
+    assert_eq!(
+        db.declaration_of(&design, "top.u_cpu.pc_reg"),
+        Some(declaration)
+    );
 
     // Module name.
     match db.item_at(
@@ -337,9 +345,7 @@ fn declaration_and_source_item_queries() {
     }
 
     // Nothing under an unrelated position.
-    assert!(db
-        .item_at(&design, fixture("cpu.sv"), 1, 1)
-        .is_none());
+    assert!(db.item_at(&design, fixture("cpu.sv"), 1, 1).is_none());
 }
 
 #[test]
@@ -349,7 +355,11 @@ fn wildcard_and_implicit_port_connections() {
 
     for top in ["implicit_conn", "wildcard_conn"] {
         let design = db.elaborate(top);
-        assert!(design.diagnostics().is_empty(), "{top}: {:?}", design.diagnostics());
+        assert!(
+            design.diagnostics().is_empty(),
+            "{top}: {:?}",
+            design.diagnostics()
+        );
         let leaf = design
             .instance(&format!("{top}.u_leaf"))
             .unwrap_or_else(|| panic!("{top}.u_leaf"));
@@ -447,7 +457,11 @@ fn non_ansi_header_ports_are_queryable() {
 fn non_ansi_always_block_drivers_and_loads() {
     let db = DesignDb::load_files([fixture("legacy_ports.sv")]);
     let design = db.elaborate("legacy_ports");
-    assert!(design.diagnostics().is_empty(), "{:?}", design.diagnostics());
+    assert!(
+        design.diagnostics().is_empty(),
+        "{:?}",
+        design.diagnostics()
+    );
 
     let r = design.signal("legacy_ports.r").expect("r");
     assert!(r

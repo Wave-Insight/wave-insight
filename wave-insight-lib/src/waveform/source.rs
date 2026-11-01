@@ -51,9 +51,7 @@ impl WaveformSource {
     /// Open a fresh reader. `wellen` seeks around, so every caller gets its own.
     pub(crate) fn reader(&self) -> io::Result<AnyReader> {
         match self {
-            WaveformSource::Path(path) => {
-                Ok(AnyReader::File(BufReader::new(File::open(path)?)))
-            }
+            WaveformSource::Path(path) => Ok(AnyReader::File(BufReader::new(File::open(path)?))),
             WaveformSource::Memory(bytes) => Ok(AnyReader::Memory(Cursor::new(bytes.clone()))),
         }
     }
@@ -119,7 +117,9 @@ const FST_BLOCK_GZIP: u8 = 254;
 /// be mistaken for FST and then panics inside `fst-reader`. Gating the input
 /// here keeps the promise that a corrupt file yields an error instead of a
 /// crash. Everything that passes the gate is then parsed by wellen as usual.
-pub(crate) fn detect_format(reader: &mut AnyReader) -> crate::waveform::Result<crate::waveform::WaveFormat> {
+pub(crate) fn detect_format(
+    reader: &mut AnyReader,
+) -> crate::waveform::Result<crate::waveform::WaveFormat> {
     use crate::waveform::{WaveFormat, WaveformError};
 
     let mut head = [0u8; 16];

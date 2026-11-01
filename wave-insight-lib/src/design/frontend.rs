@@ -8,8 +8,10 @@
 //!
 //! Robustness rules for this layer:
 //!
-//! * malformed input must never panic - parser errors, preprocessing errors and
-//!   even a panic inside the third party parser become [`Diagnostic`]s;
+//! * malformed input should not panic - parser errors, preprocessing errors and
+//!   (best effort) a panic inside the third party parser become [`Diagnostic`]s.
+//!   The best effort part needs unwinding: the shipped release profile sets
+//!   `panic = "abort"`, so a parser panic aborts the app/webview there;
 //! * every declaration remembers its source span;
 //! * constructs outside the supported subset are skipped with a warning
 //!   diagnostic instead of aborting the file.
@@ -20,16 +22,16 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use sv_parser::{
-    parse_sv, parse_sv_str, AnsiPortDeclaration, ConstantParamExpression, ContinuousAssign,
-    DataDeclaration, DataType, DataTypeOrImplicit, Defines, FinalConstruct, HierarchicalIdentifier,
-    InitialConstruct, InputDeclaration, IntegerAtomType, IntegerVectorType, Iter,
-    ListOfParameterAssignments, ListOfPortConnections, Locate, LocalParameterDeclaration,
+    parse_sv, parse_sv_str, AlwaysConstruct, AnsiPortDeclaration, ConstantParamExpression,
+    ContinuousAssign, DataDeclaration, DataType, DataTypeOrImplicit, Defines, FinalConstruct,
+    HierarchicalIdentifier, InitialConstruct, InputDeclaration, IntegerAtomType, IntegerVectorType,
+    Iter, ListOfParameterAssignments, ListOfPortConnections, LocalParameterDeclaration, Locate,
     ModuleAnsiHeader, ModuleCommonItem, ModuleDeclaration, ModuleInstantiation, ModuleItem,
     ModuleNonansiHeader, NamedPortConnection, NetDeclaration, NetPortType, NodeEvent,
-    NonPortModuleItem, OutputDeclaration, PackedDimension, PackageOrGenerateItemDeclaration,
-    ParameterDeclaration, ParameterPortList, ParameterPortDeclaration, PortDeclaration,
+    NonPortModuleItem, OutputDeclaration, PackageOrGenerateItemDeclaration, PackedDimension,
+    ParameterDeclaration, ParameterPortDeclaration, ParameterPortList, PortDeclaration,
     PortDirection, PsOrHierarchicalNetIdentifier, RefNode, RefNodes, SyntaxTree, UnpackedDimension,
-    VariablePortType, VariableDimension, VarDataType, AlwaysConstruct,
+    VarDataType, VariableDimension, VariablePortType,
 };
 
 use super::const_eval::{dim_width, eval_const, ParamEnv};
@@ -119,9 +121,9 @@ fn error_diagnostic(locator: &mut Locator, path: &Path, error: sv_parser::Error)
         sv_parser::Error::Preprocess(_) | sv_parser::Error::Include { .. } => {
             DiagnosticKind::Preprocess
         }
-        sv_parser::Error::Io(_)
-        | sv_parser::Error::File { .. }
-        | sv_parser::Error::ReadUtf8(_) => DiagnosticKind::Io,
+        sv_parser::Error::Io(_) | sv_parser::Error::File { .. } | sv_parser::Error::ReadUtf8(_) => {
+            DiagnosticKind::Io
+        }
         _ => DiagnosticKind::Preprocess,
     };
     let origin = match &error {
@@ -206,8 +208,12 @@ impl Locator {
     }
 
     fn span_of_locates(&self, tree: &SyntaxTree, first: &Locate, last: &Locate) -> Span {
-        let start_origin = tree.get_origin(first).map(|(file, offset)| (file.clone(), offset));
-        let end_origin = tree.get_origin(last).map(|(file, offset)| (file.clone(), offset));
+        let start_origin = tree
+            .get_origin(first)
+            .map(|(file, offset)| (file.clone(), offset));
+        let end_origin = tree
+            .get_origin(last)
+            .map(|(file, offset)| (file.clone(), offset));
         match (start_origin, end_origin) {
             (Some((file, start_offset)), Some((end_file, end_offset))) if file == end_file => {
                 let (start_line, start_col) = self.pos(&file, start_offset);
@@ -366,8 +372,8 @@ impl<'a> Extractor<'a> {
             let NodeEvent::Enter(node) = event else {
                 continue;
             };
-            match node {
-                RefNode::Description(description) => match description {
+            if let RefNode::Description(description) = node {
+                match description {
                     sv_parser::Description::ModuleDeclaration(module) => {
                         if let Some(module) = self.extract_module(module.as_ref()) {
                             modules.push(module);
@@ -396,8 +402,7 @@ impl<'a> Extractor<'a> {
                     }
                     sv_parser::Description::ResetallCompilerDirective(_) => {}
                     sv_parser::Description::PackageItem(_) => {}
-                },
-                _ => {}
+                }
             }
         }
         ParsedFile {
@@ -473,23 +478,19 @@ impl<'a> Extractor<'a> {
     }
 
     fn unsupported(&self, what: &str, span: Span) {
-        self.diagnostics
-            .borrow_mut()
-            .push(Diagnostic::warning(
-                DiagnosticKind::UnsupportedConstruct,
-                format!("unsupported construct: {}; ignored", what),
-                Some(span),
-            ));
+        self.diagnostics.borrow_mut().push(Diagnostic::warning(
+            DiagnosticKind::UnsupportedConstruct,
+            format!("unsupported construct: {}; ignored", what),
+            Some(span),
+        ));
     }
 
     fn duplicate(&self, what: &str, name: &str, span: Span) {
-        self.diagnostics
-            .borrow_mut()
-            .push(Diagnostic::error(
-                DiagnosticKind::DuplicateDeclaration,
-                format!("duplicate {} `{}`", what, name),
-                Some(span),
-            ));
+        self.diagnostics.borrow_mut().push(Diagnostic::error(
+            DiagnosticKind::DuplicateDeclaration,
+            format!("duplicate {} `{}`", what, name),
+            Some(span),
+        ));
     }
 
     // -- module level ------------------------------------------------------
@@ -503,17 +504,11 @@ impl<'a> Extractor<'a> {
                 None
             }
             ModuleDeclaration::ExternNonansi(module) => {
-                self.unsupported(
-                    "extern module declaration",
-                    self.span_of(module.as_ref()),
-                );
+                self.unsupported("extern module declaration", self.span_of(module.as_ref()));
                 None
             }
             ModuleDeclaration::ExternAnsi(module) => {
-                self.unsupported(
-                    "extern module declaration",
-                    self.span_of(module.as_ref()),
-                );
+                self.unsupported("extern module declaration", self.span_of(module.as_ref()));
                 None
             }
         }
@@ -552,9 +547,7 @@ impl<'a> Extractor<'a> {
                 ModuleItem::PortDeclaration(port) => {
                     self.handle_port_declaration(&mut builder, &port.0)
                 }
-                ModuleItem::NonPortModuleItem(item) => {
-                    self.walk_non_port_item(&mut builder, item)
-                }
+                ModuleItem::NonPortModuleItem(item) => self.walk_non_port_item(&mut builder, item),
             }
         }
         builder.finish_ports(&mut self.diagnostics.borrow_mut());
@@ -601,10 +594,7 @@ impl<'a> Extractor<'a> {
                     if let Some(expression) = &port.nodes.0 {
                         match expression {
                             sv_parser::PortExpression::PortReference(reference) => {
-                                let name = self
-                                    .text_of(&reference.nodes.0)
-                                    .trim()
-                                    .to_string();
+                                let name = self.text_of(&reference.nodes.0).trim().to_string();
                                 let span = self.span_of(&reference.nodes.0);
                                 builder.port_order.push((name, span));
                             }
@@ -651,10 +641,10 @@ impl<'a> Extractor<'a> {
         };
         match list {
             ParameterPortList::Assignment(assignment) => {
-                for item in assignment.nodes.1.nodes.1.0.nodes.0.contents() {
+                for item in assignment.nodes.1.nodes.1 .0.nodes.0.contents() {
                     self.push_param_assignment(builder, item, false);
                 }
-                for (_comma, declaration) in assignment.nodes.1.nodes.1.1.iter() {
+                for (_comma, declaration) in assignment.nodes.1.nodes.1 .1.iter() {
                     self.push_parameter_port_declaration(builder, declaration);
                 }
             }
@@ -746,13 +736,11 @@ impl<'a> Extractor<'a> {
             return;
         }
         let span = self.span_of(&assignment.nodes.0);
-        let default = assignment
-            .nodes
-            .2
-            .as_ref()
-            .map(|(_symbol, value): &(sv_parser::Symbol, ConstantParamExpression)| {
+        let default = assignment.nodes.2.as_ref().map(
+            |(_symbol, value): &(sv_parser::Symbol, ConstantParamExpression)| {
                 self.text_of(value).trim().to_string()
-            });
+            },
+        );
         builder.push_param(ParamDef {
             name,
             default,
@@ -782,12 +770,16 @@ impl<'a> Extractor<'a> {
                     let span = self.span_of(&port.nodes.1);
                     let unpacked = self.unpacked_dims(&port.nodes.2);
                     let header_info = match &port.nodes.0 {
-                        Some(sv_parser::NetPortHeaderOrInterfacePortHeader::NetPortHeader(header)) => {
+                        Some(sv_parser::NetPortHeaderOrInterfacePortHeader::NetPortHeader(
+                            header,
+                        )) => {
                             let direction = header.nodes.0.as_ref().map(|d| self.direction_of(d));
                             let info = self.type_info_net_port_type(&header.nodes.1);
                             Some((direction, info))
                         }
-                        Some(sv_parser::NetPortHeaderOrInterfacePortHeader::InterfacePortHeader(_)) => {
+                        Some(
+                            sv_parser::NetPortHeaderOrInterfacePortHeader::InterfacePortHeader(_),
+                        ) => {
                             self.unsupported("interface port", span.clone());
                             None
                         }
@@ -835,7 +827,10 @@ impl<'a> Extractor<'a> {
         let (direction, info) = match header_info {
             Some((direction, info)) => {
                 let direction = direction.unwrap_or_else(|| {
-                    state.as_ref().map(|s| s.direction).unwrap_or(Direction::Unknown)
+                    state
+                        .as_ref()
+                        .map(|s| s.direction)
+                        .unwrap_or(Direction::Unknown)
                 });
                 let state = state.get_or_insert_with(|| AnsiPortState {
                     direction,
@@ -887,7 +882,11 @@ impl<'a> Extractor<'a> {
         }
     }
 
-    fn handle_port_declaration(&mut self, builder: &mut ModuleBuilder, declaration: &PortDeclaration) {
+    fn handle_port_declaration(
+        &mut self,
+        builder: &mut ModuleBuilder,
+        declaration: &PortDeclaration,
+    ) {
         match declaration {
             PortDeclaration::Input(declaration) => match &declaration.nodes.1 {
                 InputDeclaration::Net(net) => {
@@ -969,15 +968,7 @@ impl<'a> Extractor<'a> {
                     let name = self.text_of(identifier).trim().to_string();
                     let span = self.span_of(identifier);
                     let unpacked = self.unpacked_dims(dimensions);
-                    self.insert_port(
-                        builder,
-                        direction,
-                        info,
-                        name,
-                        span,
-                        unpacked,
-                        width,
-                    );
+                    self.insert_port(builder, direction, info, name, span, unpacked, width);
                 }
             }
             PortNameList::Variable(list) => {
@@ -985,15 +976,7 @@ impl<'a> Extractor<'a> {
                     let name = self.text_of(identifier).trim().to_string();
                     let span = self.span_of(identifier);
                     let unpacked = self.variable_unpacked_dims(dimensions);
-                    self.insert_port(
-                        builder,
-                        direction,
-                        info,
-                        name,
-                        span,
-                        unpacked,
-                        width,
-                    );
+                    self.insert_port(builder, direction, info, name, span, unpacked, width);
                 }
             }
             PortNameList::VariablePort(list) => {
@@ -1001,20 +984,15 @@ impl<'a> Extractor<'a> {
                     let name = self.text_of(identifier).trim().to_string();
                     let span = self.span_of(identifier);
                     let unpacked = self.variable_unpacked_dims(dimensions);
-                    self.insert_port(
-                        builder,
-                        direction,
-                        info,
-                        name,
-                        span,
-                        unpacked,
-                        width,
-                    );
+                    self.insert_port(builder, direction, info, name, span, unpacked, width);
                 }
             }
         }
     }
 
+    //one argument per piece of the declaration being recorded (direction, type,
+    //name, span, defaults); grouping them into a struct would hide that
+    #[allow(clippy::too_many_arguments)]
     fn insert_port(
         &mut self,
         builder: &mut ModuleBuilder,
@@ -1124,12 +1102,8 @@ impl<'a> Extractor<'a> {
             ModuleCommonItem::ContinuousAssign(assign) => {
                 self.handle_continuous_assign(builder, assign)
             }
-            ModuleCommonItem::AlwaysConstruct(always) => {
-                self.handle_procedural(builder, always)
-            }
-            ModuleCommonItem::InitialConstruct(initial) => {
-                self.handle_initial(builder, initial)
-            }
+            ModuleCommonItem::AlwaysConstruct(always) => self.handle_procedural(builder, always),
+            ModuleCommonItem::InitialConstruct(initial) => self.handle_initial(builder, initial),
             ModuleCommonItem::FinalConstruct(final_construct) => {
                 self.handle_final(builder, final_construct)
             }
@@ -1211,10 +1185,8 @@ impl<'a> Extractor<'a> {
     fn handle_net_declaration(&mut self, builder: &mut ModuleBuilder, net: &NetDeclaration) {
         match net {
             NetDeclaration::NetType(declaration) => {
-                let info = self.type_info_data_type_or_implicit(
-                    &declaration.nodes.3,
-                    Some(SignalKind::Wire),
-                );
+                let info = self
+                    .type_info_data_type_or_implicit(&declaration.nodes.3, Some(SignalKind::Wire));
                 for assignment in declaration.nodes.5.nodes.0.contents() {
                     let name = self.text_of(&assignment.nodes.0).trim().to_string();
                     let span = self.span_of(&assignment.nodes.0);
@@ -1239,15 +1211,7 @@ impl<'a> Extractor<'a> {
                     let name = self.text_of(&assignment.nodes.0).trim().to_string();
                     let span = self.span_of(&assignment.nodes.0);
                     let unpacked = self.unpacked_dims(&assignment.nodes.1);
-                    self.insert_signal(
-                        builder,
-                        SignalKind::Other,
-                        &[],
-                        unpacked,
-                        None,
-                        name,
-                        span,
-                    );
+                    self.insert_signal(builder, SignalKind::Other, &[], unpacked, None, name, span);
                     if let Some((_equals, expression)) = &assignment.nodes.2 {
                         self.add_loads(builder, expression, UsageKind::Declaration);
                     }
@@ -1262,10 +1226,8 @@ impl<'a> Extractor<'a> {
     fn handle_data_declaration(&mut self, builder: &mut ModuleBuilder, data: &DataDeclaration) {
         match data {
             DataDeclaration::Variable(declaration) => {
-                let mut info = self.type_info_data_type_or_implicit(
-                    &declaration.nodes.3,
-                    Some(SignalKind::Reg),
-                );
+                let mut info = self
+                    .type_info_data_type_or_implicit(&declaration.nodes.3, Some(SignalKind::Reg));
                 if declaration.nodes.1.is_some() && info.kind.is_none() {
                     info.kind = Some(SignalKind::Reg);
                 }
@@ -1290,10 +1252,7 @@ impl<'a> Extractor<'a> {
                             }
                         }
                         sv_parser::VariableDeclAssignment::DynamicArray(_) => {
-                            self.unsupported(
-                                "dynamic array declaration",
-                                self.span_of(assignment),
-                            )
+                            self.unsupported("dynamic array declaration", self.span_of(assignment))
                         }
                         sv_parser::VariableDeclAssignment::Class(_) => {
                             self.unsupported("class variable declaration", self.span_of(assignment))
@@ -1311,6 +1270,8 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    //same as insert_port: the arguments are the declaration, not a bag
+    #[allow(clippy::too_many_arguments)]
     fn insert_signal(
         &mut self,
         builder: &mut ModuleBuilder,
@@ -1373,10 +1334,7 @@ impl<'a> Extractor<'a> {
         for instance in instantiation.nodes.2.contents() {
             let name_of_instance = &instance.nodes.0;
             if !name_of_instance.nodes.1.is_empty() {
-                self.unsupported(
-                    "arrayed instance",
-                    self.span_of(&name_of_instance.nodes.0),
-                );
+                self.unsupported("arrayed instance", self.span_of(&name_of_instance.nodes.0));
                 continue;
             }
             let name = self.text_of(&name_of_instance.nodes.0).trim().to_string();
@@ -1421,9 +1379,13 @@ impl<'a> Extractor<'a> {
             ListOfParameterAssignments::Named(named) => {
                 for item in named.nodes.0.contents() {
                     let name = self.text_of(&item.nodes.1).trim().to_string();
-                    let value = item.nodes.2.nodes.1.as_ref().map(|expression| {
-                        self.text_of(expression).trim().to_string()
-                    });
+                    let value = item
+                        .nodes
+                        .2
+                        .nodes
+                        .1
+                        .as_ref()
+                        .map(|expression| self.text_of(expression).trim().to_string());
                     result.push(ParamAssignment {
                         name: Some(name),
                         value,
@@ -1475,12 +1437,26 @@ impl<'a> Extractor<'a> {
                                 Some(paren) => match &paren.nodes.1 {
                                     Some(expression) => {
                                         let names = self.collect_primary_names(expression);
+                                        // The span of a named connection covers
+                                        // `.port(expression)` (port name .. end of
+                                        // the connected expression), not just the
+                                        // expression: a cursor on the port name is
+                                        // also part of the connection and has to
+                                        // resolve to a driver/load answer.
+                                        let expression_span = self.span_of(expression);
+                                        let span = Span::new(
+                                            port_span.file.clone(),
+                                            port_span.start_line,
+                                            port_span.start_col,
+                                            expression_span.end_line,
+                                            expression_span.end_col,
+                                        );
                                         result.push(PortConnectionDecl {
                                             port: Some(port),
                                             expression: Some(
                                                 self.text_of(expression).trim().to_string(),
                                             ),
-                                            span: self.span_of(expression),
+                                            span,
                                             names,
                                         });
                                     }
@@ -1522,23 +1498,29 @@ impl<'a> Extractor<'a> {
 
     // -- drivers and loads -------------------------------------------------
 
-    fn handle_continuous_assign(
-        &mut self,
-        builder: &mut ModuleBuilder,
-        assign: &ContinuousAssign,
-    ) {
+    fn handle_continuous_assign(&mut self, builder: &mut ModuleBuilder, assign: &ContinuousAssign) {
         match assign {
             ContinuousAssign::Net(assign) => {
                 for assignment in assign.nodes.3.nodes.0.contents() {
                     let lvalues = self.collect_lvalues(&assignment.nodes.0);
-                    self.push_usages(builder, lvalues, UsageRole::Driver, UsageKind::ContinuousAssign);
+                    self.push_usages(
+                        builder,
+                        lvalues,
+                        UsageRole::Driver,
+                        UsageKind::ContinuousAssign,
+                    );
                     self.add_loads(builder, &assignment.nodes.2, UsageKind::ContinuousAssign);
                 }
             }
             ContinuousAssign::Variable(assign) => {
                 for assignment in assign.nodes.2.nodes.0.contents() {
                     let lvalues = self.collect_lvalues(&assignment.nodes.0);
-                    self.push_usages(builder, lvalues, UsageRole::Driver, UsageKind::ContinuousAssign);
+                    self.push_usages(
+                        builder,
+                        lvalues,
+                        UsageRole::Driver,
+                        UsageKind::ContinuousAssign,
+                    );
                     self.add_loads(builder, &assignment.nodes.2, UsageKind::ContinuousAssign);
                 }
             }
@@ -1568,8 +1550,8 @@ impl<'a> Extractor<'a> {
         // reference kind so the UI can tell them apart from data loads.
         let mut event_spans: HashSet<Span> = HashSet::new();
         {
-            let mut nodes = Iter::new(RefNodes(vec![node.clone()]));
-            while let Some(item) = nodes.next() {
+            let nodes = Iter::new(RefNodes(vec![node.clone()]));
+            for item in nodes {
                 if let RefNode::EventControl(event) = item {
                     let names = self.collect_primary_names(event);
                     for name in names {
@@ -1585,7 +1567,12 @@ impl<'a> Extractor<'a> {
             }
         }
         let lvalues = self.collect_lvalues(node.clone());
-        self.push_usages(builder, lvalues, UsageRole::Driver, UsageKind::ProceduralAssign);
+        self.push_usages(
+            builder,
+            lvalues,
+            UsageRole::Driver,
+            UsageKind::ProceduralAssign,
+        );
         let loads = self.collect_primary_names(node);
         for name in loads {
             if event_spans.contains(&name.span) {
@@ -1848,8 +1835,9 @@ impl<'a> Extractor<'a> {
 
     fn type_info_net_port_type(&mut self, net_type: &NetPortType) -> TypeInfo {
         match net_type {
-            NetPortType::DataType(data_type) => self
-                .type_info_data_type_or_implicit(&data_type.nodes.1, Some(SignalKind::Wire)),
+            NetPortType::DataType(data_type) => {
+                self.type_info_data_type_or_implicit(&data_type.nodes.1, Some(SignalKind::Wire))
+            }
             NetPortType::NetTypeIdentifier(_) => TypeInfo::unknown(),
             NetPortType::Interconnect(_) => {
                 self.unsupported("interconnect port type", self.span_of(net_type));

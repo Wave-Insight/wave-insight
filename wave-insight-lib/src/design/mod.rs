@@ -93,7 +93,9 @@ use frontend::ParsedFile;
 /// The design database: parsed module definitions plus the diagnostics
 /// collected while reading them.
 ///
-/// A `DesignDb` never panics on malformed input.  Check
+/// A `DesignDb` answers malformed input with diagnostics instead of panicking
+/// wherever it can; a panic inside the third-party parser is caught on a best
+/// effort basis only (release builds use `panic = "abort"`).  Check
 /// [`DesignDb::diagnostics`] to find out what was skipped or repaired.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct DesignDb {
@@ -257,7 +259,9 @@ impl DesignDb {
                     DiagnosticKind::DuplicateDeclaration,
                     format!(
                         "module `{}` is already defined at {}:{}",
-                        module.name, previous.span.file.display(), previous.span.start_line
+                        module.name,
+                        previous.span.file.display(),
+                        previous.span.start_line
                     ),
                     Some(module.span.clone()),
                 ));

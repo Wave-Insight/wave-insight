@@ -47,7 +47,9 @@ fn bin_string(value: &[(u8, u8)], bitcount: usize) -> String {
 }
 
 fn oct_string(value: &[(u8, u8)], bitcount: usize) -> String {
-    let drop_head = ((value.len() * 8 + 2) / 3).saturating_sub((bitcount + 2) / 3);
+    let drop_head = (value.len() * 8)
+        .div_ceil(3)
+        .saturating_sub(bitcount.div_ceil(3));
     let mut state = (value.len() % 3) as u8;
     let mut pad_head = (0u8, 0u8);
     let ret: Vec<u8> = value
@@ -76,7 +78,10 @@ fn oct_string(value: &[(u8, u8)], bitcount: usize) -> String {
             } else {
                 state = 1;
                 let ret = vec![
-                    ((pad_head.0 << 1) + (xz >> 7), (pad_head.1 << 1) + (num >> 7)),
+                    (
+                        (pad_head.0 << 1) + (xz >> 7),
+                        (pad_head.1 << 1) + (num >> 7),
+                    ),
                     ((xz >> 4) & 0b00000111, (num >> 4) & 0b00000111),
                     ((xz >> 1) & 0b00000111, (num >> 1) & 0b00000111),
                 ];

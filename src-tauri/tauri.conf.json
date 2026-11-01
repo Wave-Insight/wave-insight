@@ -17,7 +17,7 @@
     "bundle": {
       "active": true,
       "category": "DeveloperTool",
-      "copyright": "",
+      "copyright": "Copyright © Wave Insight contributors",
       "deb": {
         "depends": []
       },
@@ -30,7 +30,7 @@
         "icons/icon.ico"
       ],
       "identifier": "com.waveinsight.tauri",
-      "longDescription": "",
+      "longDescription": "A wave viewer and debugger for Verilog/SystemVerilog: it reads VCD, FST and GHW dumps, shows the hierarchy and the waveforms, and links signals to their declarations, drivers and loads in the source.",
       "macOS": {
         "entitlements": null,
         "exceptionDomain": "",
@@ -39,7 +39,7 @@
         "signingIdentity": null
       },
       "resources": [],
-      "shortDescription": "",
+      "shortDescription": "Wave viewer and debugger for VCD/FST/GHW dumps",
       "targets": "all",
       "windows": {
         "certificateThumbprint": null,

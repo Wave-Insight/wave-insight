@@ -1,9 +1,11 @@
 [package]
 name = "back-end"
-version = "0.5.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 #
 # The websocket/http demo that used to live here (and serialised the legacy
 # `Module`/`ModuleValue` model over :2993) is gone: the browser reads files

@@ -10,9 +10,9 @@
 //! the trace, a click puts cursor 1 there (right click cursor 2), and the
 //! readout on its left takes a time to jump to.
 
-use wave_insight_lib::waveform::TimeRange;
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::JsCast;
+use wave_insight_lib::waveform::TimeRange;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -315,7 +315,11 @@ impl Time {
     }
 
     fn rebuild(&mut self) {
-        let axis = build_axis(self.viewport.view.x_axis, self.viewport.view.size, self.width);
+        let axis = build_axis(
+            self.viewport.view.x_axis,
+            self.viewport.view.size,
+            self.width,
+        );
         self.points = axis.points;
         self.labels = axis.labels;
     }

@@ -74,7 +74,11 @@ impl Store {
     }
 
     /// Notify `callback` whenever `select` returns something different.
-    pub fn subscribe<S>(&self, select: impl Fn(&State) -> S + 'static, callback: Callback<S>) -> Subscription
+    pub fn subscribe<S>(
+        &self,
+        select: impl Fn(&State) -> S + 'static,
+        callback: Callback<S>,
+    ) -> Subscription
     where
         S: PartialEq + Clone + 'static,
     {
@@ -98,8 +102,14 @@ impl Store {
                 callback.emit(next);
             }
         });
-        self.0.subscribers.borrow_mut().push(Subscriber { id, notify });
-        Subscription { inner: Rc::clone(&self.0), id }
+        self.0
+            .subscribers
+            .borrow_mut()
+            .push(Subscriber { id, notify });
+        Subscription {
+            inner: Rc::clone(&self.0),
+            id,
+        }
     }
 
     /// Apply one action (and anything it cascades) and return the effects the
@@ -132,7 +142,10 @@ impl Store {
         // borrow `subscribers` while it is iterated
         let subscribers: Vec<Notify> = {
             let subscribers = self.0.subscribers.borrow();
-            subscribers.iter().map(|subscriber| Rc::clone(&subscriber.notify)).collect()
+            subscribers
+                .iter()
+                .map(|subscriber| Rc::clone(&subscriber.notify))
+                .collect()
         };
         let state = self.0.state.borrow();
         for notify in subscribers {
@@ -192,13 +205,19 @@ mod tests {
         let drawer_calls = StdRc::new(StdCell::new(0));
 
         let layout_counter = StdRc::clone(&layout_calls);
-        let _layout_sub = store.subscribe(select::layout, Callback::from(move |_layout| {
-            layout_counter.set(layout_counter.get() + 1);
-        }));
+        let _layout_sub = store.subscribe(
+            select::layout,
+            Callback::from(move |_layout| {
+                layout_counter.set(layout_counter.get() + 1);
+            }),
+        );
         let drawer_counter = StdRc::clone(&drawer_calls);
-        let _drawer_sub = store.subscribe(select::drawer_open, Callback::from(move |_open: bool| {
-            drawer_counter.set(drawer_counter.get() + 1);
-        }));
+        let _drawer_sub = store.subscribe(
+            select::drawer_open,
+            Callback::from(move |_open: bool| {
+                drawer_counter.set(drawer_counter.get() + 1);
+            }),
+        );
 
         // a status change touches neither slice
         store.dispatch(Action::Status(crate::state::Status::info("loaded")));
@@ -211,7 +230,10 @@ mod tests {
         assert_eq!(drawer_calls.get(), 1);
 
         // a sidebar resize changes the layout but not the drawer
-        store.dispatch(Action::ResizeSidebar { width: 300.0, max: 640.0 });
+        store.dispatch(Action::ResizeSidebar {
+            width: 300.0,
+            max: 640.0,
+        });
         assert_eq!(layout_calls.get(), 2);
         assert_eq!(drawer_calls.get(), 1);
     }
@@ -221,9 +243,12 @@ mod tests {
         let store = Store::new();
         let calls = StdRc::new(StdCell::new(0));
         let counter = StdRc::clone(&calls);
-        let subscription = store.subscribe(select::drawer_open, Callback::from(move |_open: bool| {
-            counter.set(counter.get() + 1);
-        }));
+        let subscription = store.subscribe(
+            select::drawer_open,
+            Callback::from(move |_open: bool| {
+                counter.set(counter.get() + 1);
+            }),
+        );
         store.dispatch(Action::ToggleDrawer);
         assert_eq!(calls.get(), 1);
         drop(subscription);
@@ -237,15 +262,18 @@ mod tests {
         let statuses = StdRc::new(StdCell::new(0));
         let counter = StdRc::clone(&statuses);
         let dispatcher = store.clone();
-        let _sub = store.subscribe(select::status, Callback::from(move |status: Option<crate::state::Status>| {
-            counter.set(counter.get() + 1);
-            if let Some(status) = status {
-                // cascade once: "the drawer closing clears the status"
-                if status.text == "close" {
-                    dispatcher.dispatch(Action::ClearStatus);
+        let _sub = store.subscribe(
+            select::status,
+            Callback::from(move |status: Option<crate::state::Status>| {
+                counter.set(counter.get() + 1);
+                if let Some(status) = status {
+                    // cascade once: "the drawer closing clears the status"
+                    if status.text == "close" {
+                        dispatcher.dispatch(Action::ClearStatus);
+                    }
                 }
-            }
-        }));
+            }),
+        );
 
         store.dispatch(Action::Status(crate::state::Status::info("close")));
         // notified for the set, then for the cascade

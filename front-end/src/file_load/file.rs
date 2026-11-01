@@ -1,13 +1,13 @@
-#[cfg(not(feature = "tauri"))]
-use wave_insight_lib::waveform::Waveform;
-use yew::prelude::*;
-#[cfg(not(feature = "tauri"))]
-use web_sys::{DragEvent, Event, HtmlInputElement};
-#[cfg(not(feature = "tauri"))]
-use gloo_file::File;
 #[cfg(feature = "tauri")]
 use crate::file_load::FileList;
 use crate::state::types::DumpHandle;
+#[cfg(not(feature = "tauri"))]
+use gloo_file::File;
+#[cfg(not(feature = "tauri"))]
+use wave_insight_lib::waveform::Waveform;
+#[cfg(not(feature = "tauri"))]
+use web_sys::{DragEvent, Event, HtmlInputElement};
+use yew::prelude::*;
 
 #[cfg(not(feature = "tauri"))]
 use gloo_file::callbacks::FileReader;
@@ -47,7 +47,7 @@ pub fn file_type_of(name: &str) -> FileType {
 pub enum Msg {
     ///the bytes are read raw because fst is binary
     #[cfg(not(feature = "tauri"))]
-    Loaded(FileType,String,Vec<u8>),
+    Loaded(FileType, String, Vec<u8>),
     #[cfg(not(feature = "tauri"))]
     Files(Vec<File>),
     #[cfg(not(feature = "tauri"))]
@@ -104,7 +104,7 @@ impl Component for FileLoad {
                     FileType::IsWaveform => {
                         console::log_1(&format!("opening waveform {file_name}").into());
                         open_waveform(ctx, file_name, bytes);
-                    },
+                    }
                     FileType::IsVerilog => {
                         // the design database parses it; no separate scan here
                         match String::from_utf8(bytes) {
@@ -113,12 +113,12 @@ impl Component for FileLoad {
                                 "{file_name}: not valid UTF-8 text — save the source as UTF-8 and load it again"
                             )),
                         }
-                    },
+                    }
                     FileType::Unknown => {
                         ctx.props().onerror.emit(format!(
                             "{file_name}: unsupported file type — load a waveform (.vcd/.fst/.ghw) or a source (.v/.sv/.vh/.svh)"
                         ));
-                    },
+                    }
                 }
                 true
             }
@@ -131,18 +131,19 @@ impl Component for FileLoad {
             }
             #[cfg(not(feature = "tauri"))]
             Msg::Files(result) => {
-                console::log_1(&format!("input {} file",result.len()).into());
+                console::log_1(&format!("input {} file", result.len()).into());
                 for file in result.into_iter() {
                     let link = ctx.link().clone();
                     let file_name = file.name();
                     console::log_1(&format!("file name:{file_name}").into());
                     let file_type = file_type_of(&file_name);
                     let task = gloo_file::callbacks::read_as_bytes(&file, move |res| match res {
-                        Ok(bytes) => link.send_message(Msg::Loaded(file_type, file_name.clone(), bytes)),
-                        Err(error) => link.send_message(Msg::LoadFailed(
-                            file_name.clone(),
-                            error.to_string(),
-                        )),
+                        Ok(bytes) => {
+                            link.send_message(Msg::Loaded(file_type, file_name.clone(), bytes))
+                        }
+                        Err(error) => {
+                            link.send_message(Msg::LoadFailed(file_name.clone(), error.to_string()))
+                        }
                     });
                     self.task.push(task);
                 }
@@ -227,13 +228,14 @@ pub fn open_waveform(ctx: &Context<FileLoad>, file_name: String, bytes: Vec<u8>)
     let open_ms = js_sys::Date::now() - started;
     match opened {
         Ok(waveform) => {
-            let started = js_sys::Date::now();
-            let range = waveform.time_range_hint().ok().flatten();
-            let range_ms = js_sys::Date::now() - started;
+            // the time range is derived by the store when the handle arrives
+            // (`Action::DumpOpened` -> `DumpHandle::time_range`), which is the
+            // only place that knows about the GHW body-scan fallback: asking
+            // for the hint here as well would scan a GHW body twice.
             console::log_1(
                 &format!(
-                    "waveform {file_name}: opened in {open_ms:.1} ms, trace range in {range_ms:.1} ms ({:?}, {} signals)",
-                    range,
+                    "waveform {file_name}: opened in {open_ms:.1} ms ({:?}, {} signals)",
+                    waveform.file_format(),
                     waveform.signal_count()
                 )
                 .into(),

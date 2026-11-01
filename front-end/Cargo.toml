@@ -1,7 +1,11 @@
 [package]
 name = "front-end"
-version = "0.5.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,13 +22,10 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 gloo-file = "0.2"
 
-num = { version = "0.4.0", features = ["serde"] }
-
 [dependencies.web-sys]
 version = "0.3"
 features = [
     "File",
-    "WebSocket",
     "DataTransfer",
     #measuring the wave canvas
     "Document",
@@ -33,8 +34,6 @@ features = [
     "KeyboardEvent",
     #mouseEvent.detail() for the double click on the splitter
     "UiEvent",
-    #app.rs backend: the websocket message handler (feature = "backend"/"tauri")
-    "MessageEvent",
     #code_reader/monaco_glue: inject the AMD loader and mount the editor div
     "Window",
     "Node",

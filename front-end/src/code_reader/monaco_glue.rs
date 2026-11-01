@@ -24,6 +24,11 @@
 //! Copyright (c) 2020 Simon Berger, MIT OR Apache-2.0. The full license texts
 //! are kept next to this file in `rust-monaco.LICENSE.txt`.
 
+//the JS handles this module stores are nested by nature (an Option of a boxed
+//callback inside a struct, a Vec of them, a two-argument callback map); naming
+//every one would add aliases that obscure the wasm-bindgen boundary
+#![allow(clippy::type_complexity)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -89,7 +94,11 @@ impl Default for EditorOptions {
 
 impl EditorOptions {
     /// Options with the defaults above and the given text/language/theme.
-    pub fn new(value: impl Into<String>, language: impl Into<String>, theme: impl Into<String>) -> Self {
+    pub fn new(
+        value: impl Into<String>,
+        language: impl Into<String>,
+        theme: impl Into<String>,
+    ) -> Self {
         Self {
             value: value.into(),
             language: language.into(),
@@ -104,8 +113,16 @@ impl EditorOptions {
         set(&options, "language", JsValue::from_str(&self.language));
         set(&options, "theme", JsValue::from_str(&self.theme));
         set(&options, "readOnly", JsValue::from_bool(self.read_only));
-        set(&options, "fontSize", JsValue::from_f64(f64::from(self.font_size)));
-        set(&options, "automaticLayout", JsValue::from_bool(self.automatic_layout));
+        set(
+            &options,
+            "fontSize",
+            JsValue::from_f64(f64::from(self.font_size)),
+        );
+        set(
+            &options,
+            "automaticLayout",
+            JsValue::from_bool(self.automatic_layout),
+        );
 
         let minimap = Object::new();
         set(&minimap, "enabled", JsValue::from_bool(self.minimap));
@@ -169,7 +186,11 @@ impl MonacoEditor {
     /// Create an editor inside `host` with the default options.
     #[allow(dead_code)] // kept for callers that need no click handling
     pub fn create(host: &HtmlElement, initial_text: &str, language: &str, theme: &str) -> Self {
-        Self::build(host, EditorOptions::new(initial_text, language, theme), None)
+        Self::build(
+            host,
+            EditorOptions::new(initial_text, language, theme),
+            None,
+        )
     }
 
     /// Create an editor inside `host`, overriding any [`EditorOptions`] field.
@@ -376,54 +397,71 @@ impl MonacoEditor {
     pub fn select_word_at(&self, line: u32, col: u32) {
         self.on_ready(Box::new(move |monaco, editor| {
             let run = || -> Option<()> {
-            let call = |target: &JsValue, name: &str, args: &js_sys::Array| -> Option<JsValue> {
-                let function = js_sys::Reflect::get(target, &JsValue::from_str(name)).ok()?;
-                let function = function.dyn_into::<js_sys::Function>().ok()?;
-                function.apply(target, args).ok()
-            };
+                let call =
+                    |target: &JsValue, name: &str, args: &js_sys::Array| -> Option<JsValue> {
+                        let function =
+                            js_sys::Reflect::get(target, &JsValue::from_str(name)).ok()?;
+                        let function = function.dyn_into::<js_sys::Function>().ok()?;
+                        function.apply(target, args).ok()
+                    };
 
-            let model = call(editor, "getModel", &js_sys::Array::new())?;
+                let model = call(editor, "getModel", &js_sys::Array::new())?;
 
-            let position = js_sys::Object::new();
-            js_sys::Reflect::set(&position, &JsValue::from_str("lineNumber"), &JsValue::from_f64(line as f64)).ok()?;
-            js_sys::Reflect::set(&position, &JsValue::from_str("column"), &JsValue::from_f64(col.max(1) as f64)).ok()?;
+                let position = js_sys::Object::new();
+                js_sys::Reflect::set(
+                    &position,
+                    &JsValue::from_str("lineNumber"),
+                    &JsValue::from_f64(line as f64),
+                )
+                .ok()?;
+                js_sys::Reflect::set(
+                    &position,
+                    &JsValue::from_str("column"),
+                    &JsValue::from_f64(col.max(1) as f64),
+                )
+                .ok()?;
 
-            // select the identifier under the cursor when there is one
-            let word = {
+                // select the identifier under the cursor when there is one
+                let word = {
+                    let args = js_sys::Array::new();
+                    args.push(&position);
+                    call(&model, "getWordAtPosition", &args)
+                };
+                let range = word
+                    .filter(|word| !word.is_null() && !word.is_undefined())
+                    .and_then(|word| {
+                        let start = js_sys::Reflect::get(&word, &JsValue::from_str("startColumn"))
+                            .ok()?
+                            .as_f64()?;
+                        let end = js_sys::Reflect::get(&word, &JsValue::from_str("endColumn"))
+                            .ok()?
+                            .as_f64()?;
+                        let ctor =
+                            js_sys::Reflect::get(monaco, &JsValue::from_str("Selection")).ok()?;
+                        let ctor = ctor.dyn_into::<js_sys::Function>().ok()?;
+                        let args = js_sys::Array::new();
+                        // `new Selection(startLine, startColumn, positionLine, positionColumn)`:
+                        // the arguments are passed backwards so the whole identifier stays
+                        // selected while the *position* (what `editor.getPosition()`
+                        // reports, and where the app's "go to declaration" lands) is the
+                        // first letter of the word, not its end.
+                        args.push(&JsValue::from_f64(line as f64));
+                        args.push(&JsValue::from_f64(end));
+                        args.push(&JsValue::from_f64(line as f64));
+                        args.push(&JsValue::from_f64(start));
+                        js_sys::Reflect::construct(&ctor, &args).ok()
+                    });
+
+                if let Some(range) = range {
+                    let args = js_sys::Array::new();
+                    args.push(&range);
+                    let _ = call(editor, "setSelection", &args);
+                }
+
                 let args = js_sys::Array::new();
                 args.push(&position);
-                call(&model, "getWordAtPosition", &args)
-            };
-            let range = word
-                .filter(|word| !word.is_null() && !word.is_undefined())
-                .and_then(|word| {
-                    let start = js_sys::Reflect::get(&word, &JsValue::from_str("startColumn")).ok()?.as_f64()?;
-                    let end = js_sys::Reflect::get(&word, &JsValue::from_str("endColumn")).ok()?.as_f64()?;
-                    let ctor = js_sys::Reflect::get(monaco, &JsValue::from_str("Selection")).ok()?;
-                    let ctor = ctor.dyn_into::<js_sys::Function>().ok()?;
-                    let args = js_sys::Array::new();
-                    // `new Selection(startLine, startColumn, positionLine, positionColumn)`:
-                    // the arguments are passed backwards so the whole identifier stays
-                    // selected while the *position* (what `editor.getPosition()`
-                    // reports, and where the app's "go to declaration" lands) is the
-                    // first letter of the word, not its end.
-                    args.push(&JsValue::from_f64(line as f64));
-                    args.push(&JsValue::from_f64(end));
-                    args.push(&JsValue::from_f64(line as f64));
-                    args.push(&JsValue::from_f64(start));
-                    js_sys::Reflect::construct(&ctor, &args).ok()
-                });
-
-            if let Some(range) = range {
-                let args = js_sys::Array::new();
-                args.push(&range);
-                let _ = call(editor, "setSelection", &args);
-            }
-
-            let args = js_sys::Array::new();
-            args.push(&position);
-            let _ = call(editor, "revealPositionInCenter", &args);
-            Some(())
+                let _ = call(editor, "revealPositionInCenter", &args);
+                Some(())
             };
             let _ = run();
         }));
@@ -475,7 +513,7 @@ enum LoaderState {
 }
 
 thread_local! {
-    static LOADER: RefCell<LoaderState> = RefCell::new(LoaderState::Idle);
+    static LOADER: RefCell<LoaderState> = const { RefCell::new(LoaderState::Idle) };
 }
 
 /// Run `callback` with the `monaco` namespace, loading it first if needed.
@@ -649,7 +687,11 @@ fn mark_failed() {
 // JS plumbing
 // ---------------------------------------------------------------------------
 
-fn create_editor(monaco: &JsValue, host: &JsValue, options: &EditorOptions) -> Result<JsValue, JsValue> {
+fn create_editor(
+    monaco: &JsValue,
+    host: &JsValue,
+    options: &EditorOptions,
+) -> Result<JsValue, JsValue> {
     let namespace = Reflect::get(monaco, &JsValue::from_str("editor"))?;
     let create: Function = Reflect::get(&namespace, &JsValue::from_str("create"))?.dyn_into()?;
     create.call2(&namespace, host, &options.to_js_value())
@@ -737,7 +779,8 @@ fn flush(slot: &mut EditorSlot) {
         return;
     };
     if let Some(document) = slot.pending.take() {
-        if let Some(model) = ensure_model(&monaco, &document.uri, &document.language, &document.text)
+        if let Some(model) =
+            ensure_model(&monaco, &document.uri, &document.language, &document.text)
         {
             // A re-read of the same file is brought up to date before it is
             // shown; merely switching tabs attaches the model as it is, so an
@@ -827,7 +870,8 @@ fn click_position(event: &JsValue) -> Option<(u32, u32)> {
                 .ok()
                 .and_then(|value| value.as_bool())
         };
-        let right_or_middle = flag("rightButton") == Some(true) || flag("middleButton") == Some(true);
+        let right_or_middle =
+            flag("rightButton") == Some(true) || flag("middleButton") == Some(true);
         if right_or_middle || flag("leftButton") == Some(false) {
             return None;
         }
@@ -931,7 +975,5 @@ fn console_error(message: &str) {
 }
 
 fn describe(value: &JsValue) -> String {
-    value
-        .as_string()
-        .unwrap_or_else(|| format!("{value:?}"))
+    value.as_string().unwrap_or_else(|| format!("{value:?}"))
 }

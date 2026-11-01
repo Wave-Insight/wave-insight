@@ -28,6 +28,30 @@ impl DumpHandle {
     pub fn waveform(&self) -> &Waveform {
         &self.0
     }
+
+    /// The dump's time range, derived once per open.
+    ///
+    /// The cheap header hint answers for the formats that carry one (VCD, FST);
+    /// a GHW dump only knows its range after reading the body, so it falls back
+    /// to one [`Waveform::end_time`] scan and reports `from_body = true` so the
+    /// UI can say where the numbers came from. The fallback starts at 0: a ruler
+    /// that began at the first change would hide the time before it.
+    ///
+    /// The hint can also be `None` for a truncated VCD whose header cannot be
+    /// trusted; the body scan is the exact answer there too.
+    pub fn time_range(&self) -> (Option<TimeRange>, bool) {
+        match self.0.time_range_hint() {
+            Ok(Some(range)) => (Some(range), false),
+            _ => (
+                self.0
+                    .end_time()
+                    .ok()
+                    .flatten()
+                    .map(|end| TimeRange { start: 0, end }),
+                true,
+            ),
+        }
+    }
 }
 
 impl PartialEq for DumpHandle {
@@ -56,6 +80,10 @@ impl std::fmt::Debug for DumpHandle {
 pub struct Dump {
     pub waveform: Option<DumpHandle>,
     pub time_range: Option<TimeRange>,
+    /// The range came from a body scan (`Waveform::end_time`) instead of the
+    /// cheap header hint: true for GHW, and for a dump whose header the hint
+    /// cannot parse.
+    pub range_from_body: bool,
 }
 
 /// Width of the sidebar when nothing else was chosen.
@@ -110,14 +138,22 @@ impl Layout {
 /// `max` comes from the caller (`App` measures the window) because the reducer
 /// stays pure; a non-finite or too small `max` degrades to `SIDEBAR_MIN`.
 pub fn clamp_sidebar(width: f64, max: f64) -> f64 {
-    let max = if max.is_finite() { max.max(SIDEBAR_MIN) } else { f64::INFINITY };
-    if width.is_nan() { SIDEBAR_DEFAULT.min(max) } else { width.max(SIDEBAR_MIN).min(max) }
+    let max = if max.is_finite() {
+        max.max(SIDEBAR_MIN)
+    } else {
+        f64::INFINITY
+    };
+    if width.is_nan() {
+        SIDEBAR_DEFAULT.min(max)
+    } else {
+        width.max(SIDEBAR_MIN).min(max)
+    }
 }
 
 /// Clamp the editor ratio to `[EDITOR_RATIO_MIN, EDITOR_RATIO_MAX]`.
 pub fn clamp_ratio(ratio: f32) -> f32 {
     if ratio.is_finite() {
-        ratio.max(EDITOR_RATIO_MIN).min(EDITOR_RATIO_MAX)
+        ratio.clamp(EDITOR_RATIO_MIN, EDITOR_RATIO_MAX)
     } else {
         0.5
     }
@@ -143,11 +179,17 @@ pub struct Status {
 
 impl Status {
     pub fn info(text: impl Into<String>) -> Self {
-        Self { text: text.into(), tone: StatusTone::Info }
+        Self {
+            text: text.into(),
+            tone: StatusTone::Info,
+        }
     }
 
     pub fn error(text: impl Into<String>) -> Self {
-        Self { text: text.into(), tone: StatusTone::Error }
+        Self {
+            text: text.into(),
+            tone: StatusTone::Error,
+        }
     }
 
     pub fn is_error(&self) -> bool {
@@ -167,11 +209,6 @@ pub struct Settings {
     pub fixed_point: u32,
 
     pub analog_active: bool,
-
-    pub load_all: bool,
-    pub load_one: i32,
-    pub drive_all: bool,
-    pub drive_one: i32,
 }
 
 impl Settings {
@@ -184,11 +221,6 @@ impl Settings {
             fixed_point: 0,
 
             analog_active: false,
-
-            load_all: false,
-            load_one: -1,
-            drive_all: false,
-            drive_one: -1,
         }
     }
 }
@@ -238,13 +270,15 @@ pub struct RowsSlice {
 
 impl RowsSlice {
     pub fn empty() -> Self {
-        Self { version: 0, items: Rc::new(Vec::new()) }
+        Self {
+            version: 0,
+            items: Rc::new(Vec::new()),
+        }
     }
 
     pub fn len(&self) -> usize {
         self.items.len()
     }
-
 }
 
 impl PartialEq for RowsSlice {
@@ -258,7 +292,6 @@ impl Default for RowsSlice {
         Self::empty()
     }
 }
-
 
 /// A time step of the waveform backend (non-negative).
 pub type Time = u64;
@@ -296,7 +329,10 @@ pub struct View {
 
 impl Default for View {
     fn default() -> Self {
-        Self { x_axis: 0.0, size: 1.0 }
+        Self {
+            x_axis: 0.0,
+            size: 1.0,
+        }
     }
 }
 
@@ -353,7 +389,7 @@ impl View {
     /// changes again"; the viewer now stops at the end. A zoomed-out view whose
     /// whole trace is narrower than the surface is left alone (`x_axis` 0).
     pub fn clamp_to_end(self, end_time: i64, width: f64) -> Self {
-        if end_time <= 0 || !(width > 0.0) || !self.x_axis.is_finite() {
+        if end_time <= 0 || width.is_nan() || width <= 0.0 || !self.x_axis.is_finite() {
             return self;
         }
         let max_axis = (end_time as f64 - self.time_span(width)).max(0.0);
@@ -367,7 +403,11 @@ impl View {
     /// Scale that fits `end_time` time steps into `width` pixels.
     pub fn fit_size(end_time: i64, width: f64) -> f64 {
         let steps = (end_time.max(1) as f64) + 1.0;
-        let width = if width.is_finite() && width > 0.0 { width } else { 1.0 };
+        let width = if width.is_finite() && width > 0.0 {
+            width
+        } else {
+            1.0
+        };
         (width / steps).max(1e-9)
     }
 
@@ -390,7 +430,8 @@ impl View {
     /// thing you are looking at slides away exactly when you try to see more of
     /// it.
     pub fn zoom_at_px(&mut self, px: f64, factor: f64, width: f64) {
-        if !factor.is_finite() || factor <= 0.0 || !px.is_finite() || !(width > 0.0) {
+        if !factor.is_finite() || factor <= 0.0 || !px.is_finite() || width.is_nan() || width <= 0.0
+        {
             return;
         }
         let anchor = self.time_of(px.clamp(0.0, width));
@@ -404,9 +445,13 @@ impl View {
     /// lands on the left of the selection. A selection narrower than one pixel
     /// is ignored (that is a click, not a drag).
     pub fn zoom_to_px(&mut self, from_px: f64, to_px: f64, surface_width: f64) {
-        let (from, to) = if from_px <= to_px { (from_px, to_px) } else { (to_px, from_px) };
+        let (from, to) = if from_px <= to_px {
+            (from_px, to_px)
+        } else {
+            (to_px, from_px)
+        };
         let selected = to - from;
-        if !(selected >= 1.0) || !(surface_width > 0.0) {
+        if selected.is_nan() || selected < 1.0 || surface_width.is_nan() || surface_width <= 0.0 {
             return;
         }
         let left = self.time_of(from);
@@ -486,9 +531,18 @@ mod tests {
             drive: Vec::new(),
             bit: None,
         };
-        let a = RowsSlice { version: 3, items: Rc::new(vec![row.clone()]) };
-        let b = RowsSlice { version: 3, items: Rc::new(vec![]) };
-        let c = RowsSlice { version: 4, items: Rc::new(vec![row]) };
+        let a = RowsSlice {
+            version: 3,
+            items: Rc::new(vec![row.clone()]),
+        };
+        let b = RowsSlice {
+            version: 3,
+            items: Rc::new(vec![]),
+        };
+        let c = RowsSlice {
+            version: 4,
+            items: Rc::new(vec![row]),
+        };
         assert_eq!(a, b, "same version means unchanged, whatever the contents");
         assert_ne!(a, c);
     }

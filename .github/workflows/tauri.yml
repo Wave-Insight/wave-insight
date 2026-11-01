@@ -4,13 +4,20 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
+  #manual desktop builds (artifacts only, never a release) live in tauri_pre.yml
 
 env:
   CARGO_TERM_COLOR: always
+  #the wasm bundle embedded in the desktop app has to use the same size profile
+  #as the web build (rust.yml), otherwise the app ships the ~28 MB variant
+  CARGO_PROFILE_RELEASE_OPT_LEVEL: s
 
 permissions:
   contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -19,8 +26,12 @@ jobs:
       matrix:
         platform: [macos-latest, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
 
     steps:
+    #ubuntu-22.04 is pinned on purpose: tauri 1.x links webkit2gtk-4.0, which
+    #ubuntu 24.04 no longer ships (it has 4.1). Do not move to ubuntu-latest
+    #before the tauri 2 migration.
     - name: Install dependencies (ubuntu only)
       if: startsWith(matrix.platform, 'ubuntu')
       run: |
@@ -38,23 +49,35 @@ jobs:
     - name: Install trunk
       uses: taiki-e/install-action@v2
       with:
-        tool: trunk
+        #pinned: trunk's wasm-bindgen/wasm-opt defaults move between releases
+        tool: trunk@0.22.1
 
-    #an installer is not always what people want, so a plain binary is published
-    #as well, under the names the old releases used. Build it ourselves instead
-    #of hunting for whatever tauri-action left behind: on linux and macos its
-    #output did not end up anywhere `find` looked.
-    - name: Build the plain binary
-      shell: bash
-      run: |
-        set -eux
-        cd front-end
-        trunk build --no-default-features --features tauri --release
-        cd ..
-        cargo build --release -p app
-        ls -l target/release | head -n 30
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: tauri
 
+    #one build per platform: tauri-action runs `beforeBuildCommand` from
+    #tauri.conf.json (trunk build --features tauri) and then cargo builds the
+    #app and the bundles. The explicit trunk+cargo build that used to run here
+    #built all of that a second time; the plain binary is staged from the same
+    #target dir below instead.
+    - name: Build and release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: tauri-apps/tauri-action@v0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tagName: ${{ github.ref_name }}
+        releaseName: 'v__VERSION__'
+        releaseBody: 'See the assets to download and install this version.'
+        releaseDraft: false
+        prerelease: false
+
+    #an installer is not always what people want, so the plain binary is
+    #published as well, under the names the old releases used. macos-latest is
+    #arm64, hence the _mac_arm64 suffix.
     - name: Stage the plain binary
+      if: startsWith(github.ref, 'refs/tags/')
       shell: bash
       run: |
         set -eux
@@ -71,22 +94,8 @@ jobs:
         cp "$bin" "$out"
         ls -l "$out"
 
-    #tauri-action builds the bundles and uploads them to the release itself, so
-    #the old upload-release-asset@v1 steps are gone: that action was removed by
-    #github and the `@dev` ref of tauri-action no longer resolves to something
-    #stable
-    - name: Build and release
-      uses: tauri-apps/tauri-action@v0
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tagName: ${{ github.ref_name }}
-        releaseName: 'v__VERSION__'
-        releaseBody: 'See the assets to download and install this version.'
-        releaseDraft: false
-        prerelease: false
-
     - name: Upload the plain binary
+      if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.ref_name }}

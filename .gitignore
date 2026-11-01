@@ -1,5 +1,16 @@
+#cargo/trunk output
 /target
 /front-end/dist
 
-# testbench
-*.vcd
+#testbench dumps dropped in the repository root (readme: "drop one there first").
+#scoped to the root on purpose: fixtures under tests/data/ stay committable,
+#e.g. wave-insight-lib/tests/data/*.vcd
+/test*.vcd
+*.fst
+*.ghw
+!/wave-insight-lib/tests/data/*.fst
+!/wave-insight-lib/tests/data/*.ghw
+
+#editor / OS noise
+.DS_Store
+node_modules/

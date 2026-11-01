@@ -5,20 +5,25 @@ use yew::prelude::*;
 use wave_insight_lib::data_struct::ShowType;
 
 use super::settings::Settings;
+use crate::nav::MAX_FIXED_POINT;
 
 ///signal colours, tuned to stay readable on the dark wave canvas
-const PALETTE: [(u8,u8,u8);7] = [
-    (255,107,138),//rose
-    (255,178,92), //amber
-    (255,224,102),//yellow
-    (94,230,168), //mint
-    (76,194,255), //cyan
-    (157,140,255),//violet
-    (255,138,209),//pink
+const PALETTE: [(u8, u8, u8); 7] = [
+    (255, 107, 138), //rose
+    (255, 178, 92),  //amber
+    (255, 224, 102), //yellow
+    (94, 230, 168),  //mint
+    (76, 194, 255),  //cyan
+    (157, 140, 255), //violet
+    (255, 138, 209), //pink
 ];
 
 fn btn_class(on: bool) -> &'static str {
-    if on {"btn active"} else {"btn"}
+    if on {
+        "btn active"
+    } else {
+        "btn"
+    }
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
@@ -31,7 +36,7 @@ pub struct CtrlProps {
     pub load: Vec<String>,
     pub drive: Vec<String>,
     #[prop_or_default]
-    pub onset: Callback<(bool,Settings)>,//<close ctrl menu,new Settings>
+    pub onset: Callback<(bool, Settings)>, //<close ctrl menu,new Settings>
     /// The load/drive buttons: `(load?, index)`. The app resolves the span and
     /// lists the several matches in the inspector.
     #[prop_or_default]
@@ -78,7 +83,7 @@ fn copy_to_clipboard(text: &str) -> bool {
 pub enum Msg {
     ExitMenu(MouseEvent),
     ChooseShowType(ShowType),
-    ChooseColor((u8,u8,u8)),
+    ChooseColor((u8, u8, u8)),
     ActiveFixed,
     SetFixed(u32),
     ActiveAnalog,
@@ -125,37 +130,39 @@ impl Component for Ctrl {
                 true
             }
             Msg::ExitMenu(_e) => {
-                props.onset.emit((true,props.setting.clone()));
+                props.onset.emit((true, props.setting.clone()));
                 true
             }
             Msg::ChooseShowType(show_type) => {
                 let mut set = props.setting.clone();
                 set.show_type = show_type;
-                props.onset.emit((true,set));
+                props.onset.emit((true, set));
                 true
             }
-            Msg::ChooseColor((r,g,b)) => {
+            Msg::ChooseColor((r, g, b)) => {
                 let mut set = props.setting.clone();
-                set.color = (r,g,b);
-                props.onset.emit((true,set));
+                set.color = (r, g, b);
+                props.onset.emit((true, set));
                 true
             }
             Msg::ActiveFixed => {
                 let mut set = props.setting.clone();
                 set.fixed_active = !set.fixed_active;
-                props.onset.emit((true,set));
+                props.onset.emit((true, set));
                 true
             }
             Msg::SetFixed(exp) => {
                 let mut set = props.setting.clone();
-                set.fixed_point = exp;
-                props.onset.emit((false,set));
+                // the dialog clamps too, but the message may also come from a
+                // future caller; keep the invariant in one place
+                set.fixed_point = exp.min(MAX_FIXED_POINT);
+                props.onset.emit((false, set));
                 true
             }
             Msg::ActiveAnalog => {
                 let mut set = props.setting.clone();
                 set.analog_active = !set.analog_active;
-                props.onset.emit((true,set));
+                props.onset.emit((true, set));
                 true
             }
             Msg::FlipLoadShow => {
@@ -187,6 +194,9 @@ impl Component for Ctrl {
     fn view(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
         let props = ctx.props();
+        // the exponent as a plain copy: the input's onchange closure must be
+        // 'static and cannot borrow the props it was built from
+        let fixed_point = props.setting.fixed_point;
 
         html! {
             <div>
@@ -209,8 +219,22 @@ impl Component for Ctrl {
                     <div class="modal-section">
                         <p class="modal-label">{"Fixed point"}</p>
                         <div class="modal-row">
-                            <button type="button" class={btn_class(props.setting.fixed_active)} onclick={link.callback(|_| Msg::ActiveFixed)}>{"active"}</button>
-                            <input class="modal-input" type="number" onchange={link.callback(|e: Event| Msg::SetFixed(e.target_unchecked_into::<HtmlInputElement>().value_as_number() as u32))} />
+                            <button type="button" class={btn_class(props.setting.fixed_active)}
+                                title="Show the value as value / 2^exponent, one decimal"
+                                onclick={link.callback(|_| Msg::ActiveFixed)}>{"active"}</button>
+                            <input class="modal-input" type="number" min="0" max={MAX_FIXED_POINT.to_string()}
+                                title="Fraction bits: the value is divided by 2^this"
+                                value={props.setting.fixed_point.to_string()}
+                                onchange={link.callback(move |e: Event| {
+                                    let value = e.target_unchecked_into::<HtmlInputElement>().value_as_number();
+                                    // an empty/invalid field is not a request for 2^-NaN:
+                                    // keep the last exponent instead of silently writing 0
+                                    if value.is_finite() {
+                                        Msg::SetFixed(value.max(0.0).min(f64::from(MAX_FIXED_POINT)) as u32)
+                                    } else {
+                                        Msg::SetFixed(fixed_point)
+                                    }
+                                })} />
                         </div>
                     </div>
 

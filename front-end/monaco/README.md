@@ -5,9 +5,10 @@ out of the npm tarball. The app loads it from `./monaco/vs` at runtime (the AMD
 loader is kept, see `src/code_reader/monaco_glue.rs`); nothing is fetched from a
 CDN, so the editor also works offline or behind a firewall.
 
-Trunk copies this directory into `dist/monaco/vs` through the
-`<link data-trunk rel="copy-dir" href="monaco/vs" />` tag in `index.html`, i.e.
-it is served next to `index.html`, not bundled into the wasm.
+Trunk copies this directory into `dist/monaco/` through the
+`<link data-trunk rel="copy-dir" href="monaco" />` tag in `index.html` (so
+`vs/` ends up at `dist/monaco/vs`), i.e. it is served next to `index.html`, not
+bundled into the wasm.
 
 ## Updating the pinned version
 
@@ -37,7 +38,7 @@ it is served next to `index.html`, not bundled into the wasm.
 
 ## Why the whole `min/vs` and not a subset
 
-The 0.44.0 `min/vs` tree is ~12 MB (113 files). Only `loader.js`,
+The 0.44.0 `min/vs` tree is ~6.0 MB (106 files) as committed here. Only `loader.js`,
 `editor/editor.main.*`, `base/**` and `basic-languages/systemverilog/**` are
 strictly needed for this app, but pruning the rest (`language/typescript` alone
 is 4.4 MB) would silently break any future use of those languages and would make

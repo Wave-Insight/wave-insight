@@ -21,7 +21,10 @@ pub struct Rows {
 impl Rows {
     /// The snapshot the renderer subscribes to.
     pub fn slice(&self) -> RowsSlice {
-        RowsSlice { version: self.version, items: Rc::clone(&self.items) }
+        RowsSlice {
+            version: self.version,
+            items: Rc::clone(&self.items),
+        }
     }
 }
 

@@ -1,11 +1,11 @@
-pub use wave::WaveShow;
 pub use settings::Settings;
+pub use wave::WaveShow;
 
-mod wave;
+mod canvas;
+mod ctrl;
+mod geometry;
 mod settings;
 mod signal;
-mod ctrl;
 mod time;
 mod util;
-mod geometry;
-mod canvas;
+mod wave;

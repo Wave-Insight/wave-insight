@@ -203,7 +203,10 @@ impl LspServer {
     ///
     /// Returns `""` when the message was a notification (nothing to send back).
     pub fn handle_message_text(&mut self, message: &str) -> String {
-        self.handle_message(message).into_iter().next().unwrap_or_default()
+        self.handle_message(message)
+            .into_iter()
+            .next()
+            .unwrap_or_default()
     }
 
     fn handle_request(&mut self, method: &str, params: &Json) -> Result<Json, RpcError> {
@@ -215,7 +218,9 @@ impl LspServer {
         match method {
             "initialize" => {
                 if self.initialized {
-                    return Err(RpcError::invalid_request("`initialize` was already received"));
+                    return Err(RpcError::invalid_request(
+                        "`initialize` was already received",
+                    ));
                 }
                 self.initialized = true;
                 self.read_client_capabilities(params);
@@ -325,7 +330,11 @@ impl LspServer {
             return;
         };
         let version = text_document.get_i64("version");
-        let Some(index) = self.documents.iter().position(|document| document.uri == uri) else {
+        let Some(index) = self
+            .documents
+            .iter()
+            .position(|document| document.uri == uri)
+        else {
             // A change for a document that was never opened (or was closed);
             // reopening it from the change text is the least surprising repair.
             if let Some(text) = params
@@ -363,7 +372,11 @@ impl LspServer {
         let Some(uri) = uri else {
             return;
         };
-        if let Some(index) = self.documents.iter().position(|document| document.uri == uri) {
+        if let Some(index) = self
+            .documents
+            .iter()
+            .position(|document| document.uri == uri)
+        {
             self.documents[index].text = text.to_owned();
             self.reparse(index);
         } else {
@@ -392,8 +405,7 @@ impl LspServer {
             .position(|document| document.uri == uri)
         {
             Some(index) => {
-                self.documents[index] =
-                    Document::new(uri, path.clone(), version, text);
+                self.documents[index] = Document::new(uri, path.clone(), version, text);
             }
             None => self
                 .documents
@@ -474,12 +486,8 @@ impl LspServer {
         };
         let item = self.item_at(design, &query);
         let spans: Vec<Span> = match &item {
-            Some(SourceItem::Module { name, .. }) => {
-                module_reference_spans(&self.db, name)
-            }
-            Some(SourceItem::Instance { module, .. }) => {
-                module_reference_spans(&self.db, module)
-            }
+            Some(SourceItem::Module { name, .. }) => module_reference_spans(&self.db, name),
+            Some(SourceItem::Instance { module, .. }) => module_reference_spans(&self.db, module),
             Some(SourceItem::Driver { signal, .. }) | Some(SourceItem::Load { signal, .. }) => {
                 signal_reference_spans(design, signal, include_declaration)
             }
@@ -602,7 +610,12 @@ impl LspServer {
             .db
             .modules()
             .iter()
-            .flat_map(|module| module.instances.iter().map(|instance| instance.module.as_str()))
+            .flat_map(|module| {
+                module
+                    .instances
+                    .iter()
+                    .map(|instance| instance.module.as_str())
+            })
             .collect();
         self.db
             .modules()
@@ -613,15 +626,11 @@ impl LspServer {
     }
 
     fn document(&self, uri: &str) -> Option<&Document> {
-        self.documents
-            .iter()
-            .find(|document| document.uri == uri)
+        self.documents.iter().find(|document| document.uri == uri)
     }
 
     fn document_for_path(&self, path: &Path) -> Option<&Document> {
-        self.documents
-            .iter()
-            .find(|document| document.path == path)
+        self.documents.iter().find(|document| document.path == path)
     }
 
     /// The URI to report for a database path: the client's own spelling when
@@ -688,7 +697,11 @@ impl LspServer {
 
         for parameter in &module.parameters {
             spans.push(parameter.span.clone());
-            let keyword = if parameter.is_local { "localparam" } else { "parameter" };
+            let keyword = if parameter.is_local {
+                "localparam"
+            } else {
+                "parameter"
+            };
             let detail = match &parameter.default {
                 Some(default) => format!("{keyword} = {default}"),
                 None => keyword.to_owned(),
@@ -849,7 +862,12 @@ fn signal_reference_spans(
             spans.push(declaration.clone());
         }
     }
-    spans.extend(design.drivers(path).iter().map(|driver| driver.span.clone()));
+    spans.extend(
+        design
+            .drivers(path)
+            .iter()
+            .map(|driver| driver.span.clone()),
+    );
     spans.extend(design.loads(path).iter().map(|load| load.span.clone()));
     normalise_spans(spans)
 }
@@ -960,9 +978,7 @@ fn signal_hover(
     let siblings: Vec<&str> = design
         .signals()
         .iter()
-        .filter(|other| {
-            other.module == signal.module && other.local_name == signal.local_name
-        })
+        .filter(|other| other.module == signal.module && other.local_name == signal.local_name)
         .map(|other| other.path.as_str())
         .collect();
 
@@ -1059,11 +1075,7 @@ fn module_hover(db: &DesignDb, name: &str, format: HoverFormat) -> Option<String
     Some(lines.join("\n"))
 }
 
-fn instance_hover(
-    design: &ElaboratedDesign,
-    path: &str,
-    format: HoverFormat,
-) -> Option<String> {
+fn instance_hover(design: &ElaboratedDesign, path: &str, format: HoverFormat) -> Option<String> {
     let instance = design.instance(path)?;
     let parameters = instance
         .parameters
@@ -1161,10 +1173,7 @@ mod tests {
         let offset = text
             .find(needle)
             .unwrap_or_else(|| panic!("`{needle}` not found in the fixture"));
-        let line = text[..offset]
-            .bytes()
-            .filter(|byte| *byte == b'\n')
-            .count() as u32;
+        let line = text[..offset].bytes().filter(|byte| *byte == b'\n').count() as u32;
         let line_start = text[..offset]
             .rfind('\n')
             .map(|index| index + 1)
@@ -1201,7 +1210,11 @@ mod tests {
                 ("params", params),
             ]),
         );
-        assert_eq!(replies.len(), 1, "a request gets one reply, got {replies:?}");
+        assert_eq!(
+            replies.len(),
+            1,
+            "a request gets one reply, got {replies:?}"
+        );
         if let Some(error) = replies[0].get("error") {
             panic!("`{method}` failed: {error:?}");
         }
@@ -1218,7 +1231,11 @@ mod tests {
                 ("params", params),
             ]),
         );
-        assert_eq!(replies.len(), 1, "a request gets one reply, got {replies:?}");
+        assert_eq!(
+            replies.len(),
+            1,
+            "a request gets one reply, got {replies:?}"
+        );
         replies[0]
             .get("error")
             .cloned()
@@ -1234,17 +1251,17 @@ mod tests {
                 ("params", params),
             ]),
         );
-        assert!(replies.is_empty(), "notifications have no reply: {replies:?}");
+        assert!(
+            replies.is_empty(),
+            "notifications have no reply: {replies:?}"
+        );
     }
 
     fn initialize(server: &mut LspServer) -> Json {
         request(
             server,
             "initialize",
-            Json::object([
-                ("processId", Json::Null),
-                ("capabilities", empty_object()),
-            ]),
+            Json::object([("processId", Json::Null), ("capabilities", empty_object())]),
         )
     }
 
@@ -1401,7 +1418,10 @@ mod tests {
             &mut server,
             "textDocument/references",
             Json::object([
-                ("textDocument", Json::object([("uri", Json::string(&cpu_uri))])),
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(&cpu_uri))]),
+                ),
                 ("position", declaration.to_json()),
                 (
                     "context",
@@ -1423,7 +1443,10 @@ mod tests {
             &mut server,
             "textDocument/references",
             Json::object([
-                ("textDocument", Json::object([("uri", Json::string(&cpu_uri))])),
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(&cpu_uri))]),
+                ),
                 ("position", declaration.to_json()),
                 (
                     "context",
@@ -1440,7 +1463,10 @@ mod tests {
             &mut server,
             "textDocument/references",
             Json::object([
-                ("textDocument", Json::object([("uri", Json::string(&top_uri))])),
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(&top_uri))]),
+                ),
                 ("position", position_of(&top, "cpu #(.WIDTH(8)").to_json()),
                 (
                     "context",
@@ -1663,7 +1689,11 @@ mod tests {
             &uri,
             "module demo(input logic a);\n    logic b;\nendmodule\n",
         );
-        let symbols = request(&mut server, "textDocument/documentSymbol", document_params(&uri));
+        let symbols = request(
+            &mut server,
+            "textDocument/documentSymbol",
+            document_params(&uri),
+        );
         let symbols = symbols.as_array().expect("symbols").to_vec();
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].get_str("name"), Some("demo"));
@@ -1693,7 +1723,11 @@ mod tests {
                 ),
             ]),
         );
-        let symbols = request(&mut server, "textDocument/documentSymbol", document_params(&uri));
+        let symbols = request(
+            &mut server,
+            "textDocument/documentSymbol",
+            document_params(&uri),
+        );
         assert_eq!(
             symbols.as_array().expect("symbols")[0].get_str("name"),
             Some("renamed")
@@ -1717,7 +1751,11 @@ mod tests {
                 ),
             ]),
         );
-        let symbols = request(&mut server, "textDocument/documentSymbol", document_params(&uri));
+        let symbols = request(
+            &mut server,
+            "textDocument/documentSymbol",
+            document_params(&uri),
+        );
         let symbols = symbols.as_array().expect("symbols");
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].get_str("name"), Some("leaf"));
@@ -1751,7 +1789,10 @@ mod tests {
             &mut server,
             "textDocument/references",
             Json::object([
-                ("textDocument", Json::object([("uri", Json::string(&unknown))])),
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(&unknown))])
+                ),
                 ("position", Position::new(0, 0).to_json()),
                 ("context", empty_object()),
             ]),
@@ -1843,9 +1884,8 @@ mod tests {
     #[test]
     fn the_single_message_entry_point_returns_one_reply_or_nothing() {
         let mut server = LspServer::new();
-        let reply = server.handle_message_text(
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
-        );
+        let reply = server
+            .handle_message_text(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
         assert!(reply.contains("wave-insight-lsp"), "{reply}");
         let reply =
             server.handle_message_text(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
@@ -1868,4 +1908,3 @@ mod tests {
         assert!(design.signal("top.u_cpu.pc").is_none());
     }
 }
-

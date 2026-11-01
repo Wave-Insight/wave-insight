@@ -1,6 +1,6 @@
-
-use signal_component::SignalComponent;
 pub use signal::SignalStruct;
+use signal_component::SignalComponent;
 
-mod signal_component;
+mod search;
 mod signal;
+mod signal_component;

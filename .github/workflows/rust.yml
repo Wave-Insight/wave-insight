@@ -3,24 +3,114 @@ name: Rust
 on:
   push:
     branches: [ main ]
+  pull_request:
   workflow_dispatch:
+
+#a new push to the same ref supersedes the run that is still building
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   #the wasm bundle carries the SystemVerilog parser and the waveform backend,
   #optimise the release build for size (28 MB -> 9 MB)
   CARGO_PROFILE_RELEASE_OPT_LEVEL: s
+  #the release wasm was 9,604,086 bytes when the budget was introduced; leave
+  #headroom for a few features and fail loudly on an accidental size blow-up
+  WASM_SIZE_BUDGET: 10485760
+
+#the deploy job asks for contents: write below, everything else is read only
+permissions:
+  contents: read
 
 jobs:
-  build:
-
+  test:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 45
     steps:
     - uses: actions/checkout@v4
 
     #the toolchain version lives in rust-toolchain.toml, do not repeat it here:
     #`rustup show` downloads it and every later cargo call uses it
+    - name: Install the pinned toolchain
+      run: rustup show
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Test the crates that build on the host
+      run: cargo test --workspace --exclude front-end --exclude app --locked
+
+  #the front end is a wasm crate, but the store/reducer/layout tests are plain
+  #host tests; `--exclude front-end` in the job above used to hide all of them
+  test-front-end:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install the pinned toolchain
+      run: rustup show
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: front-end-tests
+
+    - name: Test the front end (reducer, store, layout, geometry)
+      run: cargo test -p front-end --bins --locked
+
+  fmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install the pinned toolchain
+      run: rustup show
+
+    #declared in rust-toolchain.toml as well; the explicit add keeps this job
+    #independent of how much `rustup show` installs on a given rustup version
+    - name: Add rustfmt
+      run: rustup component add rustfmt
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+  #the tauri crate links webkit2gtk-4.0, which only exists on ubuntu-22.04
+  #(see the same apt line in tauri.yml), so the whole workspace is linted there
+  clippy:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+    - name: Install dependencies (ubuntu only)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev
+
+    - uses: actions/checkout@v4
+
+    - name: Install the pinned toolchain
+      run: rustup show
+
+    - name: Add clippy
+      run: rustup component add clippy
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: clippy
+
+    - name: Clippy (warnings are errors)
+      run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    #only the deploy step needs to write (gh-pages branch)
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+
     - name: Install the pinned toolchain
       run: rustup show
 
@@ -30,10 +120,12 @@ jobs:
     - name: Install trunk
       uses: taiki-e/install-action@v2
       with:
-        tool: trunk
+        #pinned: trunk's wasm-bindgen/wasm-opt defaults move between releases
+        tool: trunk@0.22.1
 
-    - name: Test the crates that build on the host
-      run: cargo test --workspace --exclude front-end --exclude app
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: wasm
 
     - name: Build
       run: |
@@ -42,7 +134,22 @@ jobs:
           #resolved against /wave-insight/ and every asset 404s
           trunk build --no-default-features --features wasm --release --public-url /wave-insight/
 
+    #the desktop shell compiles the front end with --features tauri; a change that
+    #breaks that cfg only fails in a release-tag run otherwise
+    - name: Check the desktop feature of the front end
+      run: cargo check -p front-end --no-default-features --features tauri --target wasm32-unknown-unknown --locked
+
+    - name: Check the wasm size budget
+      run: |
+          set -eux
+          wasm=$(ls front-end/dist/*_bg.wasm)
+          size=$(stat -c%s "$wasm")
+          echo "$wasm is $size bytes, budget $WASM_SIZE_BUDGET"
+          test "$size" -le "$WASM_SIZE_BUDGET"
+
     - name: Deploy
+      #a dispatch from a feature branch must not overwrite the public demo
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}

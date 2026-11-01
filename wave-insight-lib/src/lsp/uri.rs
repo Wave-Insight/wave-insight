@@ -80,9 +80,9 @@ fn split_scheme(uri: &str) -> Option<(&str, &str)> {
     let scheme = &uri[..colon];
     let valid = !scheme.is_empty()
         && scheme.starts_with(|character: char| character.is_ascii_alphabetic())
-        && scheme
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.'));
+        && scheme.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+        });
     if !valid {
         return None;
     }
@@ -110,7 +110,11 @@ fn file_uri_to_path(rest: &str) -> String {
         path = path.replace('/', "\\");
         // `/C:\dir` -> `C:\dir`
         let bytes = path.as_bytes();
-        if bytes.len() >= 3 && bytes[0] == b'\\' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+        if bytes.len() >= 3
+            && bytes[0] == b'\\'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b':'
+        {
             path.remove(0);
         }
         // Upper-case the drive letter so `file:///c:/x` and `C:\x` are the same
@@ -133,13 +137,12 @@ pub fn percent_decode(input: &str) -> String {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            match (hex_value(bytes[index + 1]), hex_value(bytes[index + 2])) {
-                (Some(high), Some(low)) => {
-                    out.push(high * 16 + low);
-                    index += 3;
-                    continue;
-                }
-                _ => {}
+            if let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
+                out.push(high * 16 + low);
+                index += 3;
+                continue;
             }
         }
         out.push(bytes[index]);
@@ -166,7 +169,10 @@ fn percent_encode(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for byte in input.bytes() {
         let safe = byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':' | b'@' | b'+' | b'$' | b',' | b';' | b'=');
+            || matches!(
+                byte,
+                b'-' | b'.' | b'_' | b'~' | b'/' | b':' | b'@' | b'+' | b'$' | b',' | b';' | b'='
+            );
         if safe {
             out.push(char::from(byte));
         } else {
@@ -209,7 +215,10 @@ mod tests {
             to_path("inmemory://model/1"),
             PathBuf::from("inmemory://model/1")
         );
-        assert_eq!(to_uri(Path::new("inmemory://model/1")), "inmemory://model/1");
+        assert_eq!(
+            to_uri(Path::new("inmemory://model/1")),
+            "inmemory://model/1"
+        );
 
         // Percent escapes and UTF-8 survive the round trip.
         let decoded = to_path("file:///rtl/%C3%A9t%C3%A9/a%20b.sv");
