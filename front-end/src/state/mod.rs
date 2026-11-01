@@ -41,6 +41,7 @@
 
 pub mod action;
 pub mod design;
+pub mod dumps;
 pub mod persist;
 pub mod reduce;
 pub mod select;
@@ -58,6 +59,8 @@ pub use action::{Action, Effect};
 #[allow(unused_imports)]
 pub use design::{DesignState, SignalDetails, SourceRow};
 #[allow(unused_imports)]
+pub use dumps::{DumpEntry, DumpTab, Dumps, DumpsTabsSlice};
+#[allow(unused_imports)]
 pub use persist::{Persister, RowPrefs, Session, SessionRow, Sessions, Storage};
 #[allow(unused_imports)]
 pub use reduce::reduce;
@@ -69,7 +72,7 @@ pub use state::{Nav, Rows, State};
 pub use store::{Store, Subscription};
 #[allow(unused_imports)]
 pub use types::{
-    Cursors, Dialog, Dump, DumpHandle, DumpId, Focus, Goto, Picker, Row, RowsSlice, SessionRestore,
+    Cursors, Dialog, DumpHandle, DumpId, Focus, Goto, Picker, Row, RowsSlice, SessionRestore,
     Settings, StatusTone, View, Viewport,
 };
 pub use types::{Layout, Status};

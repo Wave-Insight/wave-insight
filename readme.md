@@ -109,11 +109,14 @@ a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
-and asserts the user-visible behaviour (the current matrix has 49 scenarios /
-356 assertions; `--list` prints them). The newest scenarios cover the
-generated/arrayed design tree in the sidebar, elaboration diagnostics reaching
-the editor and the top-bar chip, and the TXT export matching the CSV for the
-same row. Build the front end first, then run:
+and asserts the user-visible behaviour (the current matrix has **51 scenarios /
+407 assertions**; `--list` prints them). The full matrix is green with the R2
+layout rules required. The newest scenarios cover the generated/arrayed design tree in the
+sidebar, elaboration diagnostics reaching the editor and the top-bar chip, the
+TXT export matching the CSV for the same row, multi-dump tabs, and the
+`corruption` regression: deterministic truncated-FST / flipped-FST-length /
+header-truncated-VCD fixtures must produce an actionable error and recover to a
+valid dump instead of crashing the page. Build the front end first, then run:
 
 ```bash
 node qa/run.mjs                 # full matrix against front-end/dist
@@ -211,6 +214,21 @@ placed.
   after the dump (`<dump>-<signal>.csv`, `<dump>-rows.csv`; the dump's file stem
   is used when it has one, otherwise its root scope). A generated file over 200 MB
   is refused with an actionable message instead of freezing the tab.
+- **Several dumps**: open more than one file at a time (the file picker accepts
+  multiple files, or drop them one after another). Each open dump gets a tab in
+  the strip above the `Waveform`/`Drivers loads` tabs, so even a single-dump
+  session shows one tab (with its close button). A tab keeps that dump's rows,
+  zoom/pan, cursors and inspector selection; clicking it switches, its close
+  button (or `Ctrl+W` while the strip has focus) closes it and activates a
+  neighbour. Closing the last tab removes the strip and brings the empty start
+  state back; reopening a dump after that restores its remembered rows.
+  Reopening a file that is already open focuses its existing tab instead of
+  adding a second copy. The open dumps are budgeted: their file bytes may not
+  exceed 1.5 GiB, and past that the open is
+  refused with an actionable message ("close a dump tab first") rather than
+  letting the tab run out of wasm memory. The status line appends
+  `— N dumps open, M MB`. A side-by-side split view of two dumps is designed but
+  not implemented yet: see [`docs/design/multi-dump.md`](docs/design/multi-dump.md).
 - **Large dumps**: a browser dump is read in 8 MB chunks with a progress row in
   the sidebar and a reading line in the top bar, then a `parsing ...` line while
   the parser runs. Esc or the cancel button stops the read and reports that the
@@ -223,7 +241,9 @@ placed.
   problems, non-constant generate bounds) are merged per document, deduplicated
   and published into the editor as monaco markers (squiggles); the top bar keeps
   an `N problem(s)` chip visible even when the source pane is collapsed. The
-  merged diagnostics are republished when the top module changes.
+  merged diagnostics are republished when the top module changes. Source hover
+  cards also list the bit ranges a signal is driven or read through, as written
+  in the source (e.g. `- driven here: q[3:0], q[7:4]`).
 - **Find a value**: the ruler box (`time / value`) accepts either kind of query.
   Type an integer and press Enter to move cursor 1 to that time (the old goto
   behaviour); type anything else and press Enter to jump to the *next* change of
@@ -249,10 +269,6 @@ placed.
   longer in the dump are skipped and the load line says how many. A future or
   corrupt stored payload, or a browser that denies storage, falls back to the
   defaults.
-
-Multiple open dumps and a side-by-side split view are designed but not
-implemented yet: see [`docs/design/multi-dump.md`](docs/design/multi-dump.md)
-(the planned Wave 8 work in [`docs/roadmap.md`](docs/roadmap.md)).
 
 The keyboard and accessibility contract: `Delete` removes the selected rows,
 `ctrl+A` selects every row, the arrow keys and `Home`/`End` move the row
@@ -304,6 +320,9 @@ closer is a real button, and the wave list and candidate picker expose
   library still wraps third-party parsing in `catch_unwind`. The release profile
   is `panic = "abort"` (needed for the wasm size), so where unwinding is not
   available a dependency panic still aborts the page/app rather than recovering.
+  A VCD truncated only in its body has no trailer to detect, so it opens as a
+  shorter but structurally valid dump; the corruption fixture therefore cuts the
+  header.
 * **Very large dumps.** The lazy path keeps memory proportional to what is on
   screen plus the raw file bytes, but a browser tab is not a database: the
   105 MB test dump used during development loaded in well under a second and
@@ -311,6 +330,16 @@ closer is a real button, and the wave list and candidate picker expose
   size. That is why the loader refuses dumps over 512 MB up front (and warns from
   100 MB) instead of letting the tab run out of wasm memory; a dump that large is
   still better opened in the desktop build, which reads the file from disk.
+* **Multi-dump limits.** Several dumps are tabs in one waveform pane, not
+  side-by-side panes yet: the split view is step 3 of
+  [`docs/design/multi-dump.md`](docs/design/multi-dump.md) and is not
+  implemented. The open dumps share a 1.5 GiB file-bytes budget; past it a new
+  open is refused with an actionable message.
+* **Bit-range hover is textual.** The source hover lists the bit ranges a
+  signal is driven/read through, but only the final identifier's select is
+  recorded: `+:`-style and width-star ranges are not interpreted, a
+  generate-loop select stays the text `[i]`, and the front-end inspector does
+  not display the ranges yet (the design API field is ready).
 
 ## Todos
 
@@ -330,7 +359,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 49 scenarios, own fixtures) with an advisory CI smoke job
+- [x] browser QA suite moved into the repository (`qa/`, 51 scenarios / 407 assertions, own fixtures) with an advisory CI smoke job
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
@@ -346,14 +375,17 @@ Done in the next release (unreleased at the time of writing):
 - [x] fast dump open: the VCD time range is found from the header plus a bounded tail scan instead of the whole body (~20x cheaper on the 8.3 MB benchmark)
 - [x] migration plans for yew 0.21 and Tauri 2 added under `docs/migrations/` (breaker lists, steps, verification)
 - [x] LSP/design position queries indexed: `textDocument/definition` answers in ~12 us on the synthetic 100-module design (byte-identical to the old scan, differential-tested) with a new `bench lsp` suite
-- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor and the TXT export (49 scenarios / 356 assertions)
+- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs, and corruption recovery (truncated/flipped FST, header-truncated VCD) - 51 scenarios / 407 assertions
 - [x] multi-dump + split-view design note under `docs/design/multi-dump.md` (planned Wave 8)
 - [x] Tauri 2 migration: v2 config + capabilities, `__TAURI__.core` IPC and `onDragDropEvent` drag-and-drop, Linux webkit2gtk-4.1 prerequisites, CI on Ubuntu 24.04 (compile-verified; runtime and bundles are validated by the tag workflow)
 - [x] waveform hardening: a corrupt/truncated FST is rejected by a structural pre-parse validator instead of aborting the viewer; aliased signals stream under the requested variable index; deterministic VCD/FST fuzz and query-tier differential tests cover the entry points
 - [x] R2 step 3b: `State.design` (DesignDb + elaboration cache + top), the derived module tree, `focus.instance` + module-tree selection, and editor edits dispatched as `SourceReloaded` (re-elaborate + LSP change)
+- [x] open several dumps at once: a dump tab strip (one tab per open dump; closing the last one returns to the empty state), per-tab rows/viewport/focus/session restore, dedupe by file identity, close-activates-a-neighbour, a 1.5 GiB open-dumps budget and the status line's "N dumps open, M MB"
+- [x] driver/load bit ranges recorded from selects and shown in the source hover ("driven here: q[3:0], q[7:4]"; limits in Known limitations)
 
 Still open:
 
+- [ ] side-by-side split view of two dumps (`docs/design/multi-dump.md`, step 3)
 - [ ] inline python for writing your own process on signal values
 - [ ] signal bundles (AXI, Avalon and so on)
 - [ ] SpinalHDL support

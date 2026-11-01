@@ -8,20 +8,20 @@ does not duplicate them.
 
 ## Where we are
 
-The last tagged release is **0.10.0** (2026-11-02): one-canvas waveform
+The last tagged release is **0.11.0** (2026-11-02): one-canvas waveform
 renderer, R2 state store, Verdi-style navigation, CI gate, fixed-point display,
 search options, CSV/TXT/MAT export, chunked large-dump loading, LSP diagnostics
 in the editor, the browser QA suite in `qa/`, generate/arrayed elaboration,
 sidebar virtualization, persistence, the accessibility/keyboard pass, the Verdi
-find-value flow, indexed LSP/design queries and the R3 legacy deletion. **Wave
-7** is landing in this wave on `main` (commit follows 0.10.0): the Tauri 2
-migration (shell, capabilities, IPC and CI on `ubuntu-24.04` +
-webkit2gtk-4.1), the finished R2 step 3b (the design and the module-tree
-selection live in the store, editor edits are `SourceReloaded`), and waveform
-hardening (structural FST validation, hierarchy depth bound, aliased-signal
-streaming, deterministic fuzz tests). The `Unreleased` section of
-[`CHANGELOG.md`](../CHANGELOG.md) is the authoritative list of what is on
-`main` beyond 0.10.0.
+find-value flow, indexed LSP/design queries, the R3 legacy deletion, the Tauri 2
+desktop shell and the waveform hardening (FST validator, fuzz tests). **Wave 8**
+is landing in this wave on `main` (commit follows 0.11.0): multi-dump (several
+dumps open as tabs with per-tab rows/viewport/focus/session restore, a tab strip,
+dedupe/close semantics and a 1.5 GiB open-dumps budget), driver/load bit ranges
+in the source hover, and browser-level corruption coverage. The side-by-side
+split view is the remaining part of the multi-dump note. The `Unreleased`
+section of [`CHANGELOG.md`](../CHANGELOG.md) is the authoritative list of what is
+on `main` beyond 0.11.0.
 
 ## How a wave works
 
@@ -48,22 +48,21 @@ cut when the accumulated waves are coherent for users; no wave promises a date.
 | **2** | released in 0.6.0 | export signal values to CSV/TXT; large-dump loading UX (progress, cancel, 512 MB guard); LSP diagnostics in the editor + top bar; browser QA suite in `qa/` with an advisory CI smoke job |
 | **3** | released in 0.7.0 | constant-bound generate unrolling + arrayed instances (Verdi-flat paths); `unresolved-name`/`width-mismatch` driver/load diagnostics; sidebar virtualization above 80 rows; layout + per-signal display persistence; accessibility/keyboard/tier-A-ruler pass; tauri file browser home directory; data-URI favicon |
 | **4** | released in 0.8.0 | elaboration diagnostics merged into the editor's LSP diagnostics; criterion benchmarks + advisory bench workflow; `deny.toml` + `cargo deny` audit workflow + dependabot policy + tokio 1.54.1 security bump; per-dump session restore; MAT export |
-| **5** | released in 0.9.0 | R2 step 3 (sources/focus/goto/jump_token slices + real LSP/editor `Effect`s); fast VCD open (header + bounded tail time-range scan); Verdi find-value in the ruler box; semver-compatible dependency refresh + CI deploy job split out |
-| **6** | released in 0.10.0 | R3 legacy data-model deletion; R2 step 3b partial (picker/dialog slices); indexed design/LSP span structure + `bench lsp` suite; three QA scenarios (elaboration, diagnostics, exportTxt) -> 49 scenarios / 356 assertions; multi-dump/split-view design note |
-| **7** | shipped in this wave | Tauri 2 migration (v2 config + capabilities + `__TAURI__.core` IPC/drag-drop, CI on Ubuntu 24.04 + webkit2gtk-4.1, deny.toml cleanup); R2 step 3b finished (design slice, `focus.instance` + module-tree selection, editor edits as `SourceReloaded`); waveform hardening (structural FST validator, hierarchy depth bound, aliased-signal streaming, deterministic fuzz tests) |
-| **8** | chosen for the next wave, not started | multiple open dumps + split view ([`docs/design/multi-dump.md`](design/multi-dump.md)) |
-| **9** | later candidates | yew 0.21 migration ([`docs/migrations/yew-0.21.md`](migrations/yew-0.21.md)); signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
+| **5** | released in 0.9.0 | R2 step 3 (sources/focus/goto/jump_token slices + real LSP/editor `Effect`s); fast VCD open; Verdi find-value in the ruler box; semver-compatible dependency refresh + CI deploy job split out |
+| **6** | released in 0.10.0 | R3 legacy data-model deletion; R2 step 3b partial (picker/dialog slices); indexed design/LSP span structure + `bench lsp` suite; three QA scenarios -> 49 scenarios / 356 assertions; multi-dump/split-view design note |
+| **7** | released in 0.11.0 | Tauri 2 migration (v2 config/capabilities/IPC, CI on Ubuntu 24.04 + webkit2gtk-4.1, deny.toml cleanup); R2 step 3b finished; waveform hardening (structural FST validator, hierarchy depth bound, aliased-signal streaming, deterministic fuzz tests) |
+| **8** | shipped in this wave | multi-dump steps 1-2: per-tab store model (`State.dumps` + scratch slices for sources-only sessions), dump tab strip (one tab per open dump; closing the last one returns to the empty state and re-opening restores its rows), dedupe/close-a-neighbour, 1.5 GiB open-dumps budget, status line tab/size hint; driver/load bit ranges + source-hover lines; browser corruption coverage (truncated/byte-flipped FST, header-truncated VCD) |
+| **9** | chosen for the next wave, not started | side-by-side split view of two dumps (step 3 of [`docs/design/multi-dump.md`](design/multi-dump.md)); yew 0.21 migration ([`docs/migrations/yew-0.21.md`](migrations/yew-0.21.md)) |
+| **10** | later candidates | signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
 
 Statuses are honest: *released* means a tagged release, *shipped in this wave*
 means committed on `main` and waiting for the next release, *chosen* means the
 next wave's agreed top items (not started), and *later candidates* are unordered.
 Items can move between waves when the tree says a wave should be smaller.
 
-Wave 8 is multiple dumps + split view
-([`docs/design/multi-dump.md`](design/multi-dump.md)), whose prerequisites are now
-in: the design slice, `focus.instance` and the module-tree selection live in the
-store. After that the candidates are the yew 0.21 migration and the smaller
-features below it.
+Wave 9's top items, in order: the side-by-side split view on top of the
+per-dump model that just landed, then the yew 0.21 migration. The multi-dump note
+records what shipped in Wave 8 and what step 3 still has to do.
 
 ## Invariants every wave keeps
 

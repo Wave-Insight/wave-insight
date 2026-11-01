@@ -72,8 +72,9 @@ impl Component for CodeReader {
             Msg::KeyDown(event) => {
                 // Ctrl+W / Ctrl+F4: close the active tab, unless the user is
                 // typing in the editor (the editor owns its keys, and the
-                // browser would close its own tab for Ctrl+W anyway)
-                if typing_in_editor(&event) {
+                // browser would close its own tab for Ctrl+W anyway) or the key
+                // started in the dump tab strip, which has its own Ctrl+W
+                if typing_in_editor(&event) || inside_dump_tabs(&event) {
                     return false;
                 }
                 let key = event.key();
@@ -168,6 +169,32 @@ impl CodeReader {
             self.keydown = Some(listener);
         }
     }
+}
+
+/// Is the key event aimed at the dump tab strip?
+///
+/// With two tab strips on screen, Ctrl+W belongs to the strip the focus is in:
+/// the dump strip handles it itself (closing the active dump), so the source
+/// strip's page-wide listener must ignore keys that started there.
+fn inside_dump_tabs(event: &web_sys::KeyboardEvent) -> bool {
+    let Some(target) = event.target() else {
+        return false;
+    };
+    let Ok(element) = target.dyn_into::<web_sys::Element>() else {
+        return false;
+    };
+    let mut current = Some(element);
+    while let Some(element) = current {
+        if element
+            .get_attribute("class")
+            .map(|class| class.contains("dump-tabs"))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        current = element.parent_element();
+    }
+    false
 }
 
 /// Is the key event aimed at the source editor (or any text field)?

@@ -9,9 +9,10 @@
 use std::rc::Rc;
 
 use super::design::DesignState;
+use super::dumps::Dumps;
 use super::persist::{RowPrefs, SessionRow, Sessions};
 use super::sources::{Source, Sources};
-use super::types::{Dialog, Dump, Focus, Goto, Layout, Picker, Row, RowsSlice, Status, Viewport};
+use super::types::{Dialog, Focus, Goto, Layout, Picker, Row, RowsSlice, Status, Viewport};
 
 /// The wave rows, versioned so a subscriber compares one integer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -62,8 +63,13 @@ pub struct Nav {
 pub struct State {
     pub layout: Layout,
     pub nav: Nav,
+    /// The open dumps (one tab each) with their own rows/viewport/focus.
+    pub dumps: Dumps,
+    /// The rows of a session with **no dump open** (the sources-only workflow).
+    /// The selectors prefer the active dump's entry when there is one; these
+    /// scratch slices are what the panes read before the first dump is opened.
     pub rows: Rows,
-    pub dump: Dump,
+    /// The no-dump viewport (the wave pane is hidden until a dump is open).
     pub viewport: Viewport,
     /// The per-signal display settings remembered across sessions (see
     /// [`super::persist`]); the reducer applies them when a row is added and
@@ -75,8 +81,8 @@ pub struct State {
     pub sessions: Sessions,
     /// The open source documents, their buffer text and the active tab.
     pub sources: Sources,
-    /// The inspector selection (the signal selected in the wave view) and the
-    /// module-tree selection.
+    /// The inspector selection of a session with no dump open (see `rows`); the
+    /// active dump's entry owns the selection while one is open.
     pub focus: Focus,
     /// The design database and its elaboration cache. The reducer owns it: every
     /// source action updates it here and rebuilds the sidebar tree below.
@@ -94,9 +100,70 @@ impl State {
     /// It is also the single place the row list of the open dump is recorded
     /// (see [`State::remember_rows`]), so no row action can forget to persist.
     pub(crate) fn set_rows(&mut self, items: Vec<Row>) {
-        self.rows.items = Rc::new(items);
-        self.rows.version = self.rows.version.wrapping_add(1);
-        self.remember_rows();
+        if self.dumps.active().is_some() {
+            let version = self.dumps.next_rows_version();
+            let entry = self.dumps.active_mut().expect("checked above");
+            entry.rows.items = Rc::new(items);
+            entry.rows.version = version;
+            let id = entry.id.clone();
+            self.remember_rows(&id);
+            self.dumps.touch();
+        } else {
+            self.rows.items = Rc::new(items);
+            self.rows.version = self.rows.version.wrapping_add(1);
+        }
+    }
+
+    /// The rows the panes see right now: the active dump's, or the no-dump
+    /// scratch list.
+    pub(crate) fn rows_items(&self) -> Vec<Row> {
+        match self.dumps.active() {
+            Some(entry) => (*entry.rows.items).clone(),
+            None => (*self.rows.items).clone(),
+        }
+    }
+
+    /// The row snapshot the renderer subscribes to.
+    pub(crate) fn rows_slice(&self) -> RowsSlice {
+        match self.dumps.active() {
+            Some(entry) => entry.rows.slice(),
+            None => self.rows.slice(),
+        }
+    }
+
+    /// The inspector selection: the active dump's, or the no-dump scratch one.
+    pub(crate) fn focus_slice(&self) -> Focus {
+        match self.dumps.active() {
+            Some(entry) => entry.focus.clone(),
+            None => self.focus.clone(),
+        }
+    }
+
+    /// Set the inspector selection on the active dump (or the scratch slice).
+    pub(crate) fn set_focus(&mut self, focus: Focus) {
+        match self.dumps.active_mut() {
+            Some(entry) => entry.focus = focus,
+            None => self.focus = focus,
+        }
+    }
+
+    /// The committed viewport: the active dump's, or the no-dump scratch one.
+    pub(crate) fn viewport_slice(&self) -> Viewport {
+        match self.dumps.active() {
+            Some(entry) => entry.viewport,
+            None => self.viewport,
+        }
+    }
+
+    /// Set the committed viewport on the active dump (or the scratch slice).
+    pub(crate) fn set_viewport(&mut self, viewport: Viewport) {
+        match self.dumps.active_mut() {
+            Some(entry) => {
+                entry.viewport = viewport;
+                self.dumps.touch();
+            }
+            None => self.viewport = viewport,
+        }
     }
 
     /// Replace the open source documents and the active tab, bumping the
@@ -114,11 +181,12 @@ impl State {
     /// A dump with no name has no identity (it arrived as raw bytes) and nothing
     /// is remembered for it; with no dump open there is nothing to key the rows
     /// by either.
-    fn remember_rows(&mut self) {
-        let Some(id) = self.dump.identity() else {
-            return;
+    fn remember_rows(&mut self, id: &super::types::DumpId) {
+        let rows = match self.dumps.active() {
+            Some(entry) => (*entry.rows.items).clone(),
+            None => return,
         };
-        let rows = self.rows.items.iter().map(SessionRow::from_row).collect();
-        self.sessions.record(id, rows);
+        let rows = rows.iter().map(SessionRow::from_row).collect();
+        self.sessions.record(id.clone(), rows);
     }
 }

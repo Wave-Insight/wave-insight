@@ -1297,3 +1297,69 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
 
 /* a disabled control must still be distinguishable when it is focused */
 :where(button, input):disabled { cursor: not-allowed; opacity: 0.5; }
+
+/* ==========================================================================
+   Dump tabs
+   One tab per open dump. The strip only exists when at least two dumps are
+   open, so a single-dump session keeps exactly the old layout. It sits above
+   the waveform / drivers tab strip inside the wave frame.
+   ========================================================================== */
+
+.dump-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex: 0 0 26px;
+  height: 26px;
+  padding: 0 6px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.dump-tab {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.dump-tab:hover { color: var(--text-0); }
+
+.dump-tab.active {
+  color: var(--text-0);
+  border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dump-tab-name,
+.dump-tab-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  height: 100%;
+  padding: 0 4px;
+}
+
+.dump-tab-name { padding: 0 2px 0 10px; }
+
+.dump-tab-close {
+  width: 18px;
+  border-radius: 3px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.dump-tab-close:hover {
+  color: var(--text-0);
+  background: var(--bg-4);
+}

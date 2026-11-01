@@ -332,17 +332,16 @@ mod tests {
     #[test]
     fn a_persisted_store_remembers_the_rows_of_the_open_dump() {
         use crate::state::persist::{MemoryStorage, Persister, SESSIONS_KEY};
-        use crate::state::DumpHandle;
+        use crate::state::{DumpHandle, DumpId};
 
         let bytes = include_bytes!("../../../qa/fixtures/wave.vcd").to_vec();
 
         fn open(store: &Store, bytes: &[u8], size: u64) {
             let waveform = wave_insight_lib::waveform::Waveform::open_bytes(bytes.to_vec())
                 .expect("the vcd fixture opens");
-            store.dispatch(Action::DumpOpened {
-                waveform: DumpHandle::new(waveform),
-                name: Some("wave.vcd".to_string()),
-                bytes: Some(size),
+            store.dispatch(Action::DumpAdded {
+                id: DumpId::new("wave.vcd", Some(size)),
+                handle: DumpHandle::new(waveform),
             });
         }
 
@@ -377,8 +376,7 @@ mod tests {
         let names = |store: &Store| -> Vec<String> {
             store.select(|state| {
                 state
-                    .rows
-                    .items
+                    .rows_items()
                     .iter()
                     .map(|row| row.path.clone())
                     .collect::<Vec<String>>()
@@ -386,9 +384,13 @@ mod tests {
         };
         assert_eq!(names(&store), vec!["top.pc", "top.clk"]);
 
-        // a file with the same name but another size is not this dump: the
-        // current list is left alone
+        // a file with the same name but another size is a different dump: it gets
+        // its own tab (with no remembered rows), and switching back keeps the
+        // first tab's rows
         open(&store, &bytes, bytes.len() as u64 + 1);
+        assert_eq!(store.select(|state| state.dumps.len()), 2);
+        assert!(names(&store).is_empty());
+        store.dispatch(Action::DumpTabActivated { index: 0 });
         assert_eq!(names(&store), vec!["top.pc", "top.clk"]);
     }
 

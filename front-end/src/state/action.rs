@@ -9,7 +9,7 @@
 //! multi-selection are owned by the reducer. The pane dispatches them and then
 //! renders from the resulting snapshot; it never mutates its own copy.
 
-use super::types::{Cursors, DumpHandle, Focus, Layout, Settings, Status, View};
+use super::types::{Cursors, DumpHandle, DumpId, Focus, Layout, Settings, Status, View};
 
 // `Layout`, `SetEditorRatio` and `ClearStatus` are the rest of the surface the
 // later R2 steps use; keeping the enum stable makes those steps additive.
@@ -68,17 +68,16 @@ pub enum Action {
         setting: Settings,
     },
 
-    /// A dump was opened; the store owns the handle and derives the time
-    /// range. `name` is the file the user picked, when there was one (a dump
-    /// can also arrive as raw bytes with no name), and is what exports are
-    /// named after. `bytes` is the size the loader reported, when it did: the
-    /// pair is the identity the remembered row list is keyed by, so reopening
-    /// the same file restores its rows and a different file does not.
-    DumpOpened {
-        waveform: DumpHandle,
-        name: Option<String>,
-        bytes: Option<u64>,
-    },
+    /// A dump was opened: it becomes a tab (or, when the same identity is
+    /// already open, that tab is focused). The store owns the handle and derives
+    /// the time range; the identity (`name` + `bytes`) is what the remembered row
+    /// list is keyed by, so reopening the same file restores its rows.
+    DumpAdded { id: DumpId, handle: DumpHandle },
+    /// A dump tab was clicked: it becomes the active dump.
+    DumpTabActivated { index: usize },
+    /// A dump tab was closed. Closing the active tab activates its neighbour;
+    /// closing the last one returns to the empty state.
+    DumpClosed { index: usize },
     /// The zoom/pan was committed (one dispatch per gesture, never per move).
     ViewCommitted(View),
     /// The cursors were set or cleared by a click.

@@ -1,16 +1,32 @@
 # Multi-dump and split view
 
 Design note for opening several dumps at once and for the later split view. It
-builds on the store described in [state-store.md](../state-store.md): today
-exactly one dump is open and the wave rows, the viewport and the derived tree
-belong to that dump implicitly. This note makes that relationship explicit so a
-second dump can be added without forking the whole UI.
+builds on the store described in [state-store.md](../state-store.md): when this
+note was written, exactly one dump was open and the wave rows, the viewport and
+the derived tree belonged to it implicitly. This note makes that relationship
+explicit so a second dump can be added without forking the whole UI.
 
-Status: **design, no code yet.** It follows the R2 step-3b cleanup (design
-slice, focus.instance) and the Tauri 2 migration: the roadmap schedules it for
-Wave 8, after Wave 7 finishes step 3b and the desktop-shell migration. It must
-not change the DOM contract the browser QA matrix reads on a single-dump
-session.
+Status: **steps 1-2 shipped (Wave 8); step 3 (split view) remains.** The
+per-dump model and the dump tab strip landed: the strip renders one tab per open
+dump (a single-dump session included), closing the last tab removes the strip
+and brings the empty start state back, and reopening a dump restores its
+remembered rows. Step 3 - showing two dumps side by side on one time axis - is
+the open part of this note.
+
+Implementation result (Wave 8), where reality differed from the design below:
+`State.dumps` (in `front-end/src/state/dumps.rs`) owns one `DumpEntry` per tab -
+handle, time range, rows, viewport/cursors, inspector focus and session-restore
+state. The no-dump, sources-only workflow (load sources, add signals, no
+waveform yet) keeps the old `rows`/`viewport`/`focus` fields as **scratch**
+slices; the selectors prefer the active dump entry when there is one, so the
+panes did not have to change shape. `DumpAdded`/`DumpTabActivated`/`DumpClosed`
+drive the tabs (dedupe a re-open by `DumpId`, close activates a neighbour), the
+reducer enforces the 1.5 GiB open-dumps budget, and the tab strip is part of the
+shell (one tab per open dump; the last close returns to the empty state). The
+shell subscribes a tab-only `DumpsTabsSlice` (name/size per tab, active index,
+total bytes) whose version is bumped only when the tab list or the active index
+changes, so a viewport/cursor commit changes the active dump's slices without
+re-rendering the shell.
 
 ## 1. Why
 

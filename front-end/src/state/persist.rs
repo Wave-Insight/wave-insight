@@ -833,7 +833,7 @@ mod tests {
         assert!(id.matches(&DumpId::new("wave.vcd", None)));
         assert!(DumpId::new("wave.vcd", None).matches(&id));
         // a dump with no name has no identity at all
-        assert_eq!(crate::state::types::Dump::default().identity(), None);
+        assert!(!DumpId::new("", None).matches(&DumpId::new("wave.vcd", None)));
     }
 
     #[test]

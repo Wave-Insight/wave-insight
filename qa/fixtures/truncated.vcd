@@ -1,0 +1,28 @@
+$date qa fixture $end
+$version wave-insight qa $end
+$timescale 1ns $end
+$scope module top $end
+  $var wire 1 ! clk $end
+  $var wire 1 " reset $end
+  $var wire 8 # instr [7:0] $end
+  $var wire 8 $ pc [7:0] $end
+  $var wire 8 % data_out [7:0] $end
+  $var wire 16 & result [15:0] $end
+  $var wire 16 ' pc16 [15:0] $end
+  $scope module u_cpu $end
+    $var wire 1 ( clk $end
+    $var wire 1 ) reset $end
+    $var wire 8 * instr [7:0] $end
+    $var wire 8 + pc [7:0] $end
+    $var wire 8 , data_out [7:0] $end
+    $var wire 8 - next_pc [7:0] $end
+    $var wire 8 . pc_reg [7:0] $end
+    $var wire 1 / active $end
+  $upscope $end
+  $scope module u_cpu16 $end
+    $var wire 1 a clk $end
+    $var wire 1 b reset $end
+    $var wire 8 c instr [7:0] $end
+    $var wire 8 d next_pc [7:0] $end
+    $var wire 8 e pc_reg [7:0] $end
+    $var wire 1 f active $end

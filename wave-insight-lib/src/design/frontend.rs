@@ -1851,6 +1851,7 @@ impl<'a> Extractor<'a> {
                                         names: vec![NameRef {
                                             name: port,
                                             span: port_span,
+                                            bits: None,
                                         }],
                                     });
                                 }
@@ -1936,6 +1937,7 @@ impl<'a> Extractor<'a> {
                             span: name.span,
                             role: UsageRole::Load,
                             kind: UsageKind::EventControl,
+                            bits: name.bits,
                             scope: self.generate_scope.clone(),
                         });
                     }
@@ -1959,6 +1961,7 @@ impl<'a> Extractor<'a> {
                 span: name.span,
                 role: UsageRole::Load,
                 kind: UsageKind::ProceduralAssign,
+                bits: name.bits,
                 scope: self.generate_scope.clone(),
             });
         }
@@ -1985,8 +1988,20 @@ impl<'a> Extractor<'a> {
                 span: name.span,
                 role,
                 kind,
+                bits: name.bits,
                 scope: self.generate_scope.clone(),
             });
+        }
+    }
+
+    /// Text of a select node as written (`"[3:0]"`, `"[i]"`), or `None` when the
+    /// identifier is not bit-selected (`q`, `q[3]` -> "[3]").
+    fn select_text<'n>(&self, node: impl Into<RefNode<'n>>) -> Option<String> {
+        let text = self.text_of(node).trim().to_string();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
         }
     }
 
@@ -2001,6 +2016,7 @@ impl<'a> Extractor<'a> {
                     names.push(NameRef {
                         name,
                         span: self.span_of(identifier),
+                        bits: self.select_text(&primary.nodes.2),
                     });
                 }
             }
@@ -2018,6 +2034,7 @@ impl<'a> Extractor<'a> {
                         names.push(NameRef {
                             name,
                             span: self.span_of(lvalue),
+                            bits: self.select_text(&lvalue.nodes.1),
                         });
                     }
                 }
@@ -2025,9 +2042,11 @@ impl<'a> Extractor<'a> {
                     let identifier = &lvalue.nodes.1.nodes.0;
                     let name = self.hierarchical_name(identifier);
                     if !name.is_empty() {
+                        let bits = self.select_text(&lvalue.nodes.2);
                         names.push(NameRef {
                             name,
                             span: self.span_of(identifier),
+                            bits,
                         });
                     }
                 }
@@ -2035,9 +2054,11 @@ impl<'a> Extractor<'a> {
                     let identifier = &lvalue.nodes.1.nodes.0;
                     let name = self.hierarchical_name(identifier);
                     if !name.is_empty() {
+                        let bits = self.select_text(&lvalue.nodes.2);
                         names.push(NameRef {
                             name,
                             span: self.span_of(identifier),
+                            bits,
                         });
                     }
                 }
@@ -2045,9 +2066,11 @@ impl<'a> Extractor<'a> {
                     let identifier = &lvalue.nodes.1.nodes.0;
                     let name = self.hierarchical_name(identifier);
                     if !name.is_empty() {
+                        let bits = self.select_text(&lvalue.nodes.2);
                         names.push(NameRef {
                             name,
                             span: self.span_of(identifier),
+                            bits,
                         });
                     }
                 }

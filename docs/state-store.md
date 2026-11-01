@@ -5,8 +5,8 @@ props-and-`Rc<RefCell<_>>` plumbing with one store, and use the same move to fix
 the pane layout.
 
 Status: **steps 1-3 and step 3b implemented; step 4 is down to pane
-wiring.** The store lives in `front-end/src/state/` (ten modules, about 4.8k lines
-of Rust with 69 native `#[test]`s): layout, status, wave rows, viewport/cursors, the
+wiring.** The store lives in `front-end/src/state/` (eleven modules, about 5.4k
+lines of Rust with 77 native `#[test]`s): layout, status, wave rows, viewport/cursors, the
 open sources, the design database, the derived module tree, focus (the inspector
 signal and the module-tree instance), jump requests, the path picker, the
 settings dialog, the per-signal preferences and the per-dump sessions are store
@@ -22,6 +22,14 @@ the store. **Step 3b is done**: `SharedDesign` is gone, `State.design` owns the
 module-tree selection is `focus.instance` (the sidebar derives it and dispatches
 `FocusChanged`), the picker/dialog slices are in, and editor edits dispatch
 `SourceReloaded` (LSP change effect + re-elaborate; a no-op for unchanged text).
+Wave 8 made the dump state per tab: `State.dumps` holds one entry per open
+dump (handle, time range, rows, viewport/cursors, inspector focus and
+session-restore state) and a session with **no dump open** (sources-only) keeps
+the scratch `rows`/`viewport`/`focus` slices; the selectors prefer the
+active entry, and the reducer enforces the 1.5 GiB open-dumps budget. The
+shell's dump strip subscribes a tab-only `DumpsTabsSlice` whose version is bumped
+only when the tab list or the active index changes, so a viewport/cursor commit
+never re-renders the shell (the tier-A render-count gate stays green).
 **Step 4 is down to pane wiring**: the panes could subscribe directly instead of
 receiving shell-mirrored props, the picker/dialog props could be pure store reads
 instead of `App`/`WaveShow` mirrors, `Effect::MonacoShow` is still a no-op seam,
@@ -241,7 +249,7 @@ propagation, so an unrelated dispatch simply never reaches it.
 
 | Component | Subscribes to | Re-renders on |
 |---|---|---|
-| `App` | `layout` (its own render), plus mirrors of `sources`, `focus`, `nav.goto` and the cursor/row callbacks of the inlay hints | sidebar/editor ratio, drawer; the mirrors keep the shell's render-time copies and the hint context current |
+| `App` | `layout` and the tab-only `dump_tabs` (its own renders), plus mirrors of `sources`, `focus`, `nav.goto` and the cursor/row callbacks of the inlay hints | sidebar/editor ratio, drawer; the mirrors keep the shell's render-time copies and the hint context current |
 | `TopBar` | `nav.status`, `nav.problems` | status line, language-server problem chip |
 | `Sidebar` (`ModuleStruct`) | `tree`, `focus.instance` (via `App` props; store-owned since step 3b) | dump/design change, instance click |
 | `SignalList` (today `SignalStruct`) | `tree`, `sources` | module selection, filter list |
@@ -255,7 +263,8 @@ propagation, so an unrelated dispatch simply never reaches it.
 | `Ctrl` (settings dialog) | `nav.dialog` (via `WaveShow`, which mirrors it) | dialog opened/closed/edited |
 
 `App` *renders* only for `layout`; its other subscriptions are mirrors it re-reads
-when they change (`sources`, `focus`, `nav.goto`) plus the inlay-hint context.
+when they change (`sources`, `dump_tabs` for the dump tab strip, `focus`, `nav.goto`)
+plus the inlay-hint context.
 Everything else is a leaf subscription, so a zoom no longer walks the sidebar or
 the editor. The design, the module tree, the picker and the settings dialog are store state
 now, but their components are still prop-driven: `App` mirrors the slices and
@@ -287,12 +296,11 @@ Stored (source of truth, survives everything):
 |---|---|
 | `sources` | file name, buffer text, language id, active tab, version - **in (step 3)** |
 | `design` | `DesignDb` (only copy), elaboration cache, `top` module name, `db_version` - **in** |
-| `dump` | `Rc<Waveform>`, hierarchy meta (`format`, `end_time`), identity |
-| `rows` | ordered `Vec<Row>`: path, width, is_bool, settings, chosen |
-| `view` | committed `View { x_axis, size }` + `cursor1/cursor2` |
+| `dumps` | one `DumpEntry` per open dump: handle, time range (+ range-from-body), `Rows`, `Viewport`, `Focus`, session-restore state; plus the active index - **in (Wave 8)** |
+| `dump_tabs` | tab-only snapshot of `dumps` for the shell: `DumpTab` (name, size), active index, total bytes; its version bumps only on tab-list/active changes, never on rows/viewport/focus |
+| `rows` / `viewport` / `focus` | **scratch** slices for a session with no dump open (the sources-only workflow); the selectors prefer the active dump entry |
 | `layout` | `sidebar_w`, `editor_ratio`, `drawer_open` |
 | `row_prefs` / `sessions` | remembered per-signal settings / per-dump row lists (persisted, see below) |
-| `focus` | `signal: Option<String>` (inspector) + `instance: Option<String>` (sidebar) - **in** |
 | `nav` | `goto`, `jump_token`, `top`, `status`, `problems`, `picker`, `dialog` - **in** |
 
 Derived (recomputed or cached with a version key, never serialized):
@@ -300,10 +308,10 @@ Derived (recomputed or cached with a version key, never serialized):
 | Derived value | From | Where |
 |---|---|---|
 | elaborated design | `design.db_version`, `design.top` | `State.design.elaborated: Option<ElaboratedDesign>`, rebuilt by `reduce` when either input changes; `select` only reads it |
-| module tree (dump hierarchy, else design instances) | `dump`, `design` | `State.tree: Slice<ModuleTree>`, rebuilt by `reduce` on the same edge; `select::tree` only reads it |
-| signal details (declaration/drivers/loads) | `design`, `focus.signal` | queried in `Inspector::view`; cheap, no cache |
-| row → dump signal index/width | `dump`, `row.path` | stored on `Row` as a convenience, recomputed on `Action::DumpOpened` |
-| decoded values | `dump` | **the library cache**, not the store |
+| module tree (active dump's hierarchy, else design instances) | `dumps` (active), `design` | `State.tree: Slice<ModuleTree>`, rebuilt by `reduce` on the same edge; `select::tree` only reads it |
+| signal details (declaration/drivers/loads) | `design`, active dump's `focus.signal` | queried in `Inspector::view`; cheap, no cache |
+| row → dump signal index/width | active `dumps` entry, `row.path` | stored on `Row` as a convenience, recomputed on `Action::DumpOpened` |
+| decoded values | active `dumps` entry | **the library cache**, not the store |
 | monaco models, LSP document table | `sources` | mirrored by effects (2.5) |
 | editor collapsed? | `sources.is_empty()` | **derived**, see §3 |
 | inspector visible? | `design.is_empty() && focus.signal.is_none()` | derived |
@@ -729,12 +737,13 @@ The task-10 wording, made checkable, with the status at the time of writing:
   asserted by the browser matrix's `layoutRules` scenario
 - `cargo test -p front-end --bins` covers `reduce` (row add/remove/reorder,
   document open/close, dump switch, jump, picker, dialog, design/focus); **done
-  so far** — 69 native tests cover layout, rows, sources, design, focus, jump,
-  viewport/cursors, sessions, persistence, picker and dialog
+  so far** — 77 native tests cover layout, rows, sources, design, focus, jump,
+  viewport/cursors, sessions, persistence, picker, dialog and the multi-dump
+  set (add/activate/close/dedupe/budget)
 - the browser matrix passes, with the rewires listed above; **the gate** — it has
-  grown from the 140 assertions of the original task to 49 scenarios / 356
-  assertions (the latest are `findValue`, `elaboration`, `diagnostics` and
-  `exportTxt`), and the Lead re-measures the baseline after each wave.
+  grown from the 140 assertions of the original task to 51 scenarios (the latest
+  are `corruption` and `multiDump` after `findValue`/`elaboration`/`diagnostics`/
+  `exportTxt`), and the QA owner re-measures the baseline after each wave.
 
 ---
 

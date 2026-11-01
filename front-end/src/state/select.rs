@@ -7,9 +7,11 @@
 use super::state::State;
 use wave_insight_lib::waveform::TimeRange;
 
+use super::dumps::DumpsTabsSlice;
 use super::sources::SourcesSlice;
 use super::types::{
-    Cursors, Dialog, DumpHandle, Focus, Goto, Layout, Picker, RowsSlice, Status, View, Viewport,
+    Cursors, Dialog, DumpHandle, Focus, Goto, Layout, Picker, RowsSlice, SessionRestore, Status,
+    View, Viewport,
 };
 
 /// The two CSS variables and the drawer flag. Subscribed by `App` only.
@@ -46,9 +48,17 @@ pub fn editor_ratio(state: &State) -> f32 {
     state.layout.editor_ratio
 }
 
-/// The wave rows (order, settings and selection). Subscribed by the wave pane.
+/// The wave rows (order, settings and selection) of the active dump, or the
+/// no-dump scratch list. Subscribed by the wave pane.
 pub fn rows(state: &State) -> RowsSlice {
-    state.rows.slice()
+    state.rows_slice()
+}
+
+/// The dump tab strip: the tab list and the active index, and nothing else.
+/// Subscribed by the shell; its version moves only when the tabs or the active
+/// index change, never on a viewport/cursor/focus commit (tier-A gate).
+pub fn dump_tabs(state: &State) -> DumpsTabsSlice {
+    state.dumps.tabs_slice()
 }
 
 /// The open source documents and the active tab. Subscribed by the editor.
@@ -56,9 +66,9 @@ pub fn sources(state: &State) -> SourcesSlice {
     state.sources.slice()
 }
 
-/// The inspector selection.
+/// The inspector selection of the active dump (or the no-dump scratch one).
 pub fn focus(state: &State) -> Focus {
-    state.focus.clone()
+    state.focus_slice()
 }
 
 /// The path picker, when it is open. Subscribed by the shell.
@@ -71,7 +81,7 @@ pub fn dialog(state: &State) -> Option<Dialog> {
     state.nav.dialog.clone()
 }
 
-/// The sidebar tree (the dump hierarchy or the elaborated design).
+/// The sidebar tree (the active dump's hierarchy or the elaborated design).
 /// Subscribed by the sidebar.
 pub fn tree(state: &State) -> Option<crate::nav::SidebarTree> {
     state.tree.clone()
@@ -88,35 +98,41 @@ pub fn goto(state: &State) -> Option<Goto> {
     state.nav.goto.clone()
 }
 
-/// The committed viewport and cursors (one subscription for both: the wave pane
-/// mirrors them for drawing, the time bar renders from them).
+/// The committed viewport and cursors of the active dump (one subscription for
+/// both: the wave pane mirrors them for drawing, the time bar renders from them).
 pub fn viewport(state: &State) -> Viewport {
-    state.viewport
+    state.viewport_slice()
 }
 
 /// The zoom/pan alone.
 #[allow(dead_code)] // the pane subscribes to the combined viewport
 pub fn view(state: &State) -> View {
-    state.viewport.view
+    state.viewport_slice().view
 }
 
 /// The cursors alone.
 pub fn cursors(state: &State) -> Cursors {
-    state.viewport.cursors
+    state.viewport_slice().cursors
 }
 
-/// The opened dump's time range (ruler + fit-to-trace).
+/// The active dump's time range (ruler + fit-to-trace).
 pub fn time_range(state: &State) -> Option<TimeRange> {
-    state.dump.time_range
+    state.dumps.active().and_then(|entry| entry.time_range)
 }
 
-/// The file the opened dump came from, when the transport knew one.
+/// The file the active dump came from, when the transport knew one.
 pub fn dump_name(state: &State) -> Option<String> {
-    state.dump.name.clone()
+    state.dumps.active().map(|entry| entry.id.name.clone())
 }
 
-/// The opened dump itself. Subscribed by the wave pane (decoding) and mirrored
+/// The active dump itself. Subscribed by the wave pane (decoding) and mirrored
 /// into the inlay-hint context; the handle compares by identity.
 pub fn dump_waveform(state: &State) -> Option<DumpHandle> {
-    state.dump.waveform.clone()
+    state.dumps.active().map(|entry| entry.handle.clone())
+}
+
+/// What opening the active dump restored from the remembered session (the app
+/// turns the skipped count into one line of status text).
+pub fn session_restore(state: &State) -> Option<SessionRestore> {
+    state.dumps.active().and_then(|entry| entry.session_restore)
 }

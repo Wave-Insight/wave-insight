@@ -9,13 +9,25 @@
 //! after the last chosen row, index-shifting removal, the three selection
 //! modes) so moving them into the store does not move behaviour.
 
+use std::rc::Rc;
+
 use super::action::{Action, Effect};
+use super::dumps::DumpEntry;
+use super::persist::SessionRow;
 use super::sources::Source;
 use super::state::State;
 use super::types::{
-    clamp_ratio, clamp_sidebar, Dialog, Dump, Goto, Picker, Row, SessionRestore, Status,
+    clamp_ratio, clamp_sidebar, Dialog, DumpHandle, DumpId, Goto, Picker, Row, SessionRestore,
+    Status,
 };
 use crate::nav::SidebarTree;
+
+/// How many bytes of dump files may be open at once (docs/design/multi-dump.md
+/// §4.3): every open dump keeps its file bytes in wasm memory. 1.5 GiB of file
+/// bytes is already several GiB of wasm memory once the renderer cache is
+/// added; the guard refuses the next open with an actionable message instead of
+/// letting the tab kill the page.
+pub const DUMP_BUDGET_BYTES: u64 = 1536 * 1024 * 1024;
 
 pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
     match action {
@@ -49,7 +61,7 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             bit,
         } => {
             if !path.is_empty() {
-                let mut items = (*state.rows.items).clone();
+                let mut items = state.rows_items();
                 // a row is identified by its path *and* the bit it shows, so the
                 // bus and its expanded bits can coexist
                 if !items.iter().any(|row| row.path == path && row.bit == bit) {
@@ -84,7 +96,7 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             }
         }
         Action::RowsBitExpanded { index, width } => {
-            let mut items = (*state.rows.items).clone();
+            let mut items = state.rows_items();
             let Some(row) = items.get(index) else {
                 return Vec::new();
             };
@@ -119,7 +131,7 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             state.set_rows(items);
         }
         Action::RowsBitCollapsed { index } => {
-            let mut items = (*state.rows.items).clone();
+            let mut items = state.rows_items();
             let Some(row) = items.get(index) else {
                 return Vec::new();
             };
@@ -139,7 +151,7 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 let mut sorted = indices;
                 sorted.sort_unstable();
                 sorted.dedup();
-                let mut items = (*state.rows.items).clone();
+                let mut items = state.rows_items();
                 // remove from the back so the earlier indices stay valid
                 for index in sorted.into_iter().rev() {
                     if index < items.len() {
@@ -150,13 +162,13 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             }
         }
         Action::RowSelected { index, ctrl, shift } => {
-            let mut items = (*state.rows.items).clone();
+            let mut items = state.rows_items();
             if index < items.len() && choose(&mut items, index, ctrl, shift) {
                 state.set_rows(items);
             }
         }
         Action::RowsAllSelected => {
-            let mut items = (*state.rows.items).clone();
+            let mut items = state.rows_items();
             if items.iter().any(|row| !row.chosen) {
                 for row in items.iter_mut() {
                     row.chosen = true;
@@ -165,7 +177,7 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             }
         }
         Action::RowsCleared => {
-            let mut items = (*state.rows.items).clone();
+            let mut items = state.rows_items();
             if items.iter().any(|row| row.chosen) {
                 for row in items.iter_mut() {
                     row.chosen = false;
@@ -174,43 +186,103 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             }
         }
         Action::RowsReordered { from, to } => {
-            let mut items = (*state.rows.items).clone();
+            let mut items = state.rows_items();
             if from < items.len() && to < items.len() && from != to {
                 let row = items.remove(from);
                 items.insert(to, row);
                 state.set_rows(items);
             }
         }
-        Action::DumpOpened {
-            waveform,
-            name,
-            bytes,
-        } => {
+        Action::DumpAdded { id, handle } => {
+            // the same file is already open: focus its tab, never a second copy
+            if let Some(index) = state.dumps.index_of(&id) {
+                activate_dump(state, index);
+                return vec![Effect::LspTop {
+                    top: state.design.top().map(str::to_owned),
+                }];
+            }
+            // memory budget: every open dump keeps its file bytes in wasm memory
+            let total = state.dumps.total_bytes();
+            let incoming = id.bytes.unwrap_or(0);
+            if total.saturating_add(incoming) > DUMP_BUDGET_BYTES {
+                state.nav.status = Some(Status::error(format!(
+                    "cannot open {}: the open dumps already use {} MB (limit {} MB) — close a dump tab first",
+                    id.name,
+                    total / (1024 * 1024),
+                    DUMP_BUDGET_BYTES / (1024 * 1024)
+                )));
+                return Vec::new();
+            }
             // the range is derived from the handle, never hand-written into the
             // store: the reducer is the one place that may compute it, and the
             // handle knows the GHW fallback (one body scan) behind one helper
-            let (time_range, range_from_body) = waveform.time_range();
-            state.dump = Dump {
-                waveform: Some(waveform),
-                name,
-                time_range,
-                range_from_body,
-                bytes,
-                session_restore: None,
+            let (time_range, range_from_body) = handle.time_range();
+            let (remembered, session_restore) = remembered_rows(state, &id, &handle);
+            let rows = match remembered {
+                Some(rows) => rows,
+                // the first dump of a sources-only session keeps the rows that
+                // are already on the wave; a later tab starts empty
+                None if state.dumps.is_empty() => take_scratch_rows(state),
+                None => Vec::new(),
             };
-            // the dump knows which module it was made from; that is the best
-            // guess for the design top (the shell used to compute this)
-            let top_hint = state
-                .dump
-                .waveform
-                .as_ref()
-                .and_then(|handle| handle.waveform().hierarchy().root().children().first())
-                .map(|scope| scope.name().to_string());
-            state.design.set_top_hint(top_hint);
+            let healed = session_restore.is_some();
+            let rows_version = state.dumps.next_rows_version();
+            let mut entry = DumpEntry::new(id.clone(), handle, time_range, range_from_body);
+            entry.rows = super::state::Rows {
+                items: Rc::new(rows),
+                version: rows_version,
+            };
+            entry.session_restore = session_restore;
+            let remembered = (*entry.rows.items)
+                .iter()
+                .map(SessionRow::from_row)
+                .collect();
+            let mut items = (*state.dumps.items).clone();
+            items.push(entry);
+            state.dumps.items = Rc::new(items);
+            let index = state.dumps.len() - 1;
+            state.dumps.touch();
+            state.dumps.touch_tabs();
+            // a restored list is written back as it came back: the rows the dump
+            // no longer has are forgotten, not retried on every open
+            if healed {
+                state.sessions.record(id, remembered);
+            }
+            activate_dump(state, index);
+            return vec![Effect::LspTop {
+                top: state.design.top().map(str::to_owned),
+            }];
+        }
+        Action::DumpTabActivated { index } => {
+            if index < state.dumps.len() && index != state.dumps.active_index() {
+                activate_dump(state, index);
+                return vec![Effect::LspTop {
+                    top: state.design.top().map(str::to_owned),
+                }];
+            }
+        }
+        Action::DumpClosed { index } => {
+            if index >= state.dumps.len() {
+                return Vec::new();
+            }
+            let mut items = (*state.dumps.items).clone();
+            let closed = items.remove(index);
+            let mut active = state.dumps.active_index();
+            if items.is_empty() {
+                active = 0;
+            } else {
+                if index < active {
+                    active = active.saturating_sub(1);
+                }
+                active = active.min(items.len() - 1);
+            }
+            state.dumps.items = Rc::new(items);
+            state.dumps.active = active;
+            state.dumps.touch();
+            state.dumps.touch_tabs();
+            sync_top_hint(state);
             refresh_tree(state);
-            // reopening a dump puts its remembered row list back (a different
-            // dump leaves the current list alone)
-            restore_session_rows(state);
+            state.nav.status = Some(Status::info(format!("closed {}", closed.id.name)));
             return vec![Effect::LspTop {
                 top: state.design.top().map(str::to_owned),
             }];
@@ -290,7 +362,9 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             }
         }
         Action::FocusChanged { focus } => {
-            state.focus = focus;
+            // the selection belongs to the active dump (or to the no-dump
+            // scratch slice before the first dump is opened)
+            state.set_focus(focus);
         }
         Action::JumpRequested { file, line, col } => {
             if line == 0 {
@@ -355,13 +429,17 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             state.nav.dialog = None;
         }
         Action::ViewCommitted(view) => {
-            state.viewport.view = view;
+            let mut viewport = state.viewport_slice();
+            viewport.view = view;
+            state.set_viewport(viewport);
         }
         Action::CursorsChanged(cursors) => {
-            state.viewport.cursors = cursors;
+            let mut viewport = state.viewport_slice();
+            viewport.cursors = cursors;
+            state.set_viewport(viewport);
         }
         Action::RowSettingChanged { indices, setting } => {
-            let mut items = (*state.rows.items).clone();
+            let mut items = state.rows_items();
             let mut changed = false;
             // the paths are collected before the rows are handed back to the
             // state (the row list and the memory are two fields of it)
@@ -388,41 +466,87 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
     Vec::new()
 }
 
+/// Make `index` the active dump: the tree, the design's top hint and the LSP top
+/// follow it, and the module selection (which belonged to the old tree) is
+/// cleared.
+fn activate_dump(state: &mut State, index: usize) {
+    if state.dumps.is_empty() {
+        return;
+    }
+    state.dumps.active = index.min(state.dumps.len() - 1);
+    // a fresh row version: the panes' `rows` subscription compares versions, and
+    // two tabs can hold lists at the same per-entry version
+    let version = state.dumps.next_rows_version();
+    if let Some(entry) = state.dumps.active_mut() {
+        entry.rows.version = version;
+    }
+    state.dumps.touch();
+    // the active index is part of the shell's tab strip snapshot
+    state.dumps.touch_tabs();
+    sync_top_hint(state);
+    refresh_tree(state);
+}
+
+/// Tell the design which module the active dump was made from: the best guess
+/// for the elaborated top while no source declares one.
+fn sync_top_hint(state: &mut State) {
+    let top_hint = state
+        .dumps
+        .active()
+        .and_then(|entry| {
+            entry
+                .handle
+                .waveform()
+                .hierarchy()
+                .root()
+                .children()
+                .first()
+        })
+        .map(|scope| scope.name().to_string());
+    state.design.set_top_hint(top_hint);
+}
+
 /// Rebuild the sidebar tree the store hands to the sidebar.
 ///
-/// The opened dump's scope hierarchy wins; the elaborated design is the fallback
+/// The active dump's scope hierarchy wins; the elaborated design is the fallback
 /// so the module list is usable before a dump is loaded. The module selection
 /// belongs to the old tree, so it is cleared (the sidebar then lists the top
 /// scope's signals, exactly as before this slice moved into the store).
 fn refresh_tree(state: &mut State) {
-    state.tree = match state.dump.waveform.as_ref() {
-        Some(handle) => Some(SidebarTree::from_hierarchy(handle.waveform().hierarchy())),
+    state.tree = match state.dumps.active() {
+        Some(entry) => Some(SidebarTree::from_hierarchy(
+            entry.handle.waveform().hierarchy(),
+        )),
         None => state.design.sidebar_tree(),
     };
-    state.focus.instance = None;
+    match state.dumps.active_mut() {
+        Some(entry) => entry.focus.instance = None,
+        None => state.focus.instance = None,
+    }
 }
 
-/// Put the remembered row list of the dump that just opened back on the wave.
-///
-/// Only runs for a dump with an identity (a named file): a dump that arrived as
-/// raw bytes is never remembered. When there is no remembered session the
-/// current list is left alone, exactly as before this feature existed.
+/// The rows a sources-only session already had on the wave, moved into the first
+/// dump's entry (the old single-dump behaviour: opening the first dump kept the
+/// row list).
+fn take_scratch_rows(state: &mut State) -> Vec<Row> {
+    let rows = (*state.rows.items).clone();
+    state.rows.items = Rc::new(Vec::new());
+    state.rows.version = state.rows.version.wrapping_add(1);
+    rows
+}
+
+/// The remembered row list of `id`, if the session store has one.
 ///
 /// A remembered row whose signal is not in the dump any more (or whose bit does
-/// not fit the bus it belongs to) is skipped and counted in
-/// [`SessionRestore`]; the open itself still succeeds, and the app mentions the
-/// skipped rows once in the status line instead of turning the load into an
-/// error. The stored list is rewritten with what actually came back, so the
-/// skipped rows are forgotten on the next write.
-fn restore_session_rows(state: &mut State) {
-    let Some(id) = state.dump.identity() else {
-        return;
-    };
-    let Some(session) = state.sessions.get(&id).cloned() else {
-        return;
-    };
-    let Some(handle) = state.dump.waveform.as_ref() else {
-        return;
+/// not fit the bus it belongs to) is skipped and counted in [`SessionRestore`];
+/// the open itself still succeeds. Returns `None` when this dump has no session.
+fn remembered_rows(
+    state: &State,
+    id: &DumpId,
+    handle: &DumpHandle,
+) -> (Option<Vec<Row>>, Option<SessionRestore>) {
+    let Some(session) = state.sessions.get(id).cloned() else {
+        return (None, None);
     };
     let waveform = handle.waveform();
     let mut items = Vec::with_capacity(session.rows.len());
@@ -435,7 +559,6 @@ fn restore_session_rows(state: &mut State) {
         let width = match stored.bit {
             Some(bit) if signal.width() > u32::from(bit) => 1,
             Some(_) => {
-                // the bus is narrower than the bit this row used to show
                 skipped += 1;
                 continue;
             }
@@ -449,8 +572,6 @@ fn restore_session_rows(state: &mut State) {
                 stored.name.clone()
             },
             width,
-            // the display settings are remembered by path, so a restored row
-            // comes back with the format the user chose for that signal
             setting: state.row_prefs.setting_for(&stored.path),
             chosen: false,
             load: stored.load.clone(),
@@ -459,8 +580,7 @@ fn restore_session_rows(state: &mut State) {
         });
     }
     let restored = items.len();
-    state.dump.session_restore = Some(SessionRestore { restored, skipped });
-    state.set_rows(items);
+    (Some(items), Some(SessionRestore { restored, skipped }))
 }
 
 /// The three selection modes of the wave rows, exactly as the view had them.
@@ -565,11 +685,31 @@ mod tests {
 
     fn paths(state: &State) -> Vec<String> {
         state
-            .rows
-            .items
+            .rows_items()
             .iter()
             .map(|row| row.path.clone())
             .collect()
+    }
+
+    /// Add one dump as a tab (the loader path in the app).
+    fn open_dump(
+        state: &mut State,
+        handle: DumpHandle,
+        name: Option<&str>,
+        bytes: Option<u64>,
+    ) -> Vec<Effect> {
+        reduce(
+            state,
+            Action::DumpAdded {
+                id: DumpId::new(name.unwrap_or_default(), bytes),
+                handle,
+            },
+        )
+    }
+
+    /// The active dump entry.
+    fn dump(state: &State) -> &crate::state::dumps::DumpEntry {
+        state.dumps.active().expect("a dump is open")
     }
 
     #[test]
@@ -1378,44 +1518,35 @@ mod tests {
         let expected = waveform.time_range_hint().ok().flatten();
         let handle = DumpHandle::new(waveform);
         let mut state = state();
-        assert_eq!(state.dump.waveform, None);
-        assert_eq!(state.dump.time_range, None);
-        reduce(
+        assert!(state.dumps.is_empty());
+        open_dump(
             &mut state,
-            Action::DumpOpened {
-                waveform: handle.clone(),
-                name: Some("io_mode_wave.fst".to_string()),
-                bytes: Some(4096),
-            },
+            handle.clone(),
+            Some("io_mode_wave.fst"),
+            Some(4096),
         );
-        assert_eq!(state.dump.time_range, expected);
-        // the file the user picked is part of the dump slice (exports use it)
-        assert_eq!(state.dump.name.as_deref(), Some("io_mode_wave.fst"));
+        assert_eq!(state.dumps.len(), 1);
+        assert_eq!(dump(&state).time_range, expected);
+        // the file the user picked is part of the dump entry (exports use it)
+        assert_eq!(dump(&state).id.name, "io_mode_wave.fst");
         // the handle is the identity: same file, same handle
-        assert_eq!(state.dump.waveform, Some(handle));
+        assert_eq!(dump(&state).handle, handle);
         // another handle for another file is *not* equal (pointer identity)
         let other = wave_insight_lib::waveform::Waveform::open_bytes(
             include_bytes!("../../../wave-insight-lib/tests/data/io_mode_wave.fst").to_vec(),
         )
         .expect("the fst fixture opens");
-        assert_ne!(state.dump.waveform, Some(DumpHandle::new(other)));
+        assert_ne!(dump(&state).handle, DumpHandle::new(other));
     }
 
     #[test]
     fn reopening_the_same_dump_restores_its_rows_in_order() {
         let (handle, size) = wave_vcd();
         let mut state = state();
-        reduce(
-            &mut state,
-            Action::DumpOpened {
-                waveform: handle,
-                name: Some("wave.vcd".to_string()),
-                bytes: Some(size),
-            },
-        );
+        open_dump(&mut state, handle, Some("wave.vcd"), Some(size));
         // first open: nothing is remembered yet, so nothing is restored
-        assert!(state.rows.items.is_empty());
-        assert_eq!(state.dump.session_restore, None);
+        assert!(state.rows_items().is_empty());
+        assert_eq!(dump(&state).session_restore, None);
 
         add(&mut state, "top.pc");
         add(&mut state, "top.clk");
@@ -1444,21 +1575,14 @@ mod tests {
             ..State::default()
         };
         let (handle, size) = wave_vcd();
-        reduce(
-            &mut reopened,
-            Action::DumpOpened {
-                waveform: handle,
-                name: Some("wave.vcd".to_string()),
-                bytes: Some(size),
-            },
-        );
+        open_dump(&mut reopened, handle, Some("wave.vcd"), Some(size));
         assert_eq!(paths(&reopened), vec!["top.pc", "top.clk"]);
         // the width comes from the dump, the format from the remembered settings
-        assert_eq!(reopened.rows.items[0].width, 8);
-        assert_eq!(reopened.rows.items[0].setting, setting);
-        assert!(!reopened.rows.items[0].chosen);
+        assert_eq!(reopened.rows_items()[0].width, 8);
+        assert_eq!(reopened.rows_items()[0].setting, setting);
+        assert!(!reopened.rows_items()[0].chosen);
         assert_eq!(
-            reopened.dump.session_restore,
+            dump(&reopened).session_restore,
             Some(SessionRestore {
                 restored: 2,
                 skipped: 0
@@ -1480,18 +1604,11 @@ mod tests {
                 session_row("top.pc", Some(8)),
             ],
         );
-        reduce(
-            &mut state,
-            Action::DumpOpened {
-                waveform: handle,
-                name: Some("wave.vcd".to_string()),
-                bytes: Some(size),
-            },
-        );
-        let bits: Vec<Option<u8>> = state.rows.items.iter().map(|row| row.bit).collect();
+        open_dump(&mut state, handle, Some("wave.vcd"), Some(size));
+        let bits: Vec<Option<u8>> = state.rows_items().iter().map(|row| row.bit).collect();
         assert_eq!(bits, vec![None, Some(7)]);
         assert_eq!(
-            state.dump.session_restore,
+            dump(&state).session_restore,
             Some(SessionRestore {
                 restored: 2,
                 skipped: 2
@@ -1513,34 +1630,243 @@ mod tests {
             DumpId::new("wave.vcd", Some(size)),
             vec![session_row("top.pc", None)],
         );
-        // same name, different size: a different file, so the list is left alone
-        reduce(
-            &mut state,
-            Action::DumpOpened {
-                waveform: handle,
-                name: Some("wave.vcd".to_string()),
-                bytes: Some(size + 1),
-            },
-        );
-        assert!(state.rows.items.is_empty());
-        assert_eq!(state.dump.session_restore, None);
+        // same name, different size: a different file, so it gets its own tab
+        // and the remembered list is not this dump's
+        open_dump(&mut state, handle, Some("wave.vcd"), Some(size + 1));
+        assert!(state.rows_items().is_empty());
+        assert_eq!(dump(&state).session_restore, None);
 
         // a dump that arrived as raw bytes has no name, so it has no identity:
         // nothing is restored and nothing is remembered for it
         let (handle, _) = wave_vcd();
-        reduce(
-            &mut state,
-            Action::DumpOpened {
-                waveform: handle,
-                name: None,
-                bytes: None,
-            },
-        );
-        assert!(state.rows.items.is_empty());
+        open_dump(&mut state, handle, None, None);
+        assert!(state.rows_items().is_empty());
+        assert_eq!(state.dumps.len(), 2);
         add(&mut state, "top.pc");
         assert_eq!(state.sessions.entries().len(), 1);
     }
 
+    // --- Wave 8: multiple dumps -------------------------------------------
+
+    #[test]
+    fn a_second_dump_gets_its_own_tab_and_rows() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("wave.vcd"), Some(size));
+        add(&mut state, "top.pc");
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("wave2.vcd"), Some(size));
+        // the new tab is active and starts with no rows (nothing remembered)
+        assert_eq!(state.dumps.len(), 2);
+        assert_eq!(state.dumps.active_index(), 1);
+        assert!(state.rows_items().is_empty());
+        add(&mut state, "top.clk");
+        assert_eq!(paths(&state), vec!["top.clk"]);
+        // switching back restores the first tab's own rows
+        reduce(&mut state, Action::DumpTabActivated { index: 0 });
+        assert_eq!(state.dumps.active_index(), 0);
+        assert_eq!(paths(&state), vec!["top.pc"]);
+        // and the selectors read the active entry
+        assert_eq!(crate::state::select::rows(&state).items[0].path, "top.pc");
+        assert_eq!(
+            crate::state::select::dump_name(&state).as_deref(),
+            Some("wave.vcd")
+        );
+    }
+
+    #[test]
+    fn opening_the_same_identity_focuses_the_existing_tab() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("wave.vcd"), Some(size));
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("wave.vcd"), Some(size));
+        // dedupe by identity: one tab, still active
+        assert_eq!(state.dumps.len(), 1);
+        assert_eq!(state.dumps.active_index(), 0);
+    }
+
+    #[test]
+    fn closing_a_tab_activates_its_neighbour_and_the_last_one_empties_the_app() {
+        let mut state = state();
+        for name in ["a.vcd", "b.vcd", "c.vcd"] {
+            let (handle, size) = wave_vcd();
+            open_dump(&mut state, handle, Some(name), Some(size));
+        }
+        assert_eq!(state.dumps.active_index(), 2);
+        // closing the active last tab activates the one before it
+        reduce(&mut state, Action::DumpClosed { index: 2 });
+        assert_eq!(state.dumps.len(), 2);
+        assert_eq!(state.dumps.active_index(), 1);
+        // closing a tab before the active one shifts the active index left
+        reduce(&mut state, Action::DumpTabActivated { index: 0 });
+        reduce(&mut state, Action::DumpClosed { index: 1 });
+        assert_eq!(state.dumps.len(), 1);
+        assert_eq!(state.dumps.active_index(), 0);
+        // the last close returns to the empty state
+        reduce(&mut state, Action::DumpClosed { index: 0 });
+        assert!(state.dumps.is_empty());
+        assert!(crate::state::select::dump_waveform(&state).is_none());
+        assert!(crate::state::select::time_range(&state).is_none());
+        // an out-of-range close is a no-op
+        assert!(reduce(&mut state, Action::DumpClosed { index: 3 }).is_empty());
+    }
+
+    #[test]
+    fn the_memory_budget_refuses_a_dump_that_does_not_fit() {
+        let mut state = state();
+        let (handle, _) = wave_vcd();
+        open_dump(
+            &mut state,
+            handle,
+            Some("big.vcd"),
+            Some(super::DUMP_BUDGET_BYTES),
+        );
+        assert_eq!(state.dumps.len(), 1);
+        let (handle, _) = wave_vcd();
+        let effects = open_dump(&mut state, handle, Some("second.vcd"), Some(1));
+        // refused: no tab, no effect, an actionable error
+        assert!(effects.is_empty());
+        assert_eq!(state.dumps.len(), 1);
+        let status = state.nav.status.as_ref().expect("an error is reported");
+        assert!(status.is_error());
+        assert!(status.text.contains("close a dump tab"), "{}", status.text);
+    }
+
+    #[test]
+    fn the_remembered_rows_are_restored_per_tab() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        // a previous session remembered rows for the second file only
+        state.sessions.record(
+            DumpId::new("b.vcd", Some(size)),
+            vec![session_row("top.pc", None)],
+        );
+        open_dump(&mut state, handle, Some("a.vcd"), Some(size));
+        assert!(state.rows_items().is_empty());
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("b.vcd"), Some(size));
+        // the restored tab is active with its remembered row
+        assert_eq!(state.dumps.active_index(), 1);
+        assert_eq!(paths(&state), vec!["top.pc"]);
+        assert_eq!(
+            dump(&state).session_restore,
+            Some(SessionRestore {
+                restored: 1,
+                skipped: 0
+            })
+        );
+        // and its row changes are recorded under its own identity
+        add(&mut state, "top.clk");
+        let remembered = state
+            .sessions
+            .get(&DumpId::new("b.vcd", Some(size)))
+            .expect("the session is recorded");
+        assert_eq!(remembered.rows.len(), 2);
+        // the first tab still has no remembered rows
+        assert!(state
+            .sessions
+            .get(&DumpId::new("a.vcd", Some(size)))
+            .is_none());
+    }
+
+    #[test]
+    fn switching_dumps_changes_the_rows_slice_version() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("a.vcd"), Some(size));
+        add(&mut state, "top.pc");
+        let first = crate::state::select::rows(&state);
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("b.vcd"), Some(size));
+        add(&mut state, "top.clk");
+        let second = crate::state::select::rows(&state);
+        assert_ne!(first, second);
+        // the subscription compares only the version, so a tab switch must look
+        // different even when both tabs happen to hold one row
+        reduce(&mut state, Action::DumpTabActivated { index: 0 });
+        let switched = crate::state::select::rows(&state);
+        assert_ne!(switched, second);
+        assert_eq!(switched.items[0].path, "top.pc");
+    }
+    #[test]
+    fn a_viewport_or_cursor_commit_does_not_change_the_dump_tabs_slice() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("a.vcd"), Some(size));
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("b.vcd"), Some(size));
+        let tabs = crate::state::select::dump_tabs(&state);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.active_index(), 1);
+        // the shell subscribes to the tab slice only: a gesture commit changes the
+        // active entry, never the tab list (the tier-A render-count gate)
+        reduce(
+            &mut state,
+            Action::ViewCommitted(crate::state::types::View::new(120.0, 4.0)),
+        );
+        reduce(
+            &mut state,
+            Action::CursorsChanged(crate::state::types::Cursors {
+                one: Some(10),
+                two: Some(20),
+            }),
+        );
+        add(&mut state, "top.pc");
+        reduce(
+            &mut state,
+            Action::FocusChanged {
+                focus: crate::state::types::Focus {
+                    signal: Some("top.pc".to_string()),
+                    instance: None,
+                },
+            },
+        );
+        assert_eq!(tabs, crate::state::select::dump_tabs(&state));
+        // tab changes do move it
+        reduce(&mut state, Action::DumpTabActivated { index: 0 });
+        let switched = crate::state::select::dump_tabs(&state);
+        assert_ne!(tabs, switched);
+        assert_eq!(switched.active_index(), 0);
+        assert_eq!(switched.items[0].name, "a.vcd");
+        reduce(&mut state, Action::DumpClosed { index: 0 });
+        assert_ne!(switched, crate::state::select::dump_tabs(&state));
+        // and the single remaining tab keeps its close path available (the strip
+        // renders for one dump too)
+        let single = crate::state::select::dump_tabs(&state);
+        assert_eq!(single.len(), 1);
+    }
+    #[test]
+    fn the_viewport_and_focus_are_per_dump() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("a.vcd"), Some(size));
+        reduce(
+            &mut state,
+            Action::ViewCommitted(crate::state::types::View::new(120.0, 4.0)),
+        );
+        reduce(
+            &mut state,
+            Action::FocusChanged {
+                focus: crate::state::types::Focus {
+                    signal: Some("top.pc".to_string()),
+                    instance: None,
+                },
+            },
+        );
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("b.vcd"), Some(size));
+        // the new tab has the default viewport and no selection
+        assert_eq!(crate::state::select::viewport(&state).view.x_axis, 0.0);
+        assert_eq!(crate::state::select::focus(&state).signal, None);
+        // switching back restores the first tab's viewport and selection
+        reduce(&mut state, Action::DumpTabActivated { index: 0 });
+        assert_eq!(crate::state::select::viewport(&state).view.x_axis, 120.0);
+        assert_eq!(
+            crate::state::select::focus(&state).signal.as_deref(),
+            Some("top.pc")
+        );
+    }
     #[test]
     fn shift_click_selects_the_range() {
         let mut state = state();

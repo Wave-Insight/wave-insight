@@ -10,6 +10,62 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.12.0] - 2026-11-02
+
+### Added
+
+- Multi-dump: several dumps can be open at once. The store keeps one entry per
+  tab (`State.dumps`: the handle, its time range, the rows, the viewport/cursors,
+  the inspector focus and the session-restore state), while a session with no
+  dump open (sources-only) keeps using the scratch `rows`/`viewport`/`focus`
+  slices, so that workflow still works. `DumpAdded`/`DumpTabActivated`/
+  `DumpClosed` add, switch and close tabs; reopening a file that is already open
+  focuses its tab instead of adding a duplicate, and closing a tab activates a
+  neighbour. A dump tab strip sits above the `Waveform`/`Drivers loads` tabs with
+  one tab per open dump (a single dump shows one tab with its close button); each
+  tab is a `role=tab` name button (file name, size tooltip) plus a close button.
+  Closing the last tab removes the strip and brings the empty start state back,
+  and reopening a dump afterwards restores its remembered rows; `Ctrl+W` with the
+  focus inside the strip closes the active dump. Per-tab session restore now
+  works, the open dumps share a 1.5 GiB file-bytes budget (a new open past it is
+  refused with an actionable "close a dump tab first" message), and the status
+  line appends
+  `— N dumps open, M MB`. The strip's CSS moved to `front-end/styles.css`.
+  A side-by-side split view is *not* in yet (step 3 of the design note).
+- Driver/load bit ranges: `SignalReference` now carries an optional textual bit
+  range (`[3:0]`, `[7]`, `[i]`) recorded from selects in both lvalues and
+  expression reads and carried into `FlatSignal`'s drivers/loads. The language
+  server's hover adds `- driven here: q[3:0], q[7:4]` / `- read here: ...` lines.
+  The field is additive over serde (`#[serde(default)]`), so older payloads
+  still decode; new fixtures and `tests/design_bits.rs` cover the cases. Limits:
+  only the final identifier's select is recorded, `+:`-style ranges are not
+  interpreted, generate-loop selects stay the text `[i]`, and the front-end
+  inspector does not display the ranges yet (the API field is ready).
+- Browser QA corruption coverage: deterministic fixtures (truncated FST, FST with
+  a flipped data-section length field - the old multi-terabyte allocation abort -
+  and a header-truncated VCD) and a `corruption` scenario with 18 assertions: no
+  page exception, an actionable "could not be opened" error naming the file, the
+  error tone, and a valid dump still loading afterwards. A `multiDump` scenario
+  was added too; the matrix now has 51 scenarios / 407 assertions, green with the
+  R2 layout rules required. A VCD truncated only in its body is documented as
+  a structurally valid shorter VCD (there is no trailer to detect), which is why
+  the corrupt VCD fixture cuts the header.
+
+### Changed
+
+- The dump-related state is per tab in the store: selectors read the active dump
+  entry, the sidebar tree and the language-server top follow the active dump, and
+  `State.tree` stays a derived cache. The no-dump sources-only session is kept
+  alive by the scratch slices rather than by a synthetic empty dump.
+- The dump tab strip (DOM, keyboard routing and CSS) is part of the shell; the
+  status line appends the open-tab count and total dump-file size.
+- The shell's dump strip subscribes a tab-only `DumpsTabsSlice` whose version
+  changes only when the tab list or the active index changes, so a cursor or zoom
+  commit changes the active dump's slices without re-rendering the shell (the
+  tier-A render-count gate stays green).
+- Bit ranges cross the wasm/serde boundary additively; a missing field in an
+  older model decodes as `None`.
+
 ## [0.11.0] - 2026-11-02
 
 ### Added

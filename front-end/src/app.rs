@@ -7,8 +7,8 @@ use crate::lsp::LspBridge;
 use crate::module_struct::ModuleStruct;
 use crate::nav::{match_dump_candidates, PathPicker, SidebarTree, SignalInspector, SourceClick};
 use crate::state::{
-    self, Action, Cursors, DumpHandle, Effect, Focus, Goto, Layout, Picker, RowsSlice,
-    SourcesSlice, Status, Store, Subscription,
+    self, Action, Cursors, DumpHandle, DumpId, DumpsTabsSlice, Effect, Focus, Goto, Layout, Picker,
+    RowsSlice, SourcesSlice, Status, Store, Subscription,
 };
 use crate::wave_show::WaveShow;
 
@@ -48,6 +48,15 @@ pub enum Msg {
     PickerChanged(Option<Picker>),
     /// The store's sidebar tree changed (the app subscribes to it).
     Tree(Option<SidebarTree>),
+    /// The dump tab list or the active tab changed (tab-only snapshot: a
+    /// viewport/cursor commit never reaches the shell).
+    DumpTabs(DumpsTabsSlice),
+    /// A dump tab was clicked: it becomes the active dump.
+    DumpTabClicked(usize),
+    /// A dump tab was closed.
+    DumpClose(usize),
+    /// A key press inside the dump tab strip (Ctrl+W closes the active dump).
+    DumpTabsKey(KeyboardEvent),
     /// A module-tree row was clicked: the sidebar selection moved.
     InstanceSelected(String),
     /// The editor buffer changed; the store re-syncs the document and the LSP.
@@ -185,6 +194,11 @@ pub struct App {
     tree: Option<SidebarTree>,
     /// Kept so the subscription lives exactly as long as the component.
     _tree_sub: Subscription,
+    /// The dump tab strip: labels, sizes and the active index. The entries
+    /// themselves (rows/viewport/focus) stay in the store and never re-render
+    /// the shell.
+    dump_tabs: DumpsTabsSlice,
+    _dumps_sub: Subscription,
     /// The language server client the source editor talks to.
     lsp: LspBridge,
     /// Cursor/dump subscriptions for the editor inlay hints; they update the
@@ -344,6 +358,9 @@ impl Component for App {
         // the sidebar tree is derived by the reducer (dump hierarchy or design)
         let tree = store.select(state::select::tree);
         let tree_sub = store.subscribe(state::select::tree, ctx.link().callback(Msg::Tree));
+        let dump_tabs = store.select(state::select::dump_tabs);
+        let dumps_sub =
+            store.subscribe(state::select::dump_tabs, ctx.link().callback(Msg::DumpTabs));
         let mut this = Self {
             store,
             layout,
@@ -355,6 +372,8 @@ impl Component for App {
             resize_listener: None,
             tree,
             _tree_sub: tree_sub,
+            dump_tabs,
+            _dumps_sub: dumps_sub,
             lsp,
             _cursors_sub: cursors_sub,
             _rows_sub: rows_sub,
@@ -488,6 +507,55 @@ impl Component for App {
                         // not lose the zoom, the scroll position or the decode
                         // cache of the waveform.
                         <div class="wave-frame">
+                            // The dump tab strip: one tab per open dump, shown
+                            // whenever at least one dump is open (so the last tab
+                            // can always be closed; the strip disappears with it and
+                            // the start hint comes back). A single-dump session now
+                            // has this one-tab strip above the dock tabs.
+                            {if !self.dump_tabs.items.is_empty() {
+                                let active = self.dump_tabs.active_index();
+                                let total_mb = self.dump_tabs.total_bytes / (1024 * 1024);
+                                let count = self.dump_tabs.len();
+                                html!{
+                                <div class="dump-tabs" role="tablist" aria-label="Open dumps"
+                                    title={format!("{count} dumps open, {total_mb} MB of dump files")}
+                                    onkeydown={link.callback(Msg::DumpTabsKey)}>
+                                    { for self.dump_tabs.items.iter().enumerate().map(|(index, tab)| {
+                                        let is_active = index == active;
+                                        let label = if tab.name.is_empty() {
+                                            "dump".to_string()
+                                        } else {
+                                            tab.name.clone()
+                                        };
+                                        let size = tab
+                                            .bytes
+                                            .map(|bytes| format!("{:.0} KB", bytes as f64 / 1024.0))
+                                            .unwrap_or_else(|| "size unknown".to_string());
+                                        let class = if is_active {"dump-tab active"} else {"dump-tab"};
+                                        html!{
+                                            <div class={class}>
+                                                <button type="button" class="dump-tab-name"
+                                                    role="tab"
+                                                    aria-selected={if is_active {"true"} else {"false"}}
+                                                    title={format!("{label} — {size}")}
+                                                    onclick={link.callback(move |_| Msg::DumpTabClicked(index))}>
+                                                    {label.clone()}
+                                                </button>
+                                                <button type="button" class="dump-tab-close"
+                                                    aria-label={format!("Close {label}")}
+                                                    title="Close the dump tab"
+                                                    onclick={link.callback(move |event: MouseEvent| {
+                                                        event.stop_propagation();
+                                                        Msg::DumpClose(index)
+                                                    })}>{"×"}</button>
+                                            </div>
+                                        }
+                                    })}
+                                </div>
+                                }
+                            }else {
+                                html!{}
+                            }}
                             <div class="dock-tabs">
                                 <button type="button"
                                     class={WaveFrameTab::Waveform.class(self.wave_tab)}
@@ -718,6 +786,33 @@ impl App {
                 self.tree = tree;
                 true
             }
+            Msg::DumpTabs(dump_tabs) => {
+                self.dump_tabs = dump_tabs;
+                // the inlay hints follow the active dump (the tab slice is the
+                // only thing the shell hears about; a switch changes it)
+                let waveform = self.store.select(state::select::dump_waveform);
+                crate::lsp::inlay::set_waveform(waveform);
+                true
+            }
+            Msg::DumpTabClicked(index) => {
+                self.apply(Action::DumpTabActivated { index });
+                false
+            }
+            Msg::DumpClose(index) => {
+                self.apply(Action::DumpClosed { index });
+                false
+            }
+            Msg::DumpTabsKey(event) => {
+                // Ctrl+W inside the dump strip closes the active dump tab (the
+                // source strip keeps its own Ctrl+W; the CodeReader listener
+                // ignores keys that start inside `.dump-tabs`)
+                if event.ctrl_key() && matches!(event.key().as_str(), "w" | "W") {
+                    event.prevent_default();
+                    let index = self.dump_tabs.active_index();
+                    self.apply(Action::DumpClosed { index });
+                }
+                false
+            }
             Msg::InstanceSelected(path) => {
                 self.apply(Action::FocusChanged {
                     focus: Focus {
@@ -870,34 +965,44 @@ impl App {
                 true
             }
             Msg::GetWaveform(waveform) => {
-                // the store owns the handle, derives the time range and the
-                // top hint from it, and rebuilds the sidebar tree in the reducer
-                // (that is what the ruler and the fit zoom read); the file name
-                // the loader read is what exports are named after
-                let dump_name = self
-                    .pending_load
-                    .as_ref()
-                    .map(|report| report.file_name.clone());
-                // the name and the size together are the identity the remembered
-                // row list is keyed by (the report is emitted before the handle,
-                // so it is already here)
-                let dump_bytes = self.pending_load.as_ref().map(|report| report.bytes);
-                self.store.dispatch(Action::DumpOpened {
-                    waveform: waveform.clone(),
-                    name: dump_name,
-                    bytes: dump_bytes,
+                // the loader adds a tab: the name and the size are the identity
+                // the remembered row list is keyed by (the report is emitted
+                // before the handle, so it is already here). A dump that arrived
+                // as raw bytes has no name and is never remembered.
+                let id = DumpId::new(
+                    self.pending_load
+                        .as_ref()
+                        .map(|report| report.file_name.clone())
+                        .unwrap_or_default(),
+                    self.pending_load.as_ref().map(|report| report.bytes),
+                );
+                self.apply(Action::DumpAdded {
+                    id: id.clone(),
+                    handle: waveform.clone(),
                 });
+                // the memory budget may have refused the tab: keep its actionable
+                // error instead of overwriting it with a load line
+                let opened = self
+                    .store
+                    .select(|state| state.dumps.items.iter().any(|entry| entry.id.matches(&id)));
+                if !opened {
+                    return true;
+                }
                 // GHW has no cheap time-range hint: the store fell back to one
                 // body scan, so say where the ruler's numbers came from instead
                 // of reporting a plain load.
-                let range_note = if self.store.select(|state| state.dump.range_from_body) {
+                let range_note = if self.store.select(|state| {
+                    state
+                        .dumps
+                        .items
+                        .get(state.dumps.active_index())
+                        .is_some_and(|entry| entry.range_from_body)
+                }) {
                     let format = format!("{:?}", waveform.waveform().file_format()).to_uppercase();
                     Some(format!("{format}: time range read from the body"))
                 } else {
                     None
                 };
-                // the inlay hints can only show values once a dump is open
-                crate::lsp::inlay::set_waveform(Some(waveform));
                 // the loader reported what the parse cost (bytes, ms, wasm
                 // memory): the QA matrix still asserts the "waveform loaded"
                 // prefix, so the numbers are appended to it
@@ -911,12 +1016,23 @@ impl App {
                 // a remembered session may contain rows this dump does not have
                 // (a signal was renamed, or the file is not quite the same one);
                 // say so once, next to the load line, instead of failing the open
-                let status = match self.store.select(|state| state.dump.session_restore) {
+                let status = match self.store.select(state::select::session_restore) {
                     Some(restore) if restore.skipped > 0 => format!(
                         "{status} — {} remembered row(s) are not in this dump",
                         restore.skipped
                     ),
                     _ => status,
+                };
+                // with more than one tab, the status line also reports how many
+                // dumps are open and how much file memory they hold
+                let status = if self.dump_tabs.len() >= 2 {
+                    format!(
+                        "{status} — {} dumps open, {} MB",
+                        self.dump_tabs.len(),
+                        self.dump_tabs.total_bytes / (1024 * 1024)
+                    )
+                } else {
+                    status
                 };
                 self.note(Status::info(status));
                 true

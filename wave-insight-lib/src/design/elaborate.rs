@@ -477,6 +477,7 @@ fn build_port_bindings(
                         names: vec![NameRef {
                             name: port.name.clone(),
                             span: connection.span.clone(),
+                            bits: None,
                         }],
                         signals: Vec::new(),
                         wildcard: true,
@@ -587,6 +588,7 @@ fn link_usages(design: &mut ElaboratedDesign, modules: &HashMap<&str, &ModuleDef
             let reference = SignalReference {
                 span: usage.span.clone(),
                 kind: usage.kind,
+                bits: usage.bits.clone(),
             };
             match usage.role {
                 UsageRole::Driver => design.signals[signal_index].drivers.push(reference),
@@ -654,28 +656,31 @@ fn link_connections(design: &mut ElaboratedDesign, modules: &HashMap<&str, &Modu
             let direction = design.instances[child_index].ports[port_index].direction;
             let port_width = design.instances[child_index].ports[port_index].width;
 
-            let mut resolved = Vec::new();
+            // Resolved parent signals keep the select as written on the
+            // connection name, so a hookup of `bus[3:0]` reports that range.
+            let mut resolved: Vec<(String, Option<String>)> = Vec::new();
             let mut unresolved = Vec::new();
             for name in &connection.names {
                 match resolve_scoped(&parent_path, &child_scope, &name.name, &design.signal_index) {
                     Some(path) => {
-                        if !resolved.contains(&path) {
-                            resolved.push(path);
+                        if !resolved.iter().any(|(known, _)| *known == path) {
+                            resolved.push((path, name.bits.clone()));
                         }
                     }
                     None => unresolved.push(name.name.clone()),
                 }
             }
-            connection.signals = resolved.clone();
+            connection.signals = resolved.iter().map(|(path, _)| path.clone()).collect();
             design.instances[child_index].ports[port_index].connection = Some(connection.clone());
 
             let child_port_path = format!("{}.{}", child_path, port_name);
             let (parent_roles, child_roles) = roles_for(direction);
-            for parent_signal in &resolved {
+            for (parent_signal, bits) in &resolved {
                 add_reference(
                     &mut design.signals,
                     &design.signal_index,
                     parent_signal,
+                    bits.as_deref(),
                     &connection.span,
                     parent_roles,
                 );
@@ -684,6 +689,7 @@ fn link_connections(design: &mut ElaboratedDesign, modules: &HashMap<&str, &Modu
                 &mut design.signals,
                 &design.signal_index,
                 &child_port_path,
+                None,
                 &connection.span,
                 child_roles,
             );
@@ -723,7 +729,7 @@ fn link_connections(design: &mut ElaboratedDesign, modules: &HashMap<&str, &Modu
                 && connection.names.len() == 1
                 && connection.text.trim() == connection.names[0].name.trim()
             {
-                let connected = &resolved[0];
+                let connected = &resolved[0].0;
                 if let (Some(port_width), Some(signal_index)) =
                     (port_width, design.signal_index.get(connected).copied())
                 {
@@ -761,6 +767,7 @@ fn add_reference(
     signals: &mut [FlatSignal],
     index: &HashMap<String, usize>,
     signal_path: &str,
+    bits: Option<&str>,
     span: &Span,
     roles: &[UsageRole],
 ) {
@@ -770,6 +777,7 @@ fn add_reference(
     let reference = SignalReference {
         span: span.clone(),
         kind: UsageKind::PortConnection,
+        bits: bits.map(str::to_owned),
     };
     for role in roles {
         match role {

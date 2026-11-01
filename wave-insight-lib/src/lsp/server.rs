@@ -43,8 +43,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::design::{
-    DesignDb, Diagnostic, ElaboratedDesign, FlatSignal, ModuleDef, RangeDim, Severity, SourceItem,
-    Span,
+    DesignDb, Diagnostic, ElaboratedDesign, FlatSignal, ModuleDef, RangeDim, Severity,
+    SignalReference, SourceItem, Span,
 };
 
 use super::document::{approximate_span_range, Document};
@@ -1157,6 +1157,12 @@ fn signal_hover(
                 signal.drivers.len(),
                 signal.loads.len()
             ));
+            if let Some(driven) = reference_ranges(&signal.drivers, &signal.local_name) {
+                lines.push(format!("- driven here: {driven}"));
+            }
+            if let Some(read) = reference_ranges(&signal.loads, &signal.local_name) {
+                lines.push(format!("- read here: {read}"));
+            }
             lines.push(format!("- declared at `{location}`"));
             if siblings.len() > 1 {
                 lines.push(format!(
@@ -1183,6 +1189,12 @@ fn signal_hover(
                 signal.drivers.len(),
                 signal.loads.len()
             ));
+            if let Some(driven) = reference_ranges(&signal.drivers, &signal.local_name) {
+                lines.push(format!("driven here: {driven}"));
+            }
+            if let Some(read) = reference_ranges(&signal.loads, &signal.local_name) {
+                lines.push(format!("read here: {read}"));
+            }
             lines.push(format!("declared at {location}"));
             if siblings.len() > 1 {
                 lines.push(format!("also instantiated as {}", siblings.join(", ")));
@@ -1190,6 +1202,27 @@ fn signal_hover(
         }
     }
     Some(lines.join("\n"))
+}
+
+/// The distinct bit ranges of a signal's driver/load references, formatted
+/// with the signal name (`q[3:0], q[7:4]`); `None` when every reference is
+/// whole-signal.
+fn reference_ranges(references: &[SignalReference], name: &str) -> Option<String> {
+    let mut ranges: Vec<String> = Vec::new();
+    for reference in references {
+        let Some(bits) = reference.bits.as_deref() else {
+            continue;
+        };
+        let range = format!("{name}{bits}");
+        if !ranges.contains(&range) {
+            ranges.push(range);
+        }
+    }
+    if ranges.is_empty() {
+        None
+    } else {
+        Some(ranges.join(", "))
+    }
 }
 
 fn module_hover(db: &DesignDb, name: &str, format: HoverFormat) -> Option<String> {

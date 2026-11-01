@@ -172,39 +172,6 @@ pub struct SessionRestore {
     pub skipped: usize,
 }
 
-/// The opened dump, as the store holds it.
-///
-/// The handle is the source of truth (`State.dump`); the time range is derived
-/// from it by the reducer so the ruler and the fit zoom stay cheap reads.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Dump {
-    pub waveform: Option<DumpHandle>,
-    /// The file the user opened, when the transport knows one; exports and
-    /// the status line use it instead of the root scope name.
-    pub name: Option<String>,
-    pub time_range: Option<TimeRange>,
-    /// The range came from a body scan (`Waveform::end_time`) instead of the
-    /// cheap header hint: true for GHW, and for a dump whose header the hint
-    /// cannot parse.
-    pub range_from_body: bool,
-    /// Size of the file the loader read, when it reported one; part of the
-    /// identity the remembered row list is keyed by.
-    pub bytes: Option<u64>,
-    /// What opening this dump restored from the remembered session, for the
-    /// status line. `None` when the dump had no remembered session.
-    pub session_restore: Option<SessionRestore>,
-}
-
-impl Dump {
-    /// The identity the remembered row list is keyed by; `None` for a dump that
-    /// arrived as raw bytes with no name (nothing is remembered for it).
-    pub fn identity(&self) -> Option<DumpId> {
-        self.name
-            .as_ref()
-            .map(|name| DumpId::new(name.clone(), self.bytes))
-    }
-}
-
 /// Width of the sidebar when nothing else was chosen.
 pub const SIDEBAR_DEFAULT: f64 = 280.0;
 /// The sidebar never gets narrower than this.

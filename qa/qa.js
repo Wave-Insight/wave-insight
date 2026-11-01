@@ -82,6 +82,11 @@ class Cdp {
         const doc = await this.send('DOM.getDocument', { depth: -1 });
         const input = await this.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: 'input[type=file]' });
         if (!input.nodeId) throw new Error('no file input yet');
+        // a file input that still holds the previous selection does not fire a
+        // change event when the same file is selected again (the app does not
+        // clear it), so scenarios that re-open the same dump would silently do
+        // nothing; clear it first to simulate a fresh pick
+        await this.eval('(function(){ var input = document.querySelector("input[type=file]"); if (input) { input.value = ""; } return true; })()');
         await this.send('DOM.setFileInputFiles', { nodeId: input.nodeId, files });
         return;
       } catch (error) {
@@ -2941,6 +2946,200 @@ scenarios.exportTxt = async (cdp) => {
   check('exportTxt: the export reports success in the status line', /export/i.test(s.status || ''), s.status);
   check('exportTxt: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   await cdp.shot('qa-export-txt.png');
+};
+
+// --- Wave 8: corrupt dumps fail honestly, and the app keeps working ---------
+// Wave 7 hardened the parsers: a corrupt FST used to abort the process with a
+// multi-terabyte allocation. This is the browser-level regression proof: each
+// corrupt file must produce a readable error (naming the file and what to do),
+// no page exception, and the app must still open a valid dump afterwards.
+scenarios.corruption = async (cdp) => {
+  await boot(cdp);
+  const cases = [
+    { file: 'truncated.fst', what: 'a truncated FST' },
+    { file: 'flipped.fst', what: 'an FST with a flipped length field' },
+    { file: 'truncated.vcd', what: 'a truncated VCD' },
+  ];
+  for (const item of cases) {
+    await cdp.upload([path.join(FIXTURES, item.file)]);
+    // the failed open is reported once the reader gives up; the size guard and
+    // the parse happen before the error status lands
+    await sleep(2500);
+    const s = await state(cdp);
+    const tone = await cdp.eval('window.__qa.statusTone()');
+    const errs = await exceptions(cdp);
+    note('corrupt ' + item.file, { status: s.status, tone: tone, exceptions: errs });
+    check('corruption: ' + item.what + ' is refused, not crashed', errs.length === 0, errs);
+    check('corruption: ' + item.what + ' names the file in the error',
+      (s.status || '').includes(item.file), s.status);
+    check('corruption: ' + item.what + ' says it could not be opened',
+      /could not be opened/.test(s.status || ''), s.status);
+    check('corruption: ' + item.what + ' tells the user what to do',
+      /intact VCD\/FST\/GHW dump/.test(s.status || ''), s.status);
+    check('corruption: ' + item.what + ' is an error status, not a note', tone === 'error', tone);
+  }
+  // the app must still be usable: the corrupt attempts left no broken state
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  const loaded = await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(700);
+  const added = await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(800);
+  const s = await state(cdp);
+  note('after the corrupt dumps', { status: s.status, rows: s.waveNames, added: added });
+  check('corruption: a valid dump still loads after the corrupt ones', !!loaded, s.status);
+  check('corruption: a row can still be added to the wave', added === 'ok' && (s.waveNames || []).length > 0, s.waveNames);
+  check('corruption: no exceptions during the recovery', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-corruption.png');
+};
+
+// --- Wave 8: several dumps at once, one tab strip ---------------------------
+// The strip only exists with two or more dumps. Every assertion is DOM/state
+// based (class names, aria attributes, text, __qa.state().waveNames), never
+// style based, so the CSS can change without breaking the scenario.
+scenarios.multiDump = async (cdp) => {
+  const strip = () => cdp.eval(`(function(){
+    const box = document.querySelector('.dump-tabs');
+    const names = Array.prototype.map.call(document.querySelectorAll('.dump-tab-name'), function(b){ return (b.innerText || '').trim(); });
+    const selected = Array.prototype.map.call(document.querySelectorAll('.dump-tab-name'), function(b){ return b.getAttribute('aria-selected'); });
+    const active = document.querySelector('.dump-tab.active .dump-tab-name');
+    const closes = Array.prototype.map.call(document.querySelectorAll('.dump-tab-close'), function(b){ return b.getAttribute('aria-label'); });
+    return {
+      present: !!box,
+      count: document.querySelectorAll('.dump-tab').length,
+      names: names,
+      selected: selected,
+      active: active ? (active.innerText || '').trim() : null,
+      title: box ? box.getAttribute('title') : null,
+      role: box ? box.getAttribute('role') : null,
+      ariaLabel: box ? box.getAttribute('aria-label') : null,
+      closes: closes,
+    };
+  })()`);
+  const rows = async () => (await state(cdp)).waveNames;
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(600);
+  let t = await strip();
+  note('after the first dump', t);
+  check('multiDump: one dump shows a single-tab strip', t.present && t.count === 1, t);
+  check('multiDump: the single tab is the open dump and is active',
+    JSON.stringify(t.names) === JSON.stringify(['wave.vcd']) && t.active === 'wave.vcd', t);
+  check('multiDump: the single tab is selected for screen readers',
+    JSON.stringify(t.selected) === JSON.stringify(['true']), t.selected);
+  check('multiDump: the single-tab strip title counts the dump',
+    /^1 dumps open, \d+ MB of dump files$/.test(t.title || ''), t.title);
+  check('multiDump: the single tab has a labelled close button',
+    JSON.stringify(t.closes) === JSON.stringify(['Close wave.vcd']), t.closes);
+  await cdp.upload([path.join(FIXTURES, 'mismatch.vcd')]);
+  await waitStatus(cdp, '2 dumps open', 25000);
+  await sleep(700);
+  t = await strip();
+  note('after the second dump', t);
+  check('multiDump: the strip appears with two dumps', t.present && t.count === 2, t);
+  check('multiDump: the strip is a tablist labelled for screen readers',
+    t.role === 'tablist' && t.ariaLabel === 'Open dumps', { role: t.role, label: t.ariaLabel });
+  check('multiDump: the tabs are the two file names',
+    JSON.stringify(t.names) === JSON.stringify(['wave.vcd', 'mismatch.vcd']), t.names);
+  check('multiDump: the new dump is the active one', t.active === 'mismatch.vcd', t.active);
+  check('multiDump: aria-selected follows the active tab',
+    JSON.stringify(t.selected) === JSON.stringify(['false', 'true']), t.selected);
+  check('multiDump: the strip title reports the dump count and size',
+    /^2 dumps open, \d+ MB of dump files$/.test(t.title || ''), t.title);
+  check('multiDump: the close buttons are labelled with the file names',
+    JSON.stringify(t.closes) === JSON.stringify(['Close wave.vcd', 'Close mismatch.vcd']), t.closes);
+  check('multiDump: the second dump starts with its own empty row list', (await rows()).length === 0, await rows());
+  await cdp.shot('qa-multidump.png');
+  // one row per dump: the row lists are per dump, not shared
+  const addedSecond = await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(700);
+  const secondRows = await rows();
+  note('second dump rows', { added: addedSecond, rows: secondRows });
+  check('multiDump: a row can be added to the second dump',
+    addedSecond === 'ok' && secondRows.length === 1 && /pc/.test(secondRows[0]), secondRows);
+  await cdp.eval('window.__qa.clickText(".dump-tab-name", "wave.vcd")');
+  await sleep(700);
+  t = await strip();
+  const firstRowsBefore = await rows();
+  note('after switching to wave.vcd', { active: t.active, rows: firstRowsBefore });
+  check('multiDump: clicking a tab activates it', t.active === 'wave.vcd', t.active);
+  check('multiDump: the row list follows the active dump (first is empty)',
+    firstRowsBefore.length === 0, firstRowsBefore);
+  const addedFirst = await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(700);
+  const firstRows = await rows();
+  check('multiDump: a row can be added to the first dump',
+    addedFirst === 'ok' && firstRows.length === 1 && /pc/.test(firstRows[0]), firstRows);
+  await cdp.eval('window.__qa.clickText(".dump-tab-name", "mismatch.vcd")');
+  await sleep(700);
+  const secondRowsAgain = await rows();
+  note('back on the second dump', secondRowsAgain);
+  check('multiDump: switching back restores the other dump rows',
+    secondRowsAgain.length === 1 && /pc/.test(secondRowsAgain[0]), secondRowsAgain);
+  check('multiDump: the two dumps keep different row paths',
+    firstRows[0] !== secondRowsAgain[0], { first: firstRows[0], second: secondRowsAgain[0] });
+  // re-opening the same file focuses the existing tab instead of duplicating it
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await sleep(3000);
+  t = await strip();
+  const focusedRows = await rows();
+  note('after re-opening wave.vcd', { tabs: t, rows: focusedRows });
+  check('multiDump: re-opening the same file does not add a tab', t.count === 2, t.count);
+  check('multiDump: re-opening focuses the existing tab', t.active === 'wave.vcd', t.active);
+  check('multiDump: the focused dump kept its rows',
+    focusedRows.length === 1 && focusedRows[0] === firstRows[0], focusedRows);
+  // closing the active tab hands over to the neighbour with its own rows.
+  // NOTE: the strip only renders with >= 2 dumps (app.rs:517) and both close
+  // paths live in the strip (close button + Ctrl+W keydown), so closing the
+  // *last* dump is not reachable from the UI today; that gap is reported to
+  // the owner instead of being papered over here.
+  await cdp.eval('window.__qa.click(".dump-tab.active .dump-tab-close", 0)');
+  await sleep(800);
+  t = await strip();
+  const afterClose = await rows();
+  const statusAfterClose = (await state(cdp)).status;
+  note('after closing the active tab', { tabs: t, rows: afterClose, status: statusAfterClose });
+  check('multiDump: the strip stays with one dump left', t.present && t.count === 1, t);
+  check('multiDump: the neighbour becomes the only active tab',
+    t.active === 'mismatch.vcd' && JSON.stringify(t.selected) === JSON.stringify(['true']), t);
+  check('multiDump: the remaining dump keeps its rows',
+    afterClose.length === 1 && afterClose[0] === secondRowsAgain[0], afterClose);
+  // the last dump can be closed: the strip disappears and the empty state returns
+  await cdp.eval('window.__qa.click(".dump-tab-close", 0)');
+  await sleep(900);
+  t = await strip();
+  const hint = await cdp.eval('window.__qa.text(".start-hint")');
+  const emptyRows = await rows();
+  note('after closing the last dump', { tabs: t, hint: hint, rows: emptyRows });
+  check('multiDump: closing the last dump removes the strip', !t.present, t);
+  check('multiDump: the start hint is back with no dump open',
+    !!hint && /Nothing loaded yet|Drop a waveform/i.test(hint), hint);
+  check('multiDump: the empty state has no rows', emptyRows.length === 0, emptyRows);
+  // and the app is usable again: reopening brings the strip and the remembered rows back
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(900);
+  t = await strip();
+  const reopened = await rows();
+  note('after re-opening wave.vcd', { tabs: t, rows: reopened });
+  check('multiDump: re-opening after the empty state brings the single-tab strip back',
+    t.present && t.count === 1 && t.active === 'wave.vcd', t);
+  check('multiDump: the remembered rows come back with the reopened dump',
+    JSON.stringify(reopened) === JSON.stringify(['top.pc[7:0]']), reopened);
+  // Ctrl+W with the focus inside the strip closes the active dump (keyboard path)
+  const sent = await cdp.eval(`(function(){
+    const box = document.querySelector('.dump-tabs');
+    if (!box) return 'no-strip';
+    box.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, bubbles: true, cancelable: true }));
+    return 'sent';
+  })()`);
+  await sleep(900);
+  t = await strip();
+  const hintAfterKeys = await cdp.eval('window.__qa.text(".start-hint")');
+  note('after Ctrl+W on the strip', { sent: sent, tabs: t, hint: hintAfterKeys });
+  check('multiDump: Ctrl+W inside the strip closes the active dump', sent === 'sent' && !t.present, t);
+  check('multiDump: the empty state is back after Ctrl+W', !!hintAfterKeys, hintAfterKeys);
+  check('multiDump: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
 };
 (async () => {
   const wanted = process.argv.slice(2);

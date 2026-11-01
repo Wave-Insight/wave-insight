@@ -242,6 +242,11 @@ pub struct NameRef {
     /// `u.pc[3]` yields `u.pc`.
     pub name: String,
     pub span: Span,
+    /// Select as written on the final identifier, e.g. `Some("[3:0]")` for
+    /// `q[3:0]`; `None` for a whole-signal reference.  A non-constant select
+    /// keeps its text (`"[i]"` inside a generate loop).
+    #[serde(default)]
+    pub bits: Option<String>,
 }
 
 /// A port connection in an instance declaration.
@@ -312,6 +317,11 @@ pub struct SignalUsage {
     pub span: Span,
     pub role: UsageRole,
     pub kind: UsageKind,
+    /// Select as written on the referenced signal (`"[3:0]"`, `"[i]"`), or
+    /// `None` for the whole signal.  Kept textual: a generate-loop index is
+    /// not constant for the elaborator.
+    #[serde(default)]
+    pub bits: Option<String>,
     /// Enclosing generate-block path, outermost component first, so a use of
     /// `x` inside `begin : g` resolves to `<instance>.g[i].x`.
     #[serde(default)]
@@ -441,6 +451,12 @@ impl InstanceNode {
 pub struct SignalReference {
     pub span: Span,
     pub kind: UsageKind,
+    /// Bit range the reference reads or drives, as written (`"[3:0]"`,
+    /// `"[7]"`, `"[i]"`); `None` means the whole signal.  Textual on purpose:
+    /// negative/parameter/genvar selects stay usable without re-parsing and the
+    /// field stays small across the wasm boundary.
+    #[serde(default)]
+    pub bits: Option<String>,
 }
 
 /// A flat signal table entry, keyed by hierarchical path.
