@@ -79,6 +79,9 @@ impl std::fmt::Debug for DumpHandle {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Dump {
     pub waveform: Option<DumpHandle>,
+    /// The file the user opened, when the transport knows one; exports and
+    /// the status line use it instead of the root scope name.
+    pub name: Option<String>,
     pub time_range: Option<TimeRange>,
     /// The range came from a body scan (`Waveform::end_time`) instead of the
     /// cheap header hint: true for GHW, and for a dump whose header the hint

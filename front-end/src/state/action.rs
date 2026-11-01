@@ -28,6 +28,9 @@ pub enum Action {
     Status(Status),
     /// Nothing to report any more.
     ClearStatus,
+    /// How many language-server problems the open sources currently have
+    /// (the bridge counts the published diagnostics).
+    Problems(u32),
 
     /// Append one signal row; `width`/`load`/`drive` are resolved by `App` (the
     /// reducer has no access to the dump or the design). `bit` adds the row as
@@ -65,8 +68,14 @@ pub enum Action {
         setting: Settings,
     },
 
-    /// A dump was opened; the store owns the handle and derives the time range.
-    DumpOpened { waveform: DumpHandle },
+    /// A dump was opened; the store owns the handle and derives the time
+    /// range. `name` is the file the user picked, when there was one (a dump
+    /// can also arrive as raw bytes with no name), and is what exports are
+    /// named after.
+    DumpOpened {
+        waveform: DumpHandle,
+        name: Option<String>,
+    },
     /// The zoom/pan was committed (one dispatch per gesture, never per move).
     ViewCommitted(View),
     /// The cursors were set or cleared by a click.

@@ -144,8 +144,7 @@ pub fn error_text(id: &Json, error: &RpcError) -> String {
     .to_text()
 }
 
-/// A server-initiated notification envelope (reserved for diagnostics).
-#[allow(dead_code)] // wired up by `publishDiagnostics` in the next round
+/// A server-initiated notification envelope, e.g. `publishDiagnostics`.
 pub fn notification_text(method: &str, params: Json) -> String {
     Json::object([
         ("jsonrpc", Json::string("2.0")),

@@ -33,6 +33,9 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
         Action::ClearStatus => {
             state.nav.status = None;
         }
+        Action::Problems(count) => {
+            state.nav.problems = count;
+        }
         Action::RowAdded {
             path,
             name,
@@ -168,13 +171,14 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 state.set_rows(items);
             }
         }
-        Action::DumpOpened { waveform } => {
+        Action::DumpOpened { waveform, name } => {
             // the range is derived from the handle, never hand-written into the
             // store: the reducer is the one place that may compute it, and the
             // handle knows the GHW fallback (one body scan) behind one helper
             let (time_range, range_from_body) = waveform.time_range();
             state.dump = Dump {
                 waveform: Some(waveform),
+                name,
                 time_range,
                 range_from_body,
             };
@@ -425,6 +429,16 @@ mod tests {
     }
 
     #[test]
+    fn the_problem_count_is_stored_in_nav() {
+        let mut state = state();
+        assert_eq!(state.nav.problems, 0);
+        assert!(reduce(&mut state, Action::Problems(3)).is_empty());
+        assert_eq!(state.nav.problems, 3);
+        reduce(&mut state, Action::Problems(0));
+        assert_eq!(state.nav.problems, 0);
+    }
+
+    #[test]
     fn step_one_produces_no_effects() {
         let mut state = state();
         assert!(reduce(&mut state, Action::ToggleDrawer).is_empty());
@@ -641,9 +655,12 @@ mod tests {
             &mut state,
             Action::DumpOpened {
                 waveform: handle.clone(),
+                name: Some("io_mode_wave.fst".to_string()),
             },
         );
         assert_eq!(state.dump.time_range, expected);
+        // the file the user picked is part of the dump slice (exports use it)
+        assert_eq!(state.dump.name.as_deref(), Some("io_mode_wave.fst"));
         // the handle is the identity: same file, same handle
         assert_eq!(state.dump.waveform, Some(handle));
         // another handle for another file is *not* equal (pointer identity)

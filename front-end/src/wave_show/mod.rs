@@ -3,6 +3,7 @@ pub use wave::WaveShow;
 
 mod canvas;
 mod ctrl;
+pub mod export;
 mod geometry;
 mod settings;
 mod signal;

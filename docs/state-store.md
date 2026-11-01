@@ -9,8 +9,10 @@ sources/design/focus/LSP effects and half of step 4 are still open.** The store
 lives in `front-end/src/state/` (seven modules, about 1.6k lines of Rust with 30
 native `#[test]`s): layout, status, wave rows and the viewport/cursors are store
 slices, `WaveShow` and the time bar are subscribers, and pointer gestures
-re-render nothing. The dump handle and its derived time range moved into the
-store as the first increment of step 3. Still open: the `sources`, `design` and
+re-render nothing. The language-server problem count is a `nav.problems` slice
+(the bridge publishes it through the store, so only the top bar re-renders); the
+`Effect`/sources accounting below is unchanged by it. The dump handle and its
+derived time range moved into the store as the first increment of step 3. Still open: the `sources`, `design` and
 `focus` slices and the LSP/editor effects (`Effect` is still an empty enum), and
 the legacy component shells / `SharedDesign` / `goto_token` teardown in step 4.
 R1 (canvas renderer) and the self-hosted editor are in; R3 is deleting
@@ -218,7 +220,7 @@ propagation, so an unrelated dispatch simply never reaches it.
 | Component | Subscribes to | Re-renders on |
 |---|---|---|
 | `App` | `layout` | sidebar/editor ratio, drawer |
-| `TopBar` | `nav.status` | status line |
+| `TopBar` | `nav.status`, `nav.problems` | status line, language-server problem chip |
 | `Sidebar` (`ModuleStruct`) | `tree`, `focus.instance` | dump/design change, instance click |
 | `SignalList` (today `SignalStruct`) | `tree`, `sources` | module selection, filter list |
 | `CodeReader` | `sources`, `nav.goto` | open/close tab, jump |

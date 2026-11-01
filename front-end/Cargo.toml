@@ -20,7 +20,6 @@ serde-wasm-bindgen = "0.4"
 wasm-bindgen = "0.2.80"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-gloo-file = "0.2"
 
 [dependencies.web-sys]
 version = "0.3"
@@ -50,7 +49,15 @@ features = [
     #(the splitters are tier-A and only write css variables)
     "ResizeObserver",
     #console error reporting when the monaco CDN cannot be reached
-    "console",]
+    "console",
+    #file_load: chunked reads of a big dump, with progress and cancellation
+    "FileReader",
+    "ProgressEvent",
+    "Blob",
+    "BlobPropertyBag",
+    #wave_show: export signal values as a downloaded csv/txt file
+    "Url",
+    "HtmlAnchorElement",]
 
 [features]
 default = ["wasm"]

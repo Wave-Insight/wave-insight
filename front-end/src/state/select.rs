@@ -19,6 +19,11 @@ pub fn status(state: &State) -> Option<Status> {
     state.nav.status.clone()
 }
 
+/// Language-server problems in the open sources (top bar chip).
+pub fn problems(state: &State) -> u32 {
+    state.nav.problems
+}
+
 /// The drawer flag alone, for anything that only cares whether the sidebar is
 /// visible (e.g. the splitter).
 #[allow(dead_code)] // used by the store tests and by the step-4 splitter
@@ -62,6 +67,11 @@ pub fn cursors(state: &State) -> Cursors {
 /// The opened dump's time range (ruler + fit-to-trace).
 pub fn time_range(state: &State) -> Option<TimeRange> {
     state.dump.time_range
+}
+
+/// The file the opened dump came from, when the transport knew one.
+pub fn dump_name(state: &State) -> Option<String> {
+    state.dump.name.clone()
 }
 
 /// The opened dump itself. Subscribed by the wave pane (decoding) and mirrored

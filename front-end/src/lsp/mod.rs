@@ -15,8 +15,16 @@
 //! * [`provider`] — the four monaco providers registered on `systemverilog`
 //!   through [`MonacoEditor::on_ready`](crate::code_reader::monaco_glue::MonacoEditor::on_ready).
 //!
-//! Two debug seams are published for the headless browser driver:
-//! `window.__waveInsightLsp` (raw JSON-RPC in/out against the live server) and
+//! Diagnostics travel the other way: after every `didOpen`/`didChange`/
+//! `didSave` the server queues `textDocument/publishDiagnostics`, the bridge
+//! drains them and publishes monaco markers
+//! ([`crate::code_reader::monaco_glue::set_model_markers`]); a file that becomes
+//! clean or is closed publishes an empty array and the markers disappear.
+//!
+//! Three debug seams are published for the headless browser driver:
+//! `window.__waveInsightLsp` (raw JSON-RPC in/out against the live server, plus
+//! `stats()`/`diagnostics()`), `window.__waveInsightDiagnostics` is not a
+//! separate hook (the data hangs off `__waveInsightLsp.diagnostics()`) and
 //! `window.__waveInsightProviders` (the registered provider functions).
 
 mod bridge;

@@ -10,7 +10,13 @@
 *.ghw
 !/wave-insight-lib/tests/data/*.fst
 !/wave-insight-lib/tests/data/*.ghw
+!/qa/fixtures/*.fst
+!/qa/fixtures/*.ghw
 
 #editor / OS noise
 .DS_Store
 node_modules/
+
+#browser QA artifacts: the staged build, the chrome profile and the screenshots
+/qa/.stage/
+/qa/artifacts/

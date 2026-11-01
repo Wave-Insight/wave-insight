@@ -51,6 +51,27 @@ the library's old `nightly-bench` feature gate enables nothing. (The repository
 root is still a convenient place for a test dump: `test*.vcd` there is
 git-ignored.)
 
+### browser QA
+
+The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
+the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
+and asserts the user-visible behaviour (the current matrix has 41 scenarios;
+`--list` prints them). Build the front end first, then run:
+
+```bash
+node qa/run.mjs                 # full matrix against front-end/dist
+node qa/run.mjs --layout        # the R2 layout rules are required, not pending
+node qa/run.mjs --offline       # self-hosted editor check with CDNs blocked
+node qa/run.mjs --scenarios empty,vcd,layout
+```
+
+Windows users can use the thin wrapper (`qa\run.ps1`, same flags);
+`qa/run.ps1 -List` prints the scenario names. Exit codes are real: `0` green,
+`1` a failing assertion, `2` the harness could not run (missing Chrome/build). CI
+runs an advisory smoke job (`empty,vcd,layout,layoutRules`) against the bundle the
+build job produced; the suite's README explains the fixtures and how to add a
+scenario.
+
 ### wasm version
 
 The bundle carries the SystemVerilog parser and the waveform backend, so it is
@@ -97,8 +118,27 @@ out and fit, `n`/`shift+n` to jump between value transitions. `Delete` removes
 the selected rows. The wave frame has a `Drivers / loads` tab that shows the
 declaration, drivers and loads of the selected signal and jumps to them. A row's
 `...` menu opens its settings: number format (including a fixed-point exponent),
-analog trace, colour, and load/drive actions. To the right of each signal name
-the value at the cursor is shown after a cursor is placed.
+an analog trace, colour, load/drive actions and an **Export** section. To the
+right of each signal name the value at the cursor is shown after a cursor is
+placed.
+
+- **Export**: the settings dialog's `CSV (row)`, `TXT (row)` and `CSV (all
+  rows)` buttons write a row as `time,value` CSV or `<time> <value>` TXT, or every
+  row as one long-format `time,signal,value` CSV. The
+  values use the row's on-screen format (fixed point included), and the download
+  is named after the dump (`<dump>-<signal>.csv`, `<dump>-rows.csv`; the dump's
+  file stem is used when it has one, otherwise its root scope). A generated file
+  over 200 MB is refused with an actionable message instead of freezing the tab.
+- **Large dumps**: a browser dump is read in 8 MB chunks with a progress row in
+  the sidebar and a reading line in the top bar, then a `parsing ...` line while
+  the parser runs. Esc or the cancel button stops the read and reports that the
+  file was not opened. Dumps of 100 MB and up warn that parsing may take a while;
+  dumps over 512 MB are refused before a byte is read, with advice to trim the
+  dump. The success line reports what it cost: `waveform loaded — opened in
+  412 ms, 105 MB, wasm memory 320 MB`.
+- **Diagnostics**: problems the design front end finds in the open sources are
+  published into the editor as monaco markers (squiggles), and the top bar keeps
+  an `N problem(s)` chip visible even when the source pane is collapsed.
 
 ## Known limitations
 
@@ -116,7 +156,9 @@ the value at the cursor is shown after a cursor is placed.
 * **Language-server coverage.** Definition/hover/references/symbols come from the
   declaration spans the elaborator recorded; a construct from the "skipped"
   list above has no definition to jump to, and name lookup is best effort when a
-  signal cannot be resolved across instances.
+  signal cannot be resolved across instances. Diagnostics (editor squiggles and
+  the top bar's problem count) cover the same scope, so a skipped construct may
+  be reported as a warning even though the source is valid SystemVerilog.
 * **Corrupt dumps are recovered on a best-effort basis.** The readers validate
   input and turn bad files into an error message instead of panicking, and the
   library wraps third-party parsing in `catch_unwind`. The release profile is
@@ -126,7 +168,9 @@ the value at the cursor is shown after a cursor is placed.
   screen plus the raw file bytes, but a browser tab is not a database: the
   105 MB test dump used during development loaded in well under a second and
   stayed responsive, while its renderer memory grew by roughly 2.8x the file
-  size, so dumps far beyond that will eventually hit the wasm memory cap.
+  size. That is why the loader refuses dumps over 512 MB up front (and warns from
+  100 MB) instead of letting the tab run out of wasm memory; a dump that large is
+  still better opened in the desktop build, which reads the file from disk.
 
 ## Todos
 
@@ -143,10 +187,14 @@ Done in the next release (unreleased at the time of writing):
 
 - [x] fixed-point display (settings dialog: exponent)
 - [x] signal search options: match case, whole word and regular expression
+- [x] export signal values as CSV or TXT (one row, or every row as long-format CSV); `.mat` is not implemented
+- [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
+- [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
+- [x] browser QA suite moved into the repository (`qa/`, 40 scenarios, own fixtures) with an advisory CI smoke job
 
 Still open:
 
-- [ ] export signal values to .txt/.mat/.csv
+- [ ] export to `.mat` (not implemented; the CSV/TXT export covers the current need)
 - [ ] inline python for writing your own process on signal values
 - [ ] signal bundles (AXI, Avalon and so on)
 - [ ] SpinalHDL support

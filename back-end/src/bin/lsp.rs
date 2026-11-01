@@ -146,19 +146,29 @@ fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Send one JSON-RPC message through the core and write its replies.
+/// Send one JSON-RPC message through the core, then write its replies and any
+/// notifications the core queued (diagnostics).
 fn forward(
     server: &mut LspServer,
     connection: &Connection,
     message: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for reply in server.handle_message(&message) {
-        let reply = decode_reply(&reply)?;
-        connection
-            .sender
-            .send(reply)
-            .map_err(|error| format!("cannot send a reply to the client: {error}"))?;
+        send(connection, &reply)?;
     }
+    for notification in server.take_notifications() {
+        send(connection, &notification)?;
+    }
+    Ok(())
+}
+
+/// Decode one server-to-client JSON-RPC message and write it to stdout.
+fn send(connection: &Connection, message: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let message = decode_reply(message)?;
+    connection
+        .sender
+        .send(message)
+        .map_err(|error| format!("cannot send a message to the client: {error}"))?;
     Ok(())
 }
 
@@ -323,6 +333,43 @@ mod tests {
                     .is_some());
             }
             other => panic!("expected a response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diagnostics_are_forwarded_as_notifications() {
+        let mut server = LspServer::new();
+        let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+        assert_eq!(server.handle_message(initialize).len(), 1);
+
+        let broken = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"wave-insight://source/x.sv","languageId":"systemverilog","version":1,"text":"module x(input logic a;\nendmodule\n"}}}"#;
+        assert!(
+            server.handle_message(broken).is_empty(),
+            "a notification produces no reply"
+        );
+
+        let notifications = server.take_notifications();
+        assert_eq!(notifications.len(), 1, "{notifications:?}");
+        for notification in &notifications {
+            match decode_reply(notification).expect("the transport decodes a queued notification") {
+                Message::Notification(notification) => {
+                    assert_eq!(notification.method, "textDocument/publishDiagnostics");
+                    let params = notification.params;
+                    assert_eq!(
+                        params.get("uri").and_then(Value::as_str),
+                        Some("wave-insight://source/x.sv")
+                    );
+                    let diagnostics = params
+                        .get("diagnostics")
+                        .and_then(Value::as_array)
+                        .expect("diagnostics array");
+                    assert!(
+                        !diagnostics.is_empty(),
+                        "expected a parse diagnostic: {params}"
+                    );
+                }
+                other => panic!("expected a notification, got {other:?}"),
+            }
         }
     }
 }

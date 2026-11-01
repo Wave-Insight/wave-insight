@@ -16,9 +16,12 @@
 //! | `textDocument/hover` | short markdown/plaintext card: declaration, module, width, direction, driver/load counts |
 //! | `textDocument/documentSymbol` | modules with parameter/port/signal/instance children |
 //!
-//! Notifications: `initialized`, `textDocument/didOpen`, `didChange`, `didSave`,
-//! `didClose`.  Completion and diagnostics are deliberately out of scope for
-//! this round.
+//! Client notifications: `initialized`, `textDocument/didOpen`, `didChange`,
+//! `didSave`, `didClose`.  After every document notification the server queues a
+//! `textDocument/publishDiagnostics` carrying the design database's diagnostics
+//! for that document (parse errors, skipped constructs, unresolved names); the
+//! queue is drained with [`LspServer::take_notifications`].  Completion is still
+//! out of scope.
 //!
 //! # Which signal does a position mean?
 //!
@@ -38,7 +41,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::design::{
-    DesignDb, ElaboratedDesign, FlatSignal, ModuleDef, RangeDim, SourceItem, Span,
+    DesignDb, Diagnostic, ElaboratedDesign, FlatSignal, ModuleDef, RangeDim, Severity, SourceItem,
+    Span,
 };
 
 use super::document::{approximate_span_range, Document};
@@ -87,6 +91,11 @@ pub struct LspServer {
     initialized: bool,
     shutdown: bool,
     exit: bool,
+    /// Server-initiated notifications queued while handling a message
+    /// (today: `textDocument/publishDiagnostics`).  Replies stay the return
+    /// value of [`LspServer::handle_message`]; notifications are drained with
+    /// [`LspServer::take_notifications`].
+    notifications: Vec<String>,
 }
 
 impl Default for LspServer {
@@ -101,6 +110,7 @@ impl Default for LspServer {
             initialized: false,
             shutdown: false,
             exit: false,
+            notifications: Vec::new(),
         }
     }
 }
@@ -172,13 +182,35 @@ impl LspServer {
         self.exit
     }
 
+    /// Take the server-initiated notifications queued by the messages handled
+    /// so far.
+    ///
+    /// [`LspServer::handle_message`] keeps its contract (it returns the *replies*
+    /// to the client); notifications the server wants to push, currently
+    /// `textDocument/publishDiagnostics` after `didOpen`/`didChange`/`didSave`
+    /// and an empty diagnostics array on `didClose`, are queued here instead.
+    /// Both transports drain this after every message: the stdio loop in
+    /// `back-end` forwards them to the client, the wasm shim hands them to the
+    /// browser client.  A host that never drains simply does not see
+    /// diagnostics; nothing else changes.
+    pub fn take_notifications(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notifications)
+    }
+
+    /// Number of queued notifications, for hosts that poll and for tests.
+    pub fn pending_notifications(&self) -> usize {
+        self.notifications.len()
+    }
+
     // -- transport-independent entry points --------------------------------
 
     /// Handle one JSON-RPC message and return the replies.
     ///
-    /// A request produces exactly one response; a notification produces none
-    /// (the `Vec` exists because later rounds may also queue server-initiated
-    /// notifications such as `publishDiagnostics`).
+    /// A request produces exactly one response; a notification produces none.
+    /// Server-initiated notifications (diagnostics) are not replies: they are
+    /// queued and returned by [`LspServer::take_notifications`].  Draining is
+    /// not required for the server to work, but a transport that never drains
+    /// starves the editor of diagnostics.
     pub fn handle_message(&mut self, message: &str) -> Vec<String> {
         let incoming = match protocol::parse_incoming(message) {
             Ok(incoming) => incoming,
@@ -202,6 +234,8 @@ impl LspServer {
     /// One message in, one reply string out — the wasm-shaped entry point.
     ///
     /// Returns `""` when the message was a notification (nothing to send back).
+    /// Notifications the server produces are queued; the wasm shim returns them
+    /// through [`LspServer::take_notifications`].
     pub fn handle_message_text(&mut self, message: &str) -> String {
         self.handle_message(message)
             .into_iter()
@@ -320,6 +354,7 @@ impl LspServer {
         let text = text_document.get_str("text").unwrap_or_default();
         let version = text_document.get_i64("version").unwrap_or(0);
         self.store_document(uri, version, text);
+        self.publish_document_diagnostics(uri);
     }
 
     fn did_change(&mut self, params: &Json) {
@@ -343,6 +378,7 @@ impl LspServer {
                 .and_then(|change| change.get_str("text"))
             {
                 self.store_document(uri, version.unwrap_or(0), text);
+                self.publish_document_diagnostics(uri);
             }
             return;
         };
@@ -360,6 +396,7 @@ impl LspServer {
             self.documents[index].version = version;
         }
         self.reparse(index);
+        self.publish_document_diagnostics(uri);
     }
 
     fn did_save(&mut self, params: &Json) {
@@ -382,6 +419,7 @@ impl LspServer {
         } else {
             self.store_document(uri, 0, text);
         }
+        self.publish_document_diagnostics(uri);
     }
 
     fn did_close(&mut self, params: &Json) {
@@ -393,8 +431,16 @@ impl LspServer {
         };
         // The buffer goes away, the source stays in the design: closing an
         // editor tab does not remove a module from the design, and definition
-        // targets in a closed file must keep resolving.
+        // targets in a closed file must keep resolving.  The editor still has to
+        // drop the markers of the tab, so an empty diagnostics array is pushed
+        // with the version the document had.
+        let version = self
+            .documents
+            .iter()
+            .find(|document| document.uri == uri)
+            .map(|document| document.version);
         self.documents.retain(|document| document.uri != uri);
+        self.clear_document_diagnostics(uri, version);
     }
 
     fn store_document(&mut self, uri: &str, version: i64, text: &str) {
@@ -422,6 +468,66 @@ impl LspServer {
         self.db.update_source(&path, &text);
         self.documents[index].text = text;
         self.design_dirty = true;
+    }
+
+    // -- diagnostics -------------------------------------------------------
+
+    /// Queue a `textDocument/publishDiagnostics` notification for `uri`.
+    ///
+    /// The design database keeps diagnostics for every file it parsed; only the
+    /// ones whose span is in *this* document are published (diagnostics from an
+    /// included file belong to a different document and are published when that
+    /// file is opened).  Diagnostics without a span cannot be placed in an
+    /// editor; they are skipped rather than pinned to line 0.  The document's
+    /// version travels with the notification so a client can drop stale answers.
+    fn publish_document_diagnostics(&mut self, uri: &str) {
+        let diagnostics: Vec<Json> = {
+            let Some(document) = self.documents.iter().find(|document| document.uri == uri) else {
+                return;
+            };
+            let path = document.path.as_path();
+            self.db
+                .diagnostics()
+                .iter()
+                .filter_map(|diagnostic| {
+                    let span = diagnostic.span.as_ref()?;
+                    if span.file.as_path() != path {
+                        return None;
+                    }
+                    Some(diagnostic_json(diagnostic, document.span_range(span)))
+                })
+                .collect()
+        };
+        let Some(version) = self
+            .documents
+            .iter()
+            .find(|document| document.uri == uri)
+            .map(|document| document.version)
+        else {
+            return;
+        };
+        self.notifications.push(protocol::notification_text(
+            "textDocument/publishDiagnostics",
+            Json::object([
+                ("uri", Json::string(uri)),
+                ("version", Json::Integer(version)),
+                ("diagnostics", Json::Array(diagnostics)),
+            ]),
+        ));
+    }
+
+    /// Queue an empty `textDocument/publishDiagnostics` so the editor drops the
+    /// markers of a document that was closed (or is about to disappear).
+    fn clear_document_diagnostics(&mut self, uri: &str, version: Option<i64>) {
+        let mut fields: Vec<(&str, Json)> = vec![("uri", Json::string(uri))];
+        if let Some(version) = version {
+            fields.push(("version", Json::Integer(version)));
+        }
+        fields.push(("diagnostics", Json::Array(Vec::new())));
+        self.notifications.push(protocol::notification_text(
+            "textDocument/publishDiagnostics",
+            Json::object(fields),
+        ));
     }
 
     // -- requests ----------------------------------------------------------
@@ -1129,6 +1235,28 @@ fn symbol_json(
     ])
 }
 
+/// One design-database diagnostic as the LSP diagnostic object.
+///
+/// [`DesignDb::diagnostics`] carries every parse error, skipped construct and
+/// unresolved name it found; the kinds map to the LSP `code` so a client can
+/// filter them, and the severity numbers are the LSP ones (error 1, warning 2,
+/// information 3).  The source is the server name, which is what the editor
+/// shows next to the message.
+fn diagnostic_json(diagnostic: &Diagnostic, range: Range) -> Json {
+    let severity = match diagnostic.severity {
+        Severity::Error => 1,
+        Severity::Warning => 2,
+        Severity::Info => 3,
+    };
+    Json::object([
+        ("range", range.to_json()),
+        ("severity", Json::Integer(severity)),
+        ("code", Json::string(diagnostic.kind.as_str())),
+        ("source", Json::string("wave-insight")),
+        ("message", Json::string(diagnostic.message.clone())),
+    ])
+}
+
 /// Smallest span covering all inputs (they all live in one file).
 fn union_span(spans: &[Span]) -> Option<Span> {
     let mut iterator = spans.iter();
@@ -1285,6 +1413,44 @@ mod tests {
         let uri = uri::to_uri(&fixture(name));
         did_open(server, &uri, &fixture_text(name));
         uri
+    }
+
+    /// Drain and decode the notifications queued by the last message.
+    fn take_notifications(server: &mut LspServer) -> Vec<Json> {
+        server
+            .take_notifications()
+            .iter()
+            .map(|notification| {
+                Json::parse(notification).unwrap_or_else(|error| {
+                    panic!("server notification is not JSON ({error}): {notification}")
+                })
+            })
+            .collect()
+    }
+
+    /// Only the `publishDiagnostics` notifications of a queue.
+    fn published(notifications: Vec<Json>) -> Vec<Json> {
+        notifications
+            .into_iter()
+            .filter(|notification| {
+                notification.get_str("method") == Some("textDocument/publishDiagnostics")
+            })
+            .collect()
+    }
+
+    /// Parse one diagnostic's range into (start_line, start_character, end_line, end_character).
+    fn diagnostic_range(diagnostic: &Json) -> (i64, i64, i64, i64) {
+        let range = diagnostic.get("range").expect("diagnostic range");
+        let position = |name: &str| -> (i64, i64) {
+            let position = range.get(name).expect("range position");
+            (
+                position.get_i64("line").expect("line"),
+                position.get_i64("character").expect("character"),
+            )
+        };
+        let (start_line, start_character) = position("start");
+        let (end_line, end_character) = position("end");
+        (start_line, start_character, end_line, end_character)
     }
 
     /// A server with `top.sv` and `cpu.sv` open, initialized.
@@ -1906,5 +2072,138 @@ mod tests {
         assert!(design.instance("cpu").is_some());
         assert!(design.signal("cpu.pc").is_some());
         assert!(design.signal("top.u_cpu.pc").is_none());
+    }
+
+    // -- diagnostics -------------------------------------------------------
+
+    /// A file that does not parse: the design database reports a `parse`
+    /// diagnostic and the server has to publish it as a Monaco/LSP diagnostic.
+    const BROKEN: &str = "module broken(input logic a;\n    assign a = 1'b0;\nendmodule\n";
+    const CLEAN: &str = "module clean(input logic a);\n    assign a = a;\nendmodule\n";
+
+    #[test]
+    fn a_malformed_document_publishes_diagnostics() {
+        let mut server = LspServer::new();
+        initialize(&mut server);
+        let uri = "wave-insight://source/broken.sv";
+        did_open(&mut server, uri, BROKEN);
+
+        let notifications = published(take_notifications(&mut server));
+        assert_eq!(notifications.len(), 1, "{notifications:?}");
+        let notification = &notifications[0];
+        let params = notification.get("params").expect("notification params");
+        assert_eq!(params.get_str("uri"), Some(uri));
+        assert_eq!(params.get_i64("version"), Some(1));
+
+        let diagnostics = params.get_array("diagnostics").expect("diagnostics array");
+        assert!(
+            !diagnostics.is_empty(),
+            "expected a parse diagnostic: {params:?}"
+        );
+        let first = &diagnostics[0];
+        let (start_line, start_character, end_line, end_character) = diagnostic_range(first);
+        assert!(start_line >= 0 && end_line >= 0, "negative line: {first:?}");
+        assert!(
+            (end_line, end_character) >= (start_line, start_character),
+            "range ends before it starts: {first:?}"
+        );
+        assert!(end_character < 500, "range runs past the buffer: {first:?}");
+        assert_eq!(
+            first.get_i64("severity"),
+            Some(1),
+            "parse errors are errors: {first:?}"
+        );
+        assert_eq!(first.get_str("source"), Some("wave-insight"));
+        assert_eq!(first.get_str("code"), Some("parse"));
+        assert!(
+            !first.get_str("message").unwrap_or_default().is_empty(),
+            "diagnostic message is empty: {first:?}"
+        );
+
+        // The old reply contract is untouched: notifications are not replies.
+        assert!(
+            server.pending_notifications() == 0,
+            "queue was drained above"
+        );
+    }
+
+    #[test]
+    fn a_clean_document_publishes_an_empty_diagnostics_array() {
+        let mut server = LspServer::new();
+        initialize(&mut server);
+        let uri = "wave-insight://source/clean.sv";
+        did_open(&mut server, uri, CLEAN);
+
+        let notifications = published(take_notifications(&mut server));
+        assert_eq!(notifications.len(), 1, "{notifications:?}");
+        let params = notifications[0].get("params").expect("params");
+        assert_eq!(params.get_str("uri"), Some(uri));
+        assert_eq!(params.get_i64("version"), Some(1));
+        assert_eq!(
+            params.get_array("diagnostics").map(<[Json]>::len),
+            Some(0),
+            "a clean file must clear the markers: {params:?}"
+        );
+    }
+
+    #[test]
+    fn fixing_a_document_replaces_its_diagnostics_and_version() {
+        let mut server = LspServer::new();
+        initialize(&mut server);
+        let uri = "wave-insight://source/broken.sv";
+        did_open(&mut server, uri, BROKEN);
+        let first = published(take_notifications(&mut server));
+        assert_eq!(first.len(), 1);
+        assert!(first[0]
+            .get("params")
+            .and_then(|params| params.get_array("diagnostics"))
+            .is_some_and(|diagnostics| !diagnostics.is_empty()));
+
+        notify(
+            &mut server,
+            "textDocument/didChange",
+            Json::object([
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(uri)), ("version", Json::int(2))]),
+                ),
+                (
+                    "contentChanges",
+                    Json::Array(vec![Json::object([("text", Json::string(CLEAN))])]),
+                ),
+            ]),
+        );
+        let second = published(take_notifications(&mut server));
+        assert_eq!(second.len(), 1, "{second:?}");
+        let params = second[0].get("params").expect("params");
+        assert_eq!(params.get_str("uri"), Some(uri));
+        assert_eq!(params.get_i64("version"), Some(2));
+        assert_eq!(
+            params.get_array("diagnostics").map(<[Json]>::len),
+            Some(0),
+            "the fixed file must publish an empty array: {params:?}"
+        );
+    }
+
+    #[test]
+    fn closing_a_document_clears_its_diagnostics() {
+        let mut server = LspServer::new();
+        initialize(&mut server);
+        let uri = "wave-insight://source/broken.sv";
+        did_open(&mut server, uri, BROKEN);
+        let first = published(take_notifications(&mut server));
+        assert_eq!(first.len(), 1);
+
+        notify(
+            &mut server,
+            "textDocument/didClose",
+            Json::object([("textDocument", Json::object([("uri", Json::string(uri))]))]),
+        );
+        let cleared = published(take_notifications(&mut server));
+        assert_eq!(cleared.len(), 1, "{cleared:?}");
+        let params = cleared[0].get("params").expect("params");
+        assert_eq!(params.get_str("uri"), Some(uri));
+        assert_eq!(params.get_i64("version"), Some(1));
+        assert_eq!(params.get_array("diagnostics").map(<[Json]>::len), Some(0));
     }
 }

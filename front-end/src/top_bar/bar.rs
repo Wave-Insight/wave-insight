@@ -14,12 +14,16 @@ pub struct TopBarProps {
 pub enum Msg {
     /// The status slice changed.
     Status(Option<Status>),
+    /// The language-server problem count changed.
+    Problems(u32),
 }
 
 pub struct TopBar {
     status: Option<Status>,
+    problems: u32,
     /// Dropping it unsubscribes; keep it for the lifetime of the bar.
     _status_sub: Subscription,
+    _problems_sub: Subscription,
 }
 
 impl Component for TopBar {
@@ -29,9 +33,12 @@ impl Component for TopBar {
     fn create(ctx: &Context<Self>) -> Self {
         let store = ctx.props().store.clone();
         let subscription = store.subscribe(select::status, ctx.link().callback(Msg::Status));
+        let problems_sub = store.subscribe(select::problems, ctx.link().callback(Msg::Problems));
         Self {
             status: store.select(select::status),
+            problems: store.select(select::problems),
             _status_sub: subscription,
+            _problems_sub: problems_sub,
         }
     }
 
@@ -39,6 +46,10 @@ impl Component for TopBar {
         match msg {
             Msg::Status(status) => {
                 self.status = status;
+                true
+            }
+            Msg::Problems(count) => {
+                self.problems = count;
                 true
             }
         }
@@ -82,6 +93,16 @@ impl Component for TopBar {
                                 title={status.text.clone()}>{status.text.clone()}</span>}
                         }).unwrap_or_default()
                     }
+                    {if self.problems > 0 {
+                        // squiggles are easy to miss with the source pane collapsed,
+                        // so the count stays visible in the bar
+                        let label = format!("{} problem{}", self.problems,
+                            if self.problems == 1 { "" } else { "s" });
+                        html!{<span class="brand-tag problems-tag"
+                            style="color:var(--danger);border-color:var(--danger);margin-right:10px"
+                            title="errors and warnings the design front end reported for the open sources">
+                            {label}</span>}
+                    } else { html!{} }}
                     <kbd>{"ctrl+wheel"}</kbd>{" zoom · "}
                     <kbd>{"shift+wheel"}</kbd>{" pan · "}
                     <kbd>{"n"}</kbd>{" / "}<kbd>{"⇧n"}</kbd>{" transition · "}

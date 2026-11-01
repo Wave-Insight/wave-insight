@@ -29,8 +29,20 @@ impl DesignLsp {
 
     /// One JSON-RPC message in, one JSON-RPC reply out; `""` means the message
     /// was a notification and has no answer.
+    ///
+    /// Server-initiated notifications (diagnostics) are not replies: they are
+    /// queued inside the server and returned by `take_notifications`.
     pub fn handle(&mut self, message: &str) -> String {
         self.server.handle_message_text(message)
+    }
+
+    /// Drain the server-initiated notifications queued since the last call.
+    ///
+    /// Encoded as a JSON array of the raw JSON-RPC notification strings, so the
+    /// browser client can parse them with the same `serde_json` it already uses
+    /// for replies.  Today the only method is `textDocument/publishDiagnostics`.
+    pub fn take_notifications(&mut self) -> String {
+        serde_json::to_string(&self.server.take_notifications()).unwrap_or_else(|_| "[]".to_owned())
     }
 
     /// The module the design is elaborated from, i.e. the waveform's root

@@ -1046,6 +1046,52 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
 
 .file-strip { padding: 8px 10px; }
 
+/* ==========================================================================
+   file_load: reading a big dump (progress + cancel)
+   ========================================================================== */
+
+.file-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.file-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-progress-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.file-progress-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+
+.file-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 80ms linear;
+}
+
+.file-cancel {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
 .monaco-wrap { height: 100%; background: var(--bg-1); }
 
 .timebar-readout code {

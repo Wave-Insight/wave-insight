@@ -147,6 +147,14 @@ jobs:
           echo "$wasm is $size bytes, budget $WASM_SIZE_BUDGET"
           test "$size" -le "$WASM_SIZE_BUDGET"
 
+    #the qa job below runs the browser matrix against this bundle
+    - name: Upload the web bundle
+      uses: actions/upload-artifact@v4
+      with:
+        name: web-dist
+        path: front-end/dist
+        retention-days: 3
+
     - name: Deploy
       #a dispatch from a feature branch must not overwrite the public demo
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -154,3 +162,30 @@ jobs:
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: ./front-end/dist
+
+  #Smoke-test the built bundle in headless Chrome (qa/README.md).
+  #ADVISORY ON PURPOSE: the assertions are DOM/canvas driven and read pixels, so
+  #a runner-image change (fonts, GPU/SwiftShader) can flake them. Keep the job out
+  #of the required path until it has a green track record, then delete
+  #continue-on-error and add it to the required checks.
+  qa:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: Download the built web bundle
+      uses: actions/download-artifact@v4
+      with:
+        name: web-dist
+        path: front-end/dist
+
+    #ubuntu-latest ships google-chrome; qa/run.mjs finds it on PATH or via CHROME
+    - name: Browser smoke test (empty, vcd, layout, layoutRules)
+      run: node qa/run.mjs --scenarios empty,vcd,layout,layoutRules

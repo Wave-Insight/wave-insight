@@ -32,6 +32,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use yew::prelude::Callback;
 
+use crate::code_reader::monaco_glue::{set_model_markers, Marker};
 use crate::nav::{Goto, SharedDesign};
 
 use super::shim::DesignLsp;
@@ -139,6 +140,43 @@ pub struct Location {
 /// belongs to.
 pub type Hover = (String, Option<Range>);
 
+/// One diagnostic the server published for a document, in LSP coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Diagnostic {
+    /// The range in the document, 0-based lines and UTF-16 columns.
+    pub range: Range,
+    /// LSP severity: 1 error, 2 warning, 3 information, 4 hint.
+    pub severity: u32,
+    pub message: String,
+    /// The design diagnostic kind, e.g. `"parse"` or `"unresolved-module"`.
+    pub code: Option<String>,
+}
+
+impl Diagnostic {
+    /// `true` for the errors that stop the file from parsing.
+    pub fn is_error(&self) -> bool {
+        self.severity == 1
+    }
+}
+
+/// Parse one LSP diagnostic object; unknown severities become errors.
+fn parse_diagnostic(value: &Value) -> Option<Diagnostic> {
+    let range = parse_range(value.get("range")?)?;
+    let severity = value
+        .get("severity")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .clamp(1, 4) as u32;
+    let message = value.get("message")?.as_str()?.to_owned();
+    let code = value.get("code").and_then(Value::as_str).map(str::to_owned);
+    Some(Diagnostic {
+        range,
+        severity,
+        message,
+        code,
+    })
+}
+
 fn parse_position(value: &Value) -> Option<Position> {
     let line = value.get("line")?.as_u64()?;
     let character = value.get("character")?.as_u64()?;
@@ -201,6 +239,13 @@ struct Bridge {
     last_error: Option<String>,
     /// The module the server elaborates from, when the app configured one.
     top: Option<String>,
+    /// The latest diagnostics the server published, by document URI.
+    diagnostics: HashMap<String, Vec<Diagnostic>>,
+    /// Where the problem count goes (the top bar subscribes to it through
+    /// the store, so a diagnostic never re-renders the shell directly).
+    problems: Callback<u32>,
+    /// The last count handed to `problems`; only changes are emitted.
+    last_problems: u32,
 }
 
 impl Bridge {
@@ -213,6 +258,7 @@ impl Bridge {
             self.failures += 1;
             self.last_error = Some(format!("{method}: unexpected reply"));
         }
+        self.drain_notifications();
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
@@ -225,6 +271,7 @@ impl Bridge {
             "params": params,
         });
         let reply = self.lsp.handle(&message.to_string());
+        self.drain_notifications();
         self.requests += 1;
         if reply.is_empty() {
             return Err(format!("{method}: no reply"));
@@ -245,6 +292,70 @@ impl Bridge {
     fn record(&mut self, error: &str) {
         self.failures += 1;
         self.last_error = Some(error.to_owned());
+    }
+
+    /// Apply the diagnostics notifications the server queued while handling the
+    /// last message.
+    ///
+    /// The design diagnostics are kept (the debug hook and the status line read
+    /// them) and published to monaco as markers.  An empty array clears the
+    /// markers of a document that became clean or was closed.
+    fn drain_notifications(&mut self) {
+        let notifications = self.lsp.take_notifications();
+        if notifications.is_empty() {
+            return;
+        }
+        let entries: Vec<String> = match serde_json::from_str(&notifications) {
+            Ok(entries) => entries,
+            Err(_) => {
+                self.record("unparsable notification batch");
+                return;
+            }
+        };
+        for entry in entries {
+            let notification: Value = match serde_json::from_str(&entry) {
+                Ok(notification) => notification,
+                Err(_) => {
+                    self.record("unparsable server notification");
+                    continue;
+                }
+            };
+            if notification.get("method").and_then(Value::as_str)
+                != Some("textDocument/publishDiagnostics")
+            {
+                continue;
+            }
+            let Some(params) = notification.get("params") else {
+                continue;
+            };
+            let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+                continue;
+            };
+            let diagnostics: Vec<Diagnostic> = params
+                .get("diagnostics")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(parse_diagnostic).collect())
+                .unwrap_or_default();
+            let markers: Vec<Marker> = diagnostics.iter().map(marker_of).collect();
+            set_model_markers(uri, &markers);
+            self.diagnostics.insert(uri.to_owned(), diagnostics);
+        }
+        // one chip in the top bar instead of per-file state: the count only
+        // changes when a document is opened, edited, fixed or closed
+        let total = self
+            .diagnostics
+            .values()
+            .map(|diagnostics| diagnostics.len() as u32)
+            .sum();
+        if total != self.last_problems {
+            self.last_problems = total;
+            self.problems.emit(total);
+        }
+    }
+
+    /// Number of diagnostics currently held for all documents.
+    fn problem_count(&self) -> usize {
+        self.diagnostics.values().map(Vec::len).sum()
     }
 
     fn initialize(&mut self) {
@@ -280,7 +391,7 @@ pub struct LspBridge(Rc<RefCell<Bridge>>);
 
 impl LspBridge {
     /// Build the client, send `initialize` once and publish the debug hook.
-    pub fn new(design: SharedDesign, goto: Callback<Goto>) -> Self {
+    pub fn new(design: SharedDesign, goto: Callback<Goto>, problems: Callback<u32>) -> Self {
         let bridge = Self(Rc::new(RefCell::new(Bridge {
             lsp: DesignLsp::new(),
             design,
@@ -292,6 +403,9 @@ impl LspBridge {
             failures: 0,
             last_error: None,
             top: None,
+            diagnostics: HashMap::new(),
+            problems,
+            last_problems: 0,
         })));
         bridge.0.borrow_mut().initialize();
         publish_debug_hook(Rc::clone(&bridge.0));
@@ -379,6 +493,29 @@ impl LspBridge {
             .documents
             .get(file)
             .map(|document| document.text.clone())
+    }
+
+    /// Number of diagnostics currently published for the open documents.
+    ///
+    /// This is what a status line shows as "N problems".  It changes when the
+    /// server publishes diagnostics after `didOpen`/`didChange`/`didSave`, and
+    /// drops back when a file becomes clean or is closed.  The top bar wiring
+    /// lives in `app.rs` (another owner), so the method is exposed but unused
+    /// until that hook lands.
+    #[allow(dead_code)]
+    pub fn problem_count(&self) -> usize {
+        self.0.borrow().problem_count()
+    }
+
+    /// The diagnostics of the document behind `uri` (for the debug hook and QA).
+    #[allow(dead_code)]
+    pub fn diagnostics(&self, uri: &str) -> Vec<Diagnostic> {
+        self.0
+            .borrow()
+            .diagnostics
+            .get(uri)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Tell the server which module to elaborate (the waveform's root scope).
@@ -566,6 +703,7 @@ impl LspBridge {
 /// One raw JSON-RPC message in, one reply out. Used by the debug hook.
 fn handle_text(bridge: &mut Bridge, message: &str) -> String {
     let reply = bridge.lsp.handle(message);
+    bridge.drain_notifications();
     if !reply.is_empty() {
         bridge.requests += 1;
     }
@@ -632,6 +770,7 @@ fn publish_debug_hook(state: Rc<RefCell<Bridge>>) {
             "lastError": bridge.last_error,
             "top": bridge.top,
             "documents": bridge.documents.len(),
+            "problems": bridge.problem_count(),
         })
         .to_string()
     });
@@ -641,6 +780,40 @@ fn publish_debug_hook(state: Rc<RefCell<Bridge>>) {
         stats.as_ref().unchecked_ref::<Function>().into(),
     );
     stats.forget();
+
+    // The diagnostics the server published, by document URI.  A browser QA run
+    // (and the status line work) can read this without touching monaco.
+    let shared = Rc::clone(&state);
+    let diagnostics = Closure::<dyn Fn() -> String>::new(move || {
+        let bridge = shared.borrow();
+        let mut files = serde_json::Map::new();
+        for (uri, items) in &bridge.diagnostics {
+            files.insert(
+                uri.clone(),
+                json!({
+                    "count": items.len(),
+                    "errors": items.iter().filter(|diagnostic| diagnostic.is_error()).count(),
+                    "items": items
+                        .iter()
+                        .map(|diagnostic| json!({
+                            "severity": diagnostic.severity,
+                            "message": diagnostic.message,
+                            "code": diagnostic.code,
+                            "line": diagnostic.range.start.line,
+                            "character": diagnostic.range.start.character,
+                        }))
+                        .collect::<Vec<Value>>(),
+                }),
+            );
+        }
+        json!({ "total": bridge.problem_count(), "files": files }).to_string()
+    });
+    set(
+        &hook,
+        "diagnostics",
+        diagnostics.as_ref().unchecked_ref::<Function>().into(),
+    );
+    diagnostics.forget();
 
     let _ = Reflect::set(&window, &JsValue::from_str("__waveInsightLsp"), &hook);
 }
@@ -678,6 +851,38 @@ fn position_params(uri: &str, line: u32, column: u32) -> Value {
     })
 }
 
+/// Convert one LSP diagnostic into a monaco marker (1-based positions, monaco
+/// `MarkerSeverity` numbers).
+fn marker_of(diagnostic: &Diagnostic) -> Marker {
+    let severity = match diagnostic.severity {
+        1 => 8, // monaco.MarkerSeverity.Error
+        2 => 4, // monaco.MarkerSeverity.Warning
+        3 => 2, // monaco.MarkerSeverity.Info
+        _ => 1, // monaco.MarkerSeverity.Hint
+    };
+    let start = Position::new(
+        diagnostic.range.start.line.saturating_add(1),
+        diagnostic.range.start.character.saturating_add(1),
+    );
+    let mut end = Position::new(
+        diagnostic.range.end.line.saturating_add(1),
+        diagnostic.range.end.character.saturating_add(1),
+    );
+    // monaco rejects a marker that ends before it starts; an empty (point) LSP
+    // range is legal and is drawn as a caret.
+    if (end.line, end.character) < (start.line, start.character) {
+        end = start;
+    }
+    Marker {
+        start_line: start.line,
+        start_column: start.character,
+        end_line: end.line,
+        end_column: end.character,
+        severity,
+        message: diagnostic.message.clone(),
+    }
+}
+
 fn parse_hover(result: &Value) -> Option<Hover> {
     let contents = result.get("contents")?;
     let text = match contents {
@@ -712,4 +917,94 @@ fn parse_locations(result: &Value) -> Vec<Location> {
 
 fn set(object: &JsValue, key: &str, value: JsValue) {
     let _ = Reflect::set(object, &JsValue::from_str(key), &value);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn one_lsp_diagnostic_becomes_a_one_based_monaco_marker() {
+        let value = json!({
+            "range": {
+                "start": { "line": 2, "character": 3 },
+                "end": { "line": 2, "character": 8 }
+            },
+            "severity": 1,
+            "message": "Parse error",
+            "code": "parse"
+        });
+        let diagnostic = parse_diagnostic(&value).expect("diagnostic");
+        assert!(diagnostic.is_error());
+        assert_eq!(diagnostic.code.as_deref(), Some("parse"));
+        assert_eq!(diagnostic.message, "Parse error");
+
+        let marker = marker_of(&diagnostic);
+        assert_eq!((marker.start_line, marker.start_column), (3, 4));
+        assert_eq!((marker.end_line, marker.end_column), (3, 9));
+        assert_eq!(
+            marker.severity, 8,
+            "LSP error is monaco MarkerSeverity.Error"
+        );
+    }
+
+    #[test]
+    fn a_zero_width_lsp_range_becomes_a_caret_marker_not_a_reversed_one() {
+        // Point spans are what a parser error gives when it only knows where it
+        // failed; monaco needs end >= start.
+        let diagnostic = parse_diagnostic(&json!({
+            "range": {
+                "start": { "line": 0, "character": 9 },
+                "end": { "line": 0, "character": 9 }
+            },
+            "severity": 2,
+            "message": "skipped construct"
+        }))
+        .expect("diagnostic");
+        let marker = marker_of(&diagnostic);
+        assert_eq!((marker.start_line, marker.start_column), (1, 10));
+        assert_eq!((marker.end_line, marker.end_column), (1, 10));
+        assert_eq!(
+            marker.severity, 4,
+            "warning is monaco MarkerSeverity.Warning"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_out_of_band_severity_is_an_error() {
+        let diagnostic = parse_diagnostic(&json!({
+            "range": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 1, "character": 1 }
+            },
+            "message": "boom"
+        }))
+        .expect("diagnostic");
+        assert_eq!(diagnostic.severity, 1);
+        assert!(diagnostic.code.is_none());
+
+        let diagnostic = parse_diagnostic(&json!({
+            "range": {
+                "start": { "line": 1, "character": 0 },
+                "end": { "line": 1, "character": 1 }
+            },
+            "severity": 42,
+            "message": "boom"
+        }))
+        .expect("diagnostic");
+        assert_eq!(diagnostic.severity, 4, "severities are clamped to 1..=4");
+    }
+
+    #[test]
+    fn a_diagnostic_without_a_range_or_message_is_ignored() {
+        assert!(parse_diagnostic(&json!({ "message": "x" })).is_none());
+        assert!(parse_diagnostic(&json!({
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            }
+        }))
+        .is_none());
+    }
 }

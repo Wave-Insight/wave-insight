@@ -18,7 +18,7 @@ use crate::wave_show::WaveShow;
 
 use crate::top_bar::TopBar;
 
-use crate::file_load::FileLoad;
+use crate::file_load::{FileLoad, LoadReport};
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -57,6 +57,10 @@ pub enum Msg {
     CloseSource(usize),
     /// A file could not be opened, or the design could not be parsed.
     Error(String),
+    /// A line of progress or a note from the file loader (info tone).
+    Note(String),
+    /// What the last successful parse cost; the success line carries it.
+    LoadReport(LoadReport),
     /// A plain click on an identifier in the source editor.
     SourceClick(SourceClick),
     /// The wave view selected (or cleared) a signal.
@@ -189,6 +193,9 @@ pub struct App {
     editor_preview: Option<f64>,
     /// Which view the wave frame shows; the waveform is the default.
     wave_tab: WaveFrameTab,
+    /// The report the file loader emitted for the load that is about to arrive
+    /// in Msg::GetWaveform; consumed there to extend the success line.
+    pending_load: Option<LoadReport>,
 }
 
 impl Component for App {
@@ -223,14 +230,22 @@ impl Component for App {
         // pumps, but against its own parse of the same sources; navigation
         // falls back to `design` whenever it cannot answer.
         let design = SharedDesign::new(DesignState::new());
+        // R2: the store is created here and owns the layout and the status line
+        // from now on; the panes are still wired with props (later steps). It is
+        // created before the language server client because that client reports
+        // the diagnostic count straight into the store.
+        let store = Store::new();
         let lsp = LspBridge::new(
             design.clone(),
             ctx.link()
                 .callback(|goto: Goto| Msg::Goto((goto.file, goto.line, goto.col))),
+            {
+                let store = store.clone();
+                Callback::from(move |problems: u32| {
+                    let _ = store.dispatch(Action::Problems(problems));
+                })
+            },
         );
-        // R2: the store is created here and owns the layout and the status line
-        // from now on; the panes are still wired with props (later steps).
-        let store = Store::new();
         let layout = store.select(state::select::layout);
         let layout_sub = store.subscribe(state::select::layout, ctx.link().callback(Msg::Layout));
         // The editor's inlay hints show the value at cursor 1; the context is
@@ -271,6 +286,7 @@ impl Component for App {
             wave_splitter_start: None,
             editor_preview: None,
             wave_tab: WaveFrameTab::Waveform,
+            pending_load: None,
         };
         this.attach_window_listeners(ctx);
         this
@@ -516,22 +532,53 @@ impl App {
                     let lower = p.to_ascii_lowercase();
                     if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw")
                     {
-                        let args = to_value(&GetFileListArgs { path: p }).unwrap();
+                        let args = to_value(&GetFileListArgs { path: p.clone() }).unwrap();
                         let onwaveform = ctx.link().callback(Msg::GetWaveform);
+                        let onreport = ctx.link().callback(Msg::LoadReport);
+                        let onnote = ctx.link().callback(Msg::Note);
                         let onerror = ctx.link().callback(Msg::Error);
+                        let file = p.clone();
                         spawn_local(async move {
-                            //the command returns the file bytes; the webview
-                            //parses them exactly like a browser upload
+                            // the command returns the whole file, so this path
+                            // has no slices to report: it gets the size guard,
+                            // the parse line and the load report (the browser
+                            // reader is the one with per-chunk progress)
                             let bytes: Vec<u8> =
                                 from_value(invoke("choose_vcd_absolute", args).await)
                                     .unwrap_or_default();
                             if bytes.is_empty() {
-                                onerror.emit("the dump could not be read".to_string());
+                                onerror.emit(format!("{file}: the dump could not be read"));
                                 return;
                             }
-                            match wave_insight_lib::waveform::Waveform::open_bytes(bytes) {
-                                Ok(waveform) => onwaveform.emit(DumpHandle::new(waveform)),
-                                Err(error) => onerror.emit(error.message()),
+                            let size = bytes.len() as u64;
+                            if let Some(message) =
+                                crate::file_load::progress::guard_message(&file, size)
+                            {
+                                match crate::file_load::progress::size_verdict(size) {
+                                    // too large: refuse instead of feeding it
+                                    // to the parser and freezing the webview
+                                    crate::file_load::progress::SizeVerdict::TooLarge => {
+                                        onerror.emit(message);
+                                        return;
+                                    }
+                                    crate::file_load::progress::SizeVerdict::Large => {
+                                        onnote.emit(message)
+                                    }
+                                    crate::file_load::progress::SizeVerdict::Ok => {}
+                                }
+                            }
+                            onnote.emit(crate::file_load::progress::parsing_status(
+                                &file, size, None,
+                            ));
+                            // one frame so the status line paints before the
+                            // synchronous parse blocks the webview
+                            crate::file_load::file::next_tick().await;
+                            match crate::file_load::parse_dump(&file, bytes) {
+                                Ok((handle, report)) => {
+                                    onreport.emit(report);
+                                    onwaveform.emit(handle);
+                                }
+                                Err(message) => onerror.emit(message),
                             }
                         });
                     } else if lower.ends_with(".v") || lower.ends_with(".sv") {
@@ -700,9 +747,15 @@ impl App {
                     .map(|scope| scope.name().to_string());
                 self.design.borrow_mut().set_top_hint(top_hint);
                 // the store owns the handle and derives the time range from it
-                // (that is what the ruler and the fit zoom read)
+                // (that is what the ruler and the fit zoom read); the file name
+                // the loader read is what exports are named after
+                let dump_name = self
+                    .pending_load
+                    .as_ref()
+                    .map(|report| report.file_name.clone());
                 self.store.dispatch(Action::DumpOpened {
                     waveform: waveform.clone(),
+                    name: dump_name,
                 });
                 // GHW has no cheap time-range hint: the store fell back to one
                 // body scan, so say where the ruler's numbers came from instead
@@ -717,10 +770,17 @@ impl App {
                 crate::lsp::inlay::set_waveform(Some(waveform));
                 self.refresh_tree();
                 self.sync_lsp_top();
-                match range_note {
-                    Some(note) => self.note(Status::info(note)),
-                    None => self.note(Status::info("waveform loaded")),
-                }
+                // the loader reported what the parse cost (bytes, ms, wasm
+                // memory): the QA matrix still asserts the "waveform loaded"
+                // prefix, so the numbers are appended to it
+                let report = self.pending_load.take();
+                let status = match (range_note, report) {
+                    (Some(note), Some(report)) => format!("{note} — {}", report.suffix()),
+                    (Some(note), None) => note,
+                    (None, Some(report)) => report.status(),
+                    (None, None) => "waveform loaded".to_string(),
+                };
+                self.note(Status::info(status));
                 true
             }
             Msg::GetVerilog((file, text)) => {
@@ -759,8 +819,20 @@ impl App {
                 true
             }
             Msg::Error(message) => {
+                // a failed open must not leave a stale report behind
+                self.pending_load = None;
                 self.note(Status::error(message));
                 true
+            }
+            Msg::Note(text) => {
+                // the bar subscribes to the status slice itself, so the shell
+                // does not have to re-render for a progress line
+                self.note(Status::info(text));
+                false
+            }
+            Msg::LoadReport(report) => {
+                self.pending_load = Some(report);
+                false
             }
             Msg::SourceClick(click) => {
                 let candidates = self.candidates_at(&click);
@@ -1189,7 +1261,9 @@ impl App {
             <FileLoad
                 ongetwaveform={ctx.link().callback(Msg::GetWaveform)}
                 ongetverilog={ctx.link().callback(Msg::GetVerilog)}
-                onerror={ctx.link().callback(Msg::Error)} />
+                onerror={ctx.link().callback(Msg::Error)}
+                onstatus={ctx.link().callback(Msg::Note)}
+                onloadreport={ctx.link().callback(Msg::LoadReport)} />
         }
     }
 }

@@ -33,6 +33,10 @@ impl Rows {
 pub struct Nav {
     /// One line of feedback for the top bar; `None` hides the chip.
     pub status: Option<Status>,
+    /// Language-server problems in the open sources; the top bar shows a
+    /// chip when it is non-zero. Kept out of `status` so the two cannot
+    /// overwrite each other.
+    pub problems: u32,
 }
 
 /// The single source of truth.

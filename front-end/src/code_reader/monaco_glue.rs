@@ -30,6 +30,7 @@
 #![allow(clippy::type_complexity)]
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use js_sys::{Array, Function, Object, Reflect};
@@ -557,6 +558,113 @@ fn ensure_loaded(callback: ReadyCallback) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Diagnostics markers
+// ---------------------------------------------------------------------------
+
+/// One diagnostics marker for `monaco.editor.setModelMarkers`.
+///
+/// Positions are 1-based, exactly like monaco's `IMarkerData`; the language
+/// client converts the 0-based LSP ranges before calling
+/// [`set_model_markers`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Marker {
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    /// monaco `MarkerSeverity`: Error 8, Warning 4, Information 2, Hint 1.
+    pub severity: u32,
+    pub message: String,
+}
+
+/// The owner `setModelMarkers` is called with.  The owner identifies the
+/// producer, so publishing a document again replaces its previous markers.
+const MARKER_OWNER: &str = "wave-insight";
+
+thread_local! {
+    /// Markers by document URI, so a publication that arrives before the source
+    /// pane created the monaco model is replayed when the model appears.
+    static MARKERS: RefCell<HashMap<String, Vec<Marker>>> = RefCell::new(HashMap::new());
+}
+
+/// Replace the diagnostics markers of the model behind `uri`.
+///
+/// Safe to call before the editor has loaded or before the model exists: the
+/// markers are stored and applied when the model is created (see [`flush`]).
+/// An empty slice clears the markers of the document.
+pub fn set_model_markers(uri: &str, markers: &[Marker]) {
+    MARKERS.with(|markers_by_uri| {
+        let mut markers_by_uri = markers_by_uri.borrow_mut();
+        if markers.is_empty() {
+            markers_by_uri.remove(uri);
+        } else {
+            markers_by_uri.insert(uri.to_owned(), markers.to_vec());
+        }
+    });
+    let uri = uri.to_owned();
+    ensure_loaded(Box::new(move |monaco| {
+        if let Some(model) = model_for_uri(monaco, &uri) {
+            apply_markers(monaco, &model, &uri);
+        }
+    }));
+}
+
+/// The model monaco already has for `uri`, if any.
+fn model_for_uri(monaco: &JsValue, uri: &str) -> Option<JsValue> {
+    let uri_value = parse_uri(monaco, uri)?;
+    let editor = Reflect::get(monaco, &JsValue::from_str("editor")).ok()?;
+    let get_model = js_function(&editor, "getModel")?;
+    get_model
+        .call1(&editor, &uri_value)
+        .ok()
+        .filter(JsValue::is_object)
+}
+
+/// `monaco.editor.setModelMarkers(model, owner, markers)` from the stored set.
+fn apply_markers(monaco: &JsValue, model: &JsValue, uri: &str) {
+    let markers = MARKERS.with(|markers_by_uri| markers_by_uri.borrow().get(uri).cloned());
+    let array = Array::new();
+    for marker in markers.unwrap_or_default() {
+        let object = Object::new();
+        set(
+            &object,
+            "severity",
+            JsValue::from_f64(f64::from(marker.severity)),
+        );
+        set(&object, "message", JsValue::from_str(&marker.message));
+        set(&object, "source", JsValue::from_str(MARKER_OWNER));
+        set(
+            &object,
+            "startLineNumber",
+            JsValue::from_f64(f64::from(marker.start_line)),
+        );
+        set(
+            &object,
+            "startColumn",
+            JsValue::from_f64(f64::from(marker.start_column)),
+        );
+        set(
+            &object,
+            "endLineNumber",
+            JsValue::from_f64(f64::from(marker.end_line)),
+        );
+        set(
+            &object,
+            "endColumn",
+            JsValue::from_f64(f64::from(marker.end_column)),
+        );
+        array.push(&object);
+    }
+    let Ok(editor) = Reflect::get(monaco, &JsValue::from_str("editor")) else {
+        return;
+    };
+    let Some(set_model_markers) = js_function(&editor, "setModelMarkers") else {
+        return;
+    };
+    let _ = set_model_markers.call3(&editor, model, &JsValue::from_str(MARKER_OWNER), &array);
+}
+
 /// Load the pinned, self-hosted editor.
 ///
 /// There is exactly one place to load from (the copy trunk ships next to the
@@ -791,6 +899,8 @@ fn flush(slot: &mut EditorSlot) {
             if editor_model_uri(&handle).as_deref() != Some(document.uri.as_str()) {
                 set_editor_model(&handle, &model);
             }
+            // Markers may have been published while the model did not exist.
+            apply_markers(&monaco, &model, &document.uri);
         }
     }
     if let Some((line, column)) = slot.reveal.take() {

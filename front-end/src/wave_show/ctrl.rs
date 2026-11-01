@@ -4,6 +4,7 @@ use yew::prelude::*;
 
 use wave_insight_lib::data_struct::ShowType;
 
+use super::export::{ExportFormat, ExportScope};
 use super::settings::Settings;
 use crate::nav::MAX_FIXED_POINT;
 
@@ -52,6 +53,9 @@ pub struct CtrlProps {
     /// Ask the wave pane to expand the bits, or collapse them again.
     #[prop_or_default]
     pub onbits: Callback<()>,
+    /// Download the row's values (or every row's) as a file.
+    #[prop_or_default]
+    pub onexport: Callback<(ExportFormat, ExportScope)>,
 }
 
 /// Copy text with the async clipboard API.
@@ -96,6 +100,12 @@ pub enum Msg {
     CopyPath,
     /// Expand the bus into its bits, or collapse the bits again.
     ToggleBits,
+    /// Download this row's values as CSV.
+    ExportRowCsv,
+    /// Download this row's values as TXT.
+    ExportRowTxt,
+    /// Download every row's values as long-format CSV.
+    ExportAllRowsCsv,
 }
 
 pub struct Ctrl {
@@ -127,6 +137,20 @@ impl Component for Ctrl {
             }
             Msg::ToggleBits => {
                 props.onbits.emit(());
+                true
+            }
+            Msg::ExportRowCsv => {
+                props.onexport.emit((ExportFormat::Csv, ExportScope::Row));
+                true
+            }
+            Msg::ExportRowTxt => {
+                props.onexport.emit((ExportFormat::Txt, ExportScope::Row));
+                true
+            }
+            Msg::ExportAllRowsCsv => {
+                props
+                    .onexport
+                    .emit((ExportFormat::Csv, ExportScope::AllRows));
                 true
             }
             Msg::ExitMenu(_e) => {
@@ -336,6 +360,21 @@ impl Component for Ctrl {
                                 html!{}
                             }
                         }
+                    </div>
+
+                    <div class="modal-section">
+                        <p class="modal-label">{"Export"}</p>
+                        <div class="modal-row">
+                            <button type="button" class="btn"
+                                title="Download this row's changes as a time,value CSV"
+                                onclick={link.callback(|_| Msg::ExportRowCsv)}>{"CSV (row)"}</button>
+                            <button type="button" class="btn"
+                                title="Download this row's changes as plain text, one line per change"
+                                onclick={link.callback(|_| Msg::ExportRowTxt)}>{"TXT (row)"}</button>
+                            <button type="button" class="btn"
+                                title="Download every row's changes as a time,signal,value CSV"
+                                onclick={link.callback(|_| Msg::ExportAllRowsCsv)}>{"CSV (all rows)"}</button>
+                        </div>
                     </div>
 
                     <div class="modal-section">

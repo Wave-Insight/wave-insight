@@ -6,6 +6,9 @@ use yew::prelude::*;
 
 use crate::state::types::DumpHandle;
 
+use super::file::{next_tick, parse_dump};
+use super::progress;
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "tauri"])]
@@ -63,6 +66,13 @@ pub struct FileListProps {
     pub ongetverilog: Callback<(String, String)>,
     /// The file could not be read or parsed.
     pub onerror: Callback<String>,
+    /// Progress and notes (info tone): the top bar shows them.
+    #[prop_or_default]
+    pub onstatus: Callback<String>,
+    /// What the last successful parse cost; the app appends it to the success
+    /// line.
+    #[prop_or_default]
+    pub onloadreport: Callback<crate::file_load::LoadReport>,
 }
 
 pub struct FileList {
@@ -142,24 +152,44 @@ impl Component for FileList {
                 match kind_of(&name) {
                     Kind::Waveform => {
                         let ongetwaveform = ctx.props().ongetwaveform.clone();
+                        let onreport = ctx.props().onloadreport.clone();
+                        let onstatus = ctx.props().onstatus.clone();
                         let onerror = ctx.props().onerror.clone();
                         let exit = ctx.props().onexit.clone();
                         let file = name.clone();
                         spawn_local(async move {
-                            //the command returns the bytes; the webview parses
-                            //them with the same path the browser uses
+                            // The command returns the whole file: there is no
+                            // slice to report progress for (the backend command
+                            // hands back one buffer), so the dialog gets the
+                            // size guard and the parse line but no percentage.
                             let bytes: Vec<u8> =
                                 from_value(invoke("choose_vcd", args).await).unwrap_or_default();
                             if bytes.is_empty() {
                                 onerror.emit(format!("{file}: the dump could not be read"));
                                 return;
                             }
-                            match wave_insight_lib::waveform::Waveform::open_bytes(bytes) {
-                                Ok(waveform) => {
-                                    ongetwaveform.emit(DumpHandle::new(waveform));
+                            let size = bytes.len() as u64;
+                            if let Some(message) = progress::guard_message(&file, size) {
+                                match progress::size_verdict(size) {
+                                    // the bytes are already here; refusing to
+                                    // parse them is still better than freezing
+                                    progress::SizeVerdict::TooLarge => {
+                                        onerror.emit(message);
+                                        return;
+                                    }
+                                    progress::SizeVerdict::Large => onstatus.emit(message),
+                                    progress::SizeVerdict::Ok => {}
+                                }
+                            }
+                            onstatus.emit(progress::parsing_status(&file, size, None));
+                            next_tick().await;
+                            match parse_dump(&file, bytes) {
+                                Ok((handle, report)) => {
+                                    onreport.emit(report);
+                                    ongetwaveform.emit(handle);
                                     exit.emit(());
                                 }
-                                Err(error) => onerror.emit(format!("{file}: {}", error.message())),
+                                Err(message) => onerror.emit(message),
                             }
                         });
                     }

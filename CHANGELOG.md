@@ -8,6 +8,10 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
+Nothing yet: the next wave lands here.
+
+## [0.6.0] - 2026-11-02
+
 ### Added
 
 - CI gate: the Rust workflow runs the workspace tests, the front end's native
@@ -27,6 +31,25 @@ an on-disk/transport format.
   (`panic = "abort"` in release means a dependency panic still aborts).
 - Documentation: the README, the R2 store design and the rebuild plan now state
   what is actually implemented; this changelog starts here.
+- Export signal values: a row's settings dialog can write that row as `time,value`
+  CSV or `<time> <value>` TXT, or every row as one long-format
+  `time,signal,value` CSV. Values use the row's on-screen format (fixed point
+  included); the download is named after the dump and signal, and an export over
+  200 MB is refused with an actionable message.
+- Large-dump loading UX: browser dumps are read in 8 MB chunks with a progress
+  row in the sidebar and a reading line in the top bar, then a `parsing ...`
+  step; Esc or the cancel button aborts the read (`load cancelled — ... was not
+  opened`). Dumps from 100 MB warn before parsing and dumps over 512 MB are
+  refused before any byte is read; the success line reports parse time, size and
+  wasm memory.
+- Language-server diagnostics are visible in the editor: design problems are
+  published as monaco markers (squiggles) and the top bar keeps an `N problem(s)`
+  chip, backed by a `nav.problems` store slice.
+- The browser QA suite moved into the repository (`qa/`): 41 scenarios with their
+  own fixtures and generators, a cross-platform `run.mjs` (plus a `run.ps1`
+  wrapper) with real exit codes, screenshots under `qa/artifacts/`, and a README.
+  CI runs an advisory smoke job (`empty,vcd,layout,layoutRules`) against the
+  bundle the build job produces.
 
 ### Changed
 
@@ -37,11 +60,21 @@ an on-disk/transport format.
   cannot drift with a trunk release.
 - Improved GHW time-axis handling; GHW remains the experimental format (wellen
   cannot stream it, so it is still read eagerly).
+- Opening a dump no longer blocks the whole tab on a single read: the browser
+  path streams the file in chunks and repaints between them, and the status line
+  keeps the stable `waveform loaded` prefix while appending `— opened in ..., ...,
+  wasm memory ...`.
+- The state store's `nav` slice now carries the language-server problem count
+  (`nav.problems`); the top bar subscribes to it, so a diagnostic updates only
+  that slice.
 
 ### Fixed
 
 - The README no longer claims a nightly benchmark suite, a rust 1.67.1 pin, a
   `cargo install tauri` step or a macOS asset that does not exist.
+- The browser QA suite's offline check no longer starts a second static server on
+  the port the launcher already uses; the old harness `-Offline` flag failed with
+  `EADDRINUSE` because of exactly that.
 
 ## [0.5.0] - 2026-10-22
 

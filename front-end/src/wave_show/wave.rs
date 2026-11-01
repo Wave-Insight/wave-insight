@@ -3,16 +3,18 @@ use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wave_insight_lib::waveform::TimeRange;
+use wave_insight_lib::waveform::{DecodedSignal, TimeRange};
 use yew::prelude::*;
 
 use crate::state::DumpHandle;
 use std::cell::Cell;
 
-use crate::state::{self, select, Cursors, RowsSlice, Store, Subscription, View, Viewport};
+use crate::nav::ValueFormat;
+use crate::state::{self, select, Cursors, RowsSlice, Status, Store, Subscription, View, Viewport};
 
 use super::canvas;
 use super::ctrl::Ctrl;
+use super::export::{self, ExportFormat, ExportScope};
 use super::geometry::{self, content_height, visible_rows, Time, ROW_HEIGHT};
 use super::settings::Settings;
 use super::signal::SignalName;
@@ -101,6 +103,8 @@ pub enum Msg {
     /// rows were decoded after the last render: the value column has values to
     /// show now, so re-render the name column once (see `rendered`)
     ValuesReady,
+    /// The settings dialog asked for a download: one row, or every row.
+    Export((ExportFormat, ExportScope)),
 }
 
 /// Geometry of the wave area, measured from the dom.
@@ -423,6 +427,7 @@ impl Component for WaveShow {
                         onbits={link.callback(move |()| Msg::ToggleBits(bits_idx))}
                         onset={link.callback(Msg::SetSignal)}
                         onlocate={link.callback(Msg::Locate)}
+                        onexport={link.callback(Msg::Export)}
                         delete={link.callback(|_| Msg::DeleteSig)} />
                 }
                 <TimeBar store={self.store.clone()} width={metrics.surface_w} />
@@ -937,6 +942,17 @@ impl WaveShow {
                 true
             }
             Msg::Resize => true,
+            Msg::Export((format, scope)) => {
+                // the download is the answer, so the dialog closes either way and
+                // the status line says what happened
+                let result = self.export(format, scope);
+                self.menu_show = false;
+                match result {
+                    Ok(note) => self.dispatch(state::Action::Status(Status::info(note))),
+                    Err(note) => self.dispatch(state::Action::Status(Status::error(note))),
+                }
+                true
+            }
             // rows were decoded after the last render: the value column now has
             // the values to show
             Msg::ValuesReady => true,
@@ -1131,6 +1147,117 @@ impl WaveShow {
         if let Some(waveform) = waveform {
             for index in unload {
                 let _ = waveform.unload_signal(index);
+            }
+        }
+    }
+
+    /// The decoded history of one row: the renderer's cache when it has one,
+    /// otherwise a decode of the dump signal (which also fills the cache, so a
+    /// second export of the same row is free).
+    ///
+    /// An expanded bit row exports the bit, not its parent bus: the derived
+    /// history is the one the row draws.
+    fn decoded_for(&self, index: usize) -> Option<DecodedSignal> {
+        let item = self.signal_things.iter().nth(index)?;
+        let cached = match &item.values {
+            RowValues::Backend(decoded) => Some(decoded),
+            RowValues::Empty => None,
+        };
+        export::decoded_or(cached, || {
+            let waveform = self.waveform.as_ref()?.waveform();
+            let signal = item.index?;
+            let decoded = waveform.decoded_changes(signal).ok()?;
+            Some(match item.bit {
+                Some(bit) => derive_bit(&decoded, bit as usize),
+                None => decoded,
+            })
+        })
+    }
+
+    /// Build the requested export and hand it to the browser as a download.
+    ///
+    /// Returns the status line to show: the success summary, or an actionable
+    /// error (no dump, no decoded values, too large, browser refused). Never
+    /// panics on a user action.
+    fn export(&self, format: ExportFormat, scope: ExportScope) -> Result<String, String> {
+        let Some(waveform) = self.waveform.as_ref() else {
+            return Err("no dump open — load a waveform before exporting".to_string());
+        };
+        let dump = waveform.waveform();
+        let stem = self
+            .store
+            .select(select::dump_name)
+            .map(|name| export::dump_stem_name(&name))
+            .unwrap_or_else(|| export::dump_stem(Some(dump)));
+        match scope {
+            ExportScope::Row => {
+                let index = self.on_setting_idx.first().copied().ok_or_else(|| {
+                    "no row selected — open a row's settings and try again".to_string()
+                })?;
+                let item = self
+                    .signal_things
+                    .iter()
+                    .nth(index)
+                    .ok_or_else(|| "the row is gone — open the settings again".to_string())?;
+                let name = item.name.clone();
+                let row_format = ValueFormat::from_setting(&item.setting);
+                let width = item.format_width();
+                let decoded = self.decoded_for(index).ok_or_else(|| {
+                    format!("{name}: no decoded values — the signal is not in the open dump")
+                })?;
+                let row = export::ExportRow {
+                    name: name.clone(),
+                    format: row_format,
+                    width,
+                    changes: decoded.changes(),
+                };
+                let text = match format {
+                    ExportFormat::Csv => export::row_csv(&row),
+                    ExportFormat::Txt => export::row_txt(&row),
+                }
+                .map_err(|error| error.message())?;
+                let file = export::file_name(&stem, Some(&name), format);
+                export::download(&file, format.mime(), &text)?;
+                Ok(export::row_status(&name, row.changes.len(), text.len()))
+            }
+            ExportScope::AllRows => {
+                // rows in row order; a row that is not in the dump contributes
+                // nothing instead of aborting the whole export
+                let mut decoded_rows: Vec<DecodedSignal> = Vec::new();
+                let mut meta: Vec<(String, ValueFormat, usize)> = Vec::new();
+                for index in 0..self.signal_things.len() {
+                    let Some(decoded) = self.decoded_for(index) else {
+                        continue;
+                    };
+                    let item = &self.signal_things[index];
+                    meta.push((
+                        item.name.clone(),
+                        ValueFormat::from_setting(&item.setting),
+                        item.format_width(),
+                    ));
+                    decoded_rows.push(decoded);
+                }
+                if decoded_rows.is_empty() {
+                    return Err("nothing to export: no row has decoded values".to_string());
+                }
+                let rows: Vec<export::ExportRow<'_>> = meta
+                    .iter()
+                    .zip(decoded_rows.iter())
+                    .map(|((name, format, width), decoded)| export::ExportRow {
+                        name: name.clone(),
+                        format: format.clone(),
+                        width: *width,
+                        changes: decoded.changes(),
+                    })
+                    .collect();
+                let changes: usize = decoded_rows
+                    .iter()
+                    .map(|decoded| decoded.changes().len())
+                    .sum();
+                let text = export::rows_csv(&rows).map_err(|error| error.message())?;
+                let file = export::file_name(&stem, None, ExportFormat::Csv);
+                export::download(&file, ExportFormat::Csv.mime(), &text)?;
+                Ok(export::rows_status(rows.len(), changes, text.len()))
             }
         }
     }
