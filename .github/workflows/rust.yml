@@ -128,6 +128,15 @@ jobs:
       with:
         key: clippy
 
+    #tauri::generate_context! validates that frontendDist (../front-end/dist)
+    #exists at compile time. It is gitignored and only the build job produces
+    #it, so on a clean checkout `cargo clippy --workspace` used to panic in the
+    #app crate. A placeholder is enough for the lint (nothing is bundled here).
+    - name: Create the front-end/dist placeholder
+      run: |
+        mkdir -p front-end/dist
+        printf '<!doctype html><title>clippy placeholder</title>\n' > front-end/dist/index.html
+
     - name: Clippy (warnings are errors)
       run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -173,12 +182,27 @@ jobs:
           echo "$wasm is $size bytes, budget $WASM_SIZE_BUDGET"
           test "$size" -le "$WASM_SIZE_BUDGET"
 
-    #the qa job below runs the browser matrix against this bundle
+    #the deploy job publishes this bundle under /wave-insight/, so its asset
+    #urls are absolute and the browser matrix (which serves the bundle at /)
+    #cannot use it
     - name: Upload the web bundle
       uses: actions/upload-artifact@v4
       with:
         name: web-dist
         path: front-end/dist
+        retention-days: 3
+
+    #second build without --public-url: the qa job serves this one at /
+    - name: Build the bundle the browser matrix serves at /
+      run: |
+          cd front-end
+          trunk build --no-default-features --features wasm --release --dist dist-qa
+
+    - name: Upload the matrix web bundle
+      uses: actions/upload-artifact@v4
+      with:
+        name: web-dist-qa
+        path: front-end/dist-qa
         retention-days: 3
 
   #the only job with a write token: it publishes the artifact the build job
@@ -224,14 +248,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    #node >= 21 for the global WebSocket the CDP client uses (node 20 has it
+    #only behind a flag, which made this job fail with 'WebSocket is not
+    #defined' before it even reached the browser)
     - uses: actions/setup-node@v4
       with:
-        node-version: 20
+        node-version: 22
 
     - name: Download the built web bundle
       uses: actions/download-artifact@v4
       with:
-        name: web-dist
+        name: web-dist-qa
         path: front-end/dist
 
     #ubuntu-latest ships google-chrome; qa/run.mjs finds it on PATH or via CHROME

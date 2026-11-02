@@ -11,7 +11,9 @@
 //!    bytes must never panic - every entry point has to answer with a value or
 //!    a WaveformError.
 
-use wave_insight_lib::waveform::{TimeRange, ValueQuery, WaveValue, Waveform};
+use wave_insight_lib::waveform::{
+    TimeRange, ValueQuery, WaveFormat, WaveValue, Waveform, WaveformError,
+};
 
 /// Small deterministic LCG so failures are reproducible from the seed.
 struct Lcg(u64);
@@ -345,6 +347,34 @@ fn truncated_and_byte_flipped_fsts_never_panic() {
             exercise(&waveform);
         }
     }
+}
+
+/// Regression for the release-only abort: flipping byte 817 (originally 0x00)
+/// to 0xB0 in the FST fixture corrupts the value-change handle count.  It used
+/// to pass validate_fst and make fst-reader allocate a 4.9e16 byte alias table
+/// when the deferred body decode ran; opening must now answer Corrupt.
+#[test]
+fn corrupt_fst_handle_count_flip_is_rejected_at_open() {
+    let mut bytes = fst_fixture_bytes();
+    let original = bytes[817];
+    bytes[817] ^= 0xB0;
+    assert_ne!(bytes[817], original);
+    let error = Waveform::open_bytes(bytes).expect_err("corrupt FST must be rejected");
+    assert!(
+        matches!(
+            error,
+            WaveformError::Corrupt {
+                format: WaveFormat::Fst,
+                ..
+            }
+        ),
+        "expected Corrupt(Fst), got {error:?}"
+    );
+    let message = error.to_string().to_lowercase();
+    assert!(
+        message.contains("alias chain") || message.contains("handle"),
+        "the message should name the corrupt internal count: {error}"
+    );
 }
 /// Two VCD variables can share one identifier code (an alias of the same
 /// signal).  The value stream must report a change against the variable that

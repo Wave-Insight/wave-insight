@@ -176,15 +176,68 @@ fn corrupt_fst(detail: impl Into<String>) -> crate::waveform::WaveformError {
     }
 }
 
+/// One top-level FST block: offset of the type byte, type, and section length.
+#[derive(Clone, Copy, Debug)]
+struct FstBlock {
+    offset: u64,
+    kind: u8,
+    len: u64,
+}
+
+impl FstBlock {
+    /// Start of the block payload (right after the type byte), which is where
+    /// the section length field lives.
+    fn payload(self) -> u64 {
+        self.offset + 1
+    }
+}
+
+/// LEB128 variant integer as used by fst-reader: reads at most 10 bytes.
+fn read_fst_variant(reader: &mut ByteReader, offset: u64) -> Option<(u64, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    reader.seek(SeekFrom::Start(offset)).ok()?;
+    let mut value = 0u64;
+    let mut byte = [0u8; 1];
+    for index in 0..10 {
+        reader.read_exact(&mut byte).ok()?;
+        value |= u64::from(byte[0] & 0x7f) << (7 * index);
+        if byte[0] & 0x80 == 0 {
+            return Some((value, index as u64 + 1));
+        }
+    }
+    None
+}
+
+fn read_fst_u64(reader: &mut ByteReader, offset: u64) -> Option<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    reader.seek(SeekFrom::Start(offset)).ok()?;
+    let mut bytes = [0u8; 8];
+    reader.read_exact(&mut bytes).ok()?;
+    Some(u64::from_be_bytes(bytes))
+}
+
+/// A count from a corrupt file must not be able to request a huge allocation:
+/// each counted record takes at least one byte in the file (compressed data
+/// never expands more than the plausibility cap), and the multiplier keeps even
+/// a tiny file from claiming an absurd table.
+fn plausible_fst_count(count: u64, file_len: u64) -> bool {
+    count <= file_len.saturating_mul(64).max(4096)
+}
+
 /// Cheap structural check of an FST before wellen/fst-reader sees it.
 ///
-/// The FST reader trusts length fields (time table item counts, decompression
+/// The FST reader trusts length/count fields (time table item counts, geometry
+/// handle count, blackout count, per-section chain lengths, decompression
 /// lengths) and allocates from them; a single flipped byte can turn one into
 /// terabytes, and an allocation failure aborts the process instead of producing
-/// an error.  This walk over the top-level block headers and the tiny meta
-/// sections rejects lengths that cannot describe this file, so a corrupt dump
-/// becomes WaveformError::Corrupt instead of an out-of-memory abort.  It reads a
-/// handful of bytes per block and seeks over the payloads.
+/// an error (that is what turned the release test run red: a corrupt handle
+/// count of ~4.1e15 asked for a 4.9e16 byte table).
+///
+/// This walk validates the top-level block list, then the internal counts that
+/// fst-reader allocates from, against the containing section/heap and a
+/// plausibility cap, so a corrupt dump becomes WaveformError::Corrupt instead of
+/// an out-of-memory abort.  It reads a handful of bytes per block and seeks over
+/// the payloads.
 fn validate_fst(reader: &mut ByteReader) -> crate::waveform::Result<()> {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -192,7 +245,7 @@ fn validate_fst(reader: &mut ByteReader) -> crate::waveform::Result<()> {
     reader.seek(SeekFrom::Start(0))?;
     let mut cursor = 0u64;
     let mut header = [0u8; 9];
-    let mut word = [0u8; 8];
+    let mut blocks: Vec<FstBlock> = Vec::new();
     loop {
         if cursor >= file_len {
             break;
@@ -217,79 +270,239 @@ fn validate_fst(reader: &mut ByteReader) -> crate::waveform::Result<()> {
                 "block at offset {cursor} claims {block_len} bytes beyond the end of the file"
             )));
         }
-        match block_type {
+        if block_type == 254 {
             // GZipWrapper: the whole-file gzip stream, followed by its
-            // decompressed length.
-            254 => {
-                if block_len < 16 {
-                    return Err(corrupt_fst("gzip wrapper is too short"));
-                }
-                reader.seek(SeekFrom::Start(payload_start + 8))?;
-                reader.read_exact(&mut word)?;
-                let uncompressed = u64::from_be_bytes(word);
-                if !plausible_decoded_length(uncompressed, file_len) {
+            // decompressed length.  The stream is opaque to this walk; validate
+            // the declared size and stop (the reader decompresses it itself).
+            if block_len < 16 {
+                return Err(corrupt_fst("gzip wrapper is too short"));
+            }
+            let uncompressed = read_fst_u64(reader, payload_start + 8)
+                .ok_or_else(|| corrupt_fst("gzip wrapper is truncated"))?;
+            if !plausible_decoded_length(uncompressed, file_len) {
+                return Err(corrupt_fst(format!(
+                    "gzip wrapper claims an uncompressed length of {uncompressed} bytes"
+                )));
+            }
+            reader.seek(SeekFrom::Start(0))?;
+            return Ok(());
+        }
+        blocks.push(FstBlock {
+            offset: cursor,
+            kind: block_type,
+            len: block_len,
+        });
+        if block_type == 255 && block_len == 0 {
+            break;
+        }
+        cursor = cursor + 1 + block_len;
+    }
+
+    // Geometry: fst-reader allocates one SignalInfo per declared handle.
+    let mut max_handle: Option<u64> = None;
+    for block in blocks.iter().copied().filter(|block| block.kind == 3) {
+        if block.len < 24 {
+            return Err(corrupt_fst(format!(
+                "geometry block at offset {} is too short",
+                block.offset
+            )));
+        }
+        let section_len = read_fst_u64(reader, block.payload())
+            .ok_or_else(|| corrupt_fst("geometry block is truncated"))?;
+        let uncompressed = read_fst_u64(reader, block.payload() + 8)
+            .ok_or_else(|| corrupt_fst("geometry block is truncated"))?;
+        let handles = read_fst_u64(reader, block.payload() + 16)
+            .ok_or_else(|| corrupt_fst("geometry block is truncated"))?;
+        if section_len != block.len || !plausible_decoded_length(uncompressed, file_len) {
+            return Err(corrupt_fst(format!(
+                "geometry block at offset {} has implausible lengths",
+                block.offset
+            )));
+        }
+        if handles == 0 || handles > uncompressed || !plausible_fst_count(handles, file_len) {
+            return Err(corrupt_fst(format!(
+                "geometry block at offset {} claims {handles} signal handles",
+                block.offset
+            )));
+        }
+        max_handle = Some(handles);
+    }
+
+    for block in blocks.iter().copied() {
+        match block.kind {
+            // Blackout: a count followed by one activity byte + one delta per
+            // entry, so it cannot exceed the remaining payload / 2.
+            2 => {
+                if block.len < 9 {
                     return Err(corrupt_fst(format!(
-                        "gzip wrapper claims an uncompressed length of {uncompressed} bytes"
+                        "blackout block at offset {} is too short",
+                        block.offset
                     )));
                 }
-                break;
-            }
-            // VcData / dynamic alias sections: the time table meta data sits in
-            // the last 24 bytes of the section (uncompressed length, compressed
-            // length, item count); the reader allocates from these.
-            1 | 5 | 8 => {
-                if block_len >= 32 {
-                    let meta_start = payload_start + block_len - 24;
-                    reader.seek(SeekFrom::Start(meta_start))?;
-                    let mut meta = [0u8; 24];
-                    reader.read_exact(&mut meta)?;
-                    let mut value = [0u8; 8];
-                    value.copy_from_slice(&meta[0..8]);
-                    let uncompressed = u64::from_be_bytes(value);
-                    value.copy_from_slice(&meta[8..16]);
-                    let compressed = u64::from_be_bytes(value);
-                    value.copy_from_slice(&meta[16..24]);
-                    let items = u64::from_be_bytes(value);
-                    if compressed > block_len
-                        || !plausible_decoded_length(uncompressed, file_len)
-                        || items > block_len.saturating_mul(8).max(1)
-                    {
-                        return Err(corrupt_fst(format!(
-                            "data section at offset {cursor} has implausible time table lengths"
-                        )));
-                    }
+                let section_len = read_fst_u64(reader, block.payload())
+                    .ok_or_else(|| corrupt_fst("blackout block is truncated"))?;
+                let (count, _) = read_fst_variant(reader, block.payload() + 8)
+                    .ok_or_else(|| corrupt_fst("blackout count is truncated"))?;
+                if section_len != block.len
+                    || count > (block.len.saturating_sub(8)) / 2
+                    || !plausible_fst_count(count, file_len)
+                {
+                    return Err(corrupt_fst(format!(
+                        "blackout block at offset {} claims {count} blackout entries",
+                        block.offset
+                    )));
                 }
             }
+            // Data sections: the frame header, the value-change section header
+            // and the alias chain all carry u64/varint lengths/counts that
+            // fst-reader allocates from.
+            1 | 5 | 8 => validate_fst_data_block(reader, block, file_len, max_handle)?,
             // Hierarchy blocks (zlib/lz4/lz4duo): first two u64s are the
             // section length and the uncompressed length.
             4 | 6 | 7 => {
-                if block_len < 16 {
+                if block.len < 16 {
                     return Err(corrupt_fst(format!(
-                        "hierarchy block at offset {cursor} is too short"
+                        "hierarchy block at offset {} is too short",
+                        block.offset
                     )));
                 }
-                reader.seek(SeekFrom::Start(payload_start))?;
-                let mut lengths = [0u8; 16];
-                reader.read_exact(&mut lengths)?;
-                let mut value = [0u8; 8];
-                value.copy_from_slice(&lengths[0..8]);
-                let section_len = u64::from_be_bytes(value);
-                value.copy_from_slice(&lengths[8..16]);
-                let uncompressed = u64::from_be_bytes(value);
-                if section_len > block_len
+                let section_len = read_fst_u64(reader, block.payload())
+                    .ok_or_else(|| corrupt_fst("hierarchy block is truncated"))?;
+                let uncompressed = read_fst_u64(reader, block.payload() + 8)
+                    .ok_or_else(|| corrupt_fst("hierarchy block is truncated"))?;
+                if section_len != block.len
                     || section_len < 16
                     || !plausible_decoded_length(uncompressed, file_len)
                 {
                     return Err(corrupt_fst(format!(
-                        "hierarchy block at offset {cursor} has implausible lengths"
+                        "hierarchy block at offset {} has implausible lengths",
+                        block.offset
                     )));
                 }
             }
-            // Skip with a zero length marks the end of the block list.
-            255 if block_len == 0 => break,
             _ => {}
         }
-        cursor = cursor + 1 + block_len;
+    }
+    reader.seek(SeekFrom::Start(0))?;
+    Ok(())
+}
+
+/// Validate one VcData block: frame header, value-change header and alias chain.
+fn validate_fst_data_block(
+    reader: &mut ByteReader,
+    block: FstBlock,
+    file_len: u64,
+    max_handle: Option<u64>,
+) -> crate::waveform::Result<()> {
+    let payload = block.payload();
+    if block.len < 32 + 8 + 24 {
+        return Err(corrupt_fst(format!(
+            "data block at offset {} is too short",
+            block.offset
+        )));
+    }
+    let section_len =
+        read_fst_u64(reader, payload).ok_or_else(|| corrupt_fst("data block is truncated"))?;
+    if section_len != block.len {
+        return Err(corrupt_fst(format!(
+            "data block at offset {} has a mismatched section length",
+            block.offset
+        )));
+    }
+    // Time table metadata: last 24 bytes of the block.
+    let meta_start = payload + block.len - 24;
+    let table_uncompressed = read_fst_u64(reader, meta_start)
+        .ok_or_else(|| corrupt_fst("data block time table is truncated"))?;
+    let table_compressed = read_fst_u64(reader, meta_start + 8)
+        .ok_or_else(|| corrupt_fst("data block time table is truncated"))?;
+    let table_items = read_fst_u64(reader, meta_start + 16)
+        .ok_or_else(|| corrupt_fst("data block time table is truncated"))?;
+    if table_compressed > block.len
+        || !plausible_decoded_length(table_uncompressed, file_len)
+        // One variant integer per item: the count cannot exceed the decompressed
+        // table size.
+        || table_items > table_uncompressed
+    {
+        return Err(corrupt_fst(format!(
+            "data block at offset {} has implausible time table lengths",
+            block.offset
+        )));
+    }
+    let table_section_len = table_compressed + 24;
+
+    // Frame header at payload+32: uncompressed length, compressed length and
+    // handle count.  The compressed bytes follow the three variant integers.
+    let frame_start = payload + 32;
+    let (frame_uncompressed, len_a) = read_fst_variant(reader, frame_start)
+        .ok_or_else(|| corrupt_fst("data block frame header is truncated"))?;
+    let (frame_compressed, len_b) = read_fst_variant(reader, frame_start + len_a)
+        .ok_or_else(|| corrupt_fst("data block frame header is truncated"))?;
+    let (frame_handles, len_c) = read_fst_variant(reader, frame_start + len_a + len_b)
+        .ok_or_else(|| corrupt_fst("data block frame header is truncated"))?;
+    if !plausible_decoded_length(frame_uncompressed, file_len)
+        || frame_compressed > block.len
+        || !plausible_fst_count(frame_handles, file_len)
+    {
+        return Err(corrupt_fst(format!(
+            "data block at offset {} has an implausible frame header",
+            block.offset
+        )));
+    }
+    if let Some(handles) = max_handle {
+        if frame_handles != handles {
+            return Err(corrupt_fst(format!(
+                "data block at offset {} claims {frame_handles} handles but the geometry declares {handles}",
+                block.offset
+            )));
+        }
+    }
+    let after_frame = frame_start + len_a + len_b + len_c + frame_compressed;
+
+    // Value-change header: handle count (same alloc table), then the pack type
+    // byte, then the value data and finally the alias chain length.
+    let (value_handles, len_v) = read_fst_variant(reader, after_frame)
+        .ok_or_else(|| corrupt_fst("data block value-change header is truncated"))?;
+    if !plausible_fst_count(value_handles, file_len) {
+        return Err(corrupt_fst(format!(
+            "data block at offset {} claims {value_handles} value-change handles",
+            block.offset
+        )));
+    }
+    if let Some(handles) = max_handle {
+        if value_handles != handles {
+            return Err(corrupt_fst(format!(
+                "data block at offset {} claims {value_handles} value-change handles but the geometry declares {handles}",
+                block.offset
+            )));
+        }
+    }
+    // vc_start is the position right after the handle variant (the pack byte).
+    let vc_start = after_frame + len_v;
+    // The chain length sits right before the time table section; the chain itself
+    // ends at that u64.
+    if table_section_len + 8 > block.len {
+        return Err(corrupt_fst(format!(
+            "data block at offset {} has no room for the alias chain",
+            block.offset
+        )));
+    }
+    let chain_len_offset = payload + block.len - table_section_len - 8;
+    if chain_len_offset <= vc_start || chain_len_offset + 8 > payload + block.len {
+        return Err(corrupt_fst(format!(
+            "data block at offset {} has an implausible alias chain offset",
+            block.offset
+        )));
+    }
+    let chain_len = read_fst_u64(reader, chain_len_offset)
+        .ok_or_else(|| corrupt_fst("data block alias chain length is truncated"))?;
+    if chain_len == 0
+        || chain_len > block.len
+        || chain_len > chain_len_offset.saturating_sub(vc_start)
+    {
+        return Err(corrupt_fst(format!(
+            "data block at offset {} claims an alias chain of {chain_len} bytes",
+            block.offset
+        )));
     }
     reader.seek(SeekFrom::Start(0))?;
     Ok(())

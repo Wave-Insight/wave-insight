@@ -54,11 +54,19 @@
 //!
 //! | what you are doing | call | cost |
 //! |---|---|---|
-//! | drawing the visible rows | [`Waveform::decoded_changes_many`], then [`DecodedSignal::window`] per row | one pass over the body for the whole screen |
+//! | drawing the visible rows (recommended) | [`Waveform::window_changes_many`] | one pass, fair per-row cap, O(rows * cap) memory |
+//! | drawing after a cached decode | [`Waveform::decoded_changes_many`], then [`DecodedSignal::window`] per row | one pass over the body, full histories in memory |
 //! | drawing one row | [`Waveform::decoded_changes`] + [`DecodedSignal::window`] | decode once per signal, then binary search |
 //! | cursor readout, tooltips | [`Waveform::value_at`] | one value, no history |
 //! | one-off query over a huge signal | [`Waveform::changes_in_window`] | re-reads the body, `O(window)` memory |
 //! | export / tests / small dumps | [`Waveform::all_changes`] | converts the history on every call |
+//!
+//! The drawing path for large dumps is [`Waveform::window_changes_many`]: one
+//! streamed pass for all visible rows, a fair per-row cap and no full-history
+//! decode, so a dense clock cannot materialise gigabytes (FST seeks through its
+//! time table; VCD scans forward to the window start, which is the format
+//! limitation, not an extra decode).  Its `before` field is the value carried
+//! into the left edge when the cache already holds the signal.
 //!
 //! A renderer must not call [`Waveform::changes_in_window`] per frame: it
 //! re-streams the file on every call (that is what made the old per-row SVG
@@ -215,6 +223,23 @@ impl TimeRange {
     pub fn span(&self) -> Time {
         self.end.saturating_sub(self.start)
     }
+}
+
+/// The bounded, windowed change list of one signal (see
+/// [Waveform::window_changes_many]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowedSignal {
+    /// Changes with start <= time <= end, in time order and capped at the
+    /// requested per-signal limit (delta-cycle duplicates preserved).
+    pub changes: Vec<Change>,
+    /// Value in effect at or just before the window start, when the backend can
+    /// provide it without extra decoding (the signal is already in the
+    /// materialised cache).  None on a cold cache; the renderer should then draw
+    /// from the first in-window change and document the approximation.
+    pub before: Option<WaveValue>,
+    /// True when the per-signal cap stopped the collection (the signal has more
+    /// changes in the window than were returned).
+    pub capped: bool,
 }
 
 /// An opened waveform file.
@@ -794,6 +819,124 @@ impl Waveform {
         Ok(changes)
     }
 
+    /// Bounded window query for drawing: the last value changes of several
+    /// signals inside a time window, with a FAIR per-signal cap and a single
+    /// pass over the body.
+    ///
+    /// This is the rendering path for large dumps: unlike
+    /// [Waveform::decoded_changes_many] it never materialises the full history
+    /// of a row, and unlike a global max_changes query the cap is per signal, so
+    /// one dense clock cannot starve the other visible rows.  The stream stops
+    /// as soon as every requested signal hit the cap.
+    ///
+    /// * signals: variable indices (duplicates are collapsed, order kept);
+    /// * start/end: inclusive window, None means until the end of the trace;
+    ///   start > end returns empty lists without touching the file;
+    /// * max_changes_per_signal: a cap of 0 returns empty lists with
+    ///   capped = true and no stream pass.
+    ///
+    /// before is best effort: it is only filled when the signal is already in
+    /// the materialised decode cache (no second full-history scan is done to
+    /// obtain it).  FST and VCD are streamed, so memory is O(signals * cap);
+    /// GHW cannot be streamed by wellen and falls back to materialising the
+    /// requested signals (values are the same, memory is not O(window)).
+    ///
+    /// Aliases: a requested alias reports its own index (same semantics as
+    /// [Waveform::stream_changes]); the shared signal is decoded once.
+    pub fn window_changes_many(
+        &self,
+        signals: &[usize],
+        start: Time,
+        end: Option<Time>,
+        max_changes_per_signal: usize,
+    ) -> Result<Vec<WindowedSignal>> {
+        let mut indices: Vec<usize> = Vec::with_capacity(signals.len());
+        let mut refs: Vec<SignalRef> = Vec::with_capacity(signals.len());
+        let mut slot_by_variable: Vec<Option<usize>> = vec![None; self.hierarchy.len()];
+        for &index in signals {
+            let Some(slot) = slot_by_variable.get(index).copied() else {
+                return Err(WaveformError::UnknownSignal(format!("#{index}")));
+            };
+            if slot.is_some() {
+                continue; // duplicate request: keep the first slot
+            }
+            let signal_ref = self.signal_ref(index)?;
+            slot_by_variable[index] = Some(indices.len());
+            indices.push(index);
+            refs.push(signal_ref);
+        }
+        let mut output: Vec<WindowedSignal> = indices
+            .iter()
+            .map(|_| WindowedSignal {
+                changes: Vec::new(),
+                before: None,
+                capped: false,
+            })
+            .collect();
+        if output.is_empty() {
+            return Ok(output);
+        }
+        if max_changes_per_signal == 0 {
+            for row in &mut output {
+                row.capped = true;
+            }
+            return Ok(output);
+        }
+        if let Some(end) = end {
+            if start > end {
+                return Ok(output);
+            }
+        }
+
+        let query = ValueQuery {
+            signals: Some(indices),
+            start,
+            end,
+            max_changes: None,
+        };
+        let mut capped_count = 0usize;
+        self.stream_changes(&query, |variable, time, value| {
+            let Some(slot) = slot_by_variable.get(variable).copied().flatten() else {
+                return true;
+            };
+            let row = &mut output[slot];
+            if row.changes.len() < max_changes_per_signal {
+                row.changes.push((time, value));
+                if row.changes.len() == max_changes_per_signal {
+                    row.capped = true;
+                    capped_count += 1;
+                }
+            }
+            capped_count < output.len()
+        })?;
+
+        // Fill the left-edge value from the already materialised cache only:
+        // never load or decode anything new for it (that would defeat the
+        // bounded streaming path).
+        let needs_before: Vec<(usize, SignalRef)> = output
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                row.changes
+                    .first()
+                    .map(|change| change.0 > start)
+                    .unwrap_or(true)
+            })
+            .map(|(slot, _)| (slot, refs[slot]))
+            .collect();
+        if !needs_before.is_empty() {
+            let guard = self.lock_body();
+            if let Some(body) = guard.as_ref() {
+                for (slot, signal_ref) in needs_before {
+                    if let Some(value) = body.cached_value_at(signal_ref, start) {
+                        output[slot].before = Some(value);
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+
     /// GHW fallback: materialise the requested signals one at a time.
     fn stream_changes_materialised<F>(&self, query: &ValueQuery, mut visit: F) -> Result<()>
     where
@@ -1115,6 +1258,21 @@ impl EagerBody {
             }
         }
         stats
+    }
+
+    /// Last value at or before `time` from the already cached data, without
+    /// loading/decoding anything (used for the best-effort WindowedSignal.before).
+    fn cached_value_at(&self, signal: SignalRef, time: Time) -> Option<WaveValue> {
+        let cached = self.signals.get(&signal)?;
+        if let Some(decoded) = &cached.decoded {
+            return decoded.value_at(time).cloned();
+        }
+        let time_index = self.time_index_at_or_before(time)?;
+        let offset = cached.packed.get_offset(time_index)?;
+        let element = offset.elements.saturating_sub(1);
+        Some(WaveValue::from_wellen(
+            cached.packed.get_value_at(&offset, element),
+        ))
     }
 
     /// Index of the last change at or before `time`.

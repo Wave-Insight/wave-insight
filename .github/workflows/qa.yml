@@ -67,7 +67,7 @@ jobs:
 
     - uses: actions/setup-node@v4
       with:
-        node-version: 20
+        node-version: 22
 
     #ubuntu-latest ships google-chrome; qa/run.mjs finds it on PATH or via CHROME
     #(a missing browser is a harness failure, exit 2, and the log says so).

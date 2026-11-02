@@ -51,6 +51,16 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+`cargo clippy --workspace` (and anything else that compiles the `app`
+crate) needs `front-end/dist` to exist: `tauri::generate_context!` validates
+the configured `frontendDist` path at compile time. A clean checkout has no
+`dist` (it is gitignored), so CI creates a placeholder first; locally either
+run `trunk build` once in `front-end/` or create the same placeholder:
+
+```bash
+mkdir -p front-end/dist && printf '<!doctype html><title>placeholder</title>\n' > front-end/dist/index.html
+```
+
 ### benchmarks
 
 The waveform and language-server hot paths have criterion benchmarks under
