@@ -27,13 +27,13 @@
 //!
 //! Everything except the IPC calls is plain Rust and host tested.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use serde::Deserialize;
 use wave_insight_lib::waveform::{BitValue, Bits, Change, ShowType, WaveValue};
 
-use crate::state::types::Time;
+use crate::state::types::{Time, View};
 
 use crate::nav::tree::{ModuleRow, SignalRow};
 use crate::nav::SidebarTree;
@@ -397,65 +397,93 @@ pub fn open_decision(bytes: u64) -> OpenDecision {
 }
 
 /// Parse one value the backend rendered to text back into the bit pattern the
-/// renderer draws. The MVP asks for hex (`VALUE_FORMAT`); the other digit
-/// radices are accepted too because they cost three lines and make the parser
-/// usable by a future setting. Unparsable values (real/string/event rows) give
-/// `None` and are not added as rows by the app.
-pub fn parse_value(text: &str, width: usize) -> Option<WaveValue> {
+/// renderer draws.
+///
+/// The backend renders with the row's [`ShowType`] (see src-tauri's
+/// `render_value`): hex/oct/bin are digit strings (x/z kept), uint/sint are
+/// decimal text ("X" when the value has unknown bits), ascii is the raw
+/// characters of the bytes. The renderer draws bit patterns, so every form is
+/// parsed back into [`WaveValue::Bits`] at the signal width; a leading "'h2a"
+/// style prefix (the ruler/find box form) is accepted too.
+pub fn parse_rendered(text: &str, width: usize, show: &ShowType) -> Option<WaveValue> {
     let width = width.max(1);
     let text = text.trim();
     if text.is_empty() {
         return None;
     }
-    // a 1 bit value carries no radix prefix
-    if text == "0" || text == "1" {
-        return Some(WaveValue::Bits(Bits::new_msb_first(vec![if text == "1" {
-            BitValue::One
-        } else {
-            BitValue::Zero
-        }])));
+    if let Some(rest) = text.strip_prefix('\'') {
+        return parse_prefixed(rest, width);
     }
-    let (radix, digits) = if let Some(rest) = text.strip_prefix('\'') {
-        let (radix, digits) = rest.split_at(1);
-        match radix {
-            "h" | "H" => (16u32, digits),
-            "o" | "O" => (8, digits),
-            "b" | "B" => (2, digits),
-            // unsigned decimal is positional, not a digit-group radix
-            "d" | "D" => {
-                return parse_decimal(digits, width).map(WaveValue::Bits);
+    match show {
+        ShowType::Hex => parse_digits(text, 16, width).map(WaveValue::Bits),
+        ShowType::Bin => parse_digits(text, 2, width).map(WaveValue::Bits),
+        ShowType::Oct => parse_digits(text, 8, width).map(WaveValue::Bits),
+        ShowType::UInt => {
+            if text.eq_ignore_ascii_case("x") {
+                return Some(all_x(width));
             }
-            // a signed/ascii/unknown prefix is not a bit pattern the MVP draws
-            _ => return None,
+            parse_decimal(text, width).map(WaveValue::Bits)
         }
-    } else if text
-        .chars()
-        .all(|c| matches!(c, '0' | '1' | 'x' | 'X' | 'z' | 'Z'))
-    {
-        // a bare binary string (1 bit values of a bus rendered as bits)
-        (2u32, text)
-    } else {
-        return None;
-    };
-    let bits = parse_digits(digits, radix, width)?;
-    Some(WaveValue::Bits(bits))
+        ShowType::SInt => {
+            if text.eq_ignore_ascii_case("x") {
+                return Some(all_x(width));
+            }
+            let signed: i128 = text.parse().ok()?;
+            Some(WaveValue::Bits(bits_from_i128(signed, width)))
+        }
+        ShowType::Ascii => Some(WaveValue::Bits(bits_from_bytes(text.as_bytes(), width))),
+    }
 }
 
-fn parse_decimal(digits: &str, width: usize) -> Option<Bits> {
-    let value: u64 = digits.parse().ok()?;
+/// The lenient entry point: parse with hex digits, accepting the "'h.." form.
+/// Kept for the ruler/find-box style values and for the tests.
+pub fn parse_value(text: &str, width: usize) -> Option<WaveValue> {
+    parse_rendered(text, width, &ShowType::Hex)
+}
+
+fn parse_prefixed(rest: &str, width: usize) -> Option<WaveValue> {
+    let (radix, digits) = rest.split_at(1.min(rest.len()));
+    match radix {
+        "h" | "H" => parse_digits(digits, 16, width).map(WaveValue::Bits),
+        "o" | "O" => parse_digits(digits, 8, width).map(WaveValue::Bits),
+        "b" | "B" => parse_digits(digits, 2, width).map(WaveValue::Bits),
+        "d" | "D" => parse_decimal(digits, width).map(WaveValue::Bits),
+        _ => None,
+    }
+}
+
+fn all_x(width: usize) -> WaveValue {
+    WaveValue::Bits(Bits::new_msb_first(vec![BitValue::X; width]))
+}
+
+/// A two's complement (signed) value as the raw `width` bits the renderer draws.
+fn bits_from_i128(value: i128, width: usize) -> Bits {
+    let mask: u128 = if width >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << width) - 1
+    };
+    let raw = (value as u128) & mask;
+    bits_from_u128(raw, width)
+}
+
+/// A bit pattern from a raw unsigned value, padded on the left.
+fn bits_from_u128(raw: u128, width: usize) -> Bits {
     let bits: Vec<BitValue> = (0..width)
         .rev()
         .map(|bit| {
-            if bit < 64 && value & (1u64 << bit) != 0 {
+            if bit < 128 && raw & (1u128 << bit) != 0 {
                 BitValue::One
             } else {
                 BitValue::Zero
             }
         })
         .collect();
-    Some(Bits::new_msb_first(bits))
+    Bits::new_msb_first(bits)
 }
 
+/// Parse a radix digit string (x/z digits become four/three/one unknown bits per
+/// digit, as the backend's renderer emits them) into `width` bits.
 fn parse_digits(digits: &str, radix: u32, width: usize) -> Option<Bits> {
     let per_digit = match radix {
         16 => 4usize,
@@ -482,7 +510,7 @@ fn parse_digits(digits: &str, radix: u32, width: usize) -> Option<Bits> {
     if bits.is_empty() {
         return None;
     }
-    // pad or trim to the signal width (the text form drops leading zeros)
+    // the text form drops leading zeros: pad back to the signal width
     if bits.len() < width {
         let mut padded = vec![BitValue::Zero; width - bits.len()];
         padded.extend(bits);
@@ -493,47 +521,237 @@ fn parse_digits(digits: &str, radix: u32, width: usize) -> Option<Bits> {
     Some(Bits::new_msb_first(bits))
 }
 
-/// Turn one IPC window into the renderer's bounded window.
-pub fn row_window(dto: &WindowDto, req: WindowRequest) -> RowWindow {
+/// Unsigned decimal text (uint form) as `width` bits.
+fn parse_decimal(digits: &str, width: usize) -> Option<Bits> {
+    let value: u128 = digits.parse().ok()?;
+    Some(bits_from_u128(value, width))
+}
+
+/// Bytes (ascii form) as the raw `width` bits, padded with zeros on the left.
+fn bits_from_bytes(bytes: &[u8], width: usize) -> Bits {
+    let mut bits: Vec<BitValue> = Vec::with_capacity(bytes.len() * 8);
+    for byte in bytes {
+        for shift in (0..8).rev() {
+            bits.push(if byte & (1 << shift) != 0 {
+                BitValue::One
+            } else {
+                BitValue::Zero
+            });
+        }
+    }
+    if bits.len() < width {
+        let mut padded = vec![BitValue::Zero; width - bits.len()];
+        padded.extend(bits);
+        bits = padded;
+    } else if bits.len() > width {
+        bits = bits.split_off(bits.len() - width);
+    }
+    Bits::new_msb_first(bits)
+}
+
+/// Turn one IPC window into the renderer's bounded window, parsing the rendered
+/// text with the row's display format.
+pub fn row_window_with_width_and_show(
+    dto: &WindowDto,
+    req: WindowRequest,
+    width: usize,
+    show: &ShowType,
+) -> RowWindow {
     let changes: Vec<Change> = dto
         .changes
         .iter()
-        .filter_map(|change| {
-            let value = parse_value(&change.value, req_width(&req))?;
-            Some((change.time, value))
-        })
+        .filter_map(|change| Some((change.time, parse_rendered(&change.value, width, show)?)))
         .collect();
     let before = dto
         .before
         .as_ref()
-        .and_then(|text| parse_value(text, req_width(&req)));
+        .and_then(|text| parse_rendered(text, width, show));
     RowWindow::new(changes, before, req, dto.capped)
 }
 
-/// The row width a window was asked for (the request does not carry it, so the
-/// caller stores it alongside; 32 is the widest common default).
-fn req_width(_req: &WindowRequest) -> usize {
-    32
-}
-
-/// Turn one IPC window into the renderer's bounded window with the row's width.
+/// Hex shorthand kept for the places that have no row format (and the tests).
 pub fn row_window_with_width(dto: &WindowDto, req: WindowRequest, width: usize) -> RowWindow {
-    let changes: Vec<Change> = dto
-        .changes
-        .iter()
-        .filter_map(|change| Some((change.time, parse_value(&change.value, width)?)))
-        .collect();
-    let before = dto
-        .before
-        .as_ref()
-        .and_then(|text| parse_value(text, width));
-    RowWindow::new(changes, before, req, dto.capped)
+    row_window_with_width_and_show(dto, req, width, &ShowType::Hex)
 }
 
-/// The `show` argument for the backend: the row's format when the renderer can
-/// parse it back, hex otherwise (the MVP draws everything as hex).
-pub fn show_argument(_format: &ShowType) -> &'static str {
-    VALUE_FORMAT
+/// The backend's name for one display format ("hex", "uint", ...), the value of
+/// the `show` argument of dump_window/dump_value_at/dump_find.
+pub fn show_name(show: &ShowType) -> &'static str {
+    match show {
+        ShowType::Hex => "hex",
+        ShowType::UInt => "uint",
+        ShowType::SInt => "sint",
+        ShowType::Oct => "oct",
+        ShowType::Bin => "bin",
+        ShowType::Ascii => "ascii",
+    }
+}
+
+/// The inverse of [`show_name`] (the backend also accepts the aliases dec/signed).
+pub fn show_type_named(name: &str) -> Option<ShowType> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "hex" | "" => Some(ShowType::Hex),
+        "uint" | "dec" | "unsigned" => Some(ShowType::UInt),
+        "sint" | "signed" => Some(ShowType::SInt),
+        "oct" => Some(ShowType::Oct),
+        "bin" => Some(ShowType::Bin),
+        "ascii" | "asc" => Some(ShowType::Ascii),
+        _ => None,
+    }
+}
+
+/// Where one frame's native window request goes: the visible rows grouped by
+/// display format, because dump_window renders the text with ONE show type.
+///
+/// The group key is the backend argument, so the fetch and the parse agree: one
+/// request per format that is actually on screen (normally one or two).
+pub fn window_groups(
+    rows: impl IntoIterator<Item = usize>,
+    show_of: impl Fn(usize) -> ShowType,
+) -> Vec<(&'static str, Vec<usize>)> {
+    let mut groups: Vec<(&'static str, Vec<usize>)> = Vec::new();
+    for row in rows {
+        let name = show_name(&show_of(row));
+        match groups.iter_mut().find(|(group, _)| *group == name) {
+            Some((_, members)) => members.push(row),
+            None => groups.push((name, vec![row])),
+        }
+    }
+    groups
+}
+
+/// The JSON name of a [`ShowType`]: the `dump_find` command takes `show: ShowType`
+/// (serde unit-variant names), unlike dump_window/dump_value_at which take a
+/// plain string ("hex", ...).
+pub fn show_serde_name(show: &ShowType) -> &'static str {
+    match show {
+        ShowType::Hex => "Hex",
+        ShowType::UInt => "UInt",
+        ShowType::SInt => "SInt",
+        ShowType::Oct => "Oct",
+        ShowType::Bin => "Bin",
+        ShowType::Ascii => "Ascii",
+    }
+}
+
+/// Translate the ruler/find box's Verdi-style value ("'h2a", "'d42", "'b101") to
+/// the native search's query form (0x/0b/0o digit strings, plain text otherwise).
+///
+/// dump_find compares its query against the rendered text, so a radix prefix must
+/// be expressed the way the backend parses it; an unprefixed query is passed
+/// through unchanged (plain text, case-insensitive).
+pub fn find_query(query: &str) -> String {
+    let trimmed = query.trim();
+    let Some(rest) = trimmed.strip_prefix('\'') else {
+        return trimmed.to_string();
+    };
+    let Some(radix) = rest.chars().next() else {
+        return trimmed.to_string();
+    };
+    let digits = &rest[1..];
+    if digits.is_empty() {
+        return trimmed.to_string();
+    }
+    match radix {
+        'h' | 'H' => format!("0x{digits}"),
+        'b' | 'B' => format!("0b{digits}"),
+        'o' | 'O' => format!("0o{digits}"),
+        'd' | 'D' => match digits.parse::<u128>() {
+            Ok(value) => format!("0x{value:x}"),
+            Err(_) => trimmed.to_string(),
+        },
+        _ => trimmed.to_string(),
+    }
+}
+
+/// One find result the native backend reports (dump_find).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct FindHitDto {
+    pub time: u64,
+    pub value: String,
+}
+
+/// The status line of a native find hit, parallel to the wasm path's wording.
+pub fn find_status(row_name: &str, query: &str, hit: &FindHitDto) -> String {
+    format!(
+        "found {query} in {row_name} at t={} ({})",
+        hit.time, hit.value
+    )
+}
+
+/// The status line of a native find miss (the wasm path has "no match for ...").
+pub fn find_missing_status(row_name: &str, query: &str, backward: bool) -> String {
+    let when = if backward {
+        "before cursor 1"
+    } else {
+        "after cursor 1"
+    };
+    format!("no match for \"{query}\" in {row_name} {when}")
+}
+
+/// The view that brings `time` into the left quarter of the window (the same
+/// jump the wasm find performs).
+pub fn view_for_time(mut view: View, width: f64, time: i64) -> View {
+    let span = view.time_span(width);
+    view.x_axis = (time as f64 - span * 0.25).max(0.0);
+    view
+}
+
+/// A small per-row cache of rendered values at a cursor time: `(row, time)` ->
+/// text, with an insertion-order eviction so a long session cannot grow it.
+#[derive(Debug, Default)]
+pub struct CursorCache {
+    entries: HashMap<(usize, i32), String>,
+    order: VecDeque<(usize, i32)>,
+    cap: usize,
+}
+
+impl CursorCache {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            cap: 512,
+        }
+    }
+
+    /// The cached text for one row at the given cursor time.
+    pub fn get(&self, row: usize, time: i32) -> Option<&str> {
+        self.entries.get(&(row, time)).map(String::as_str)
+    }
+
+    /// Whether one row/time pair is already cached.
+    pub fn contains(&self, row: usize, time: i32) -> bool {
+        self.entries.contains_key(&(row, time))
+    }
+
+    /// Remember one rendered value; the oldest entry goes when the cap is hit.
+    pub fn insert(&mut self, row: usize, time: i32, text: String) {
+        let key = (row, time);
+        if self.entries.insert(key, text).is_none() {
+            self.order.push_back(key);
+        }
+        while self.entries.len() > self.cap.max(1) {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+    }
+
+    /// Cached entries (for tests and the debug hook).
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
 }
 
 #[cfg(feature = "tauri")]
@@ -623,6 +841,32 @@ mod ipc {
         call("dump_value_at", &args).await
     }
 
+    /// Find a value in one signal, rendered with `show`: the next (or previous,
+    /// when `backwards`) change at/after `from` whose text matches `query`.
+    ///
+    /// Command `dump_find { id, signal, query, from, backwards, show }`; the
+    /// backend answers `{ time, value }` or null.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn find(
+        id: u64,
+        signal: usize,
+        query: &str,
+        from: u64,
+        backwards: bool,
+        show: &str,
+    ) -> Result<Option<FindHitDto>, String> {
+        let args = serde_wasm_bindgen::to_value(&serde_json::json!({
+            "id": id,
+            "signal": signal,
+            "query": query,
+            "from": from,
+            "backwards": backwards,
+            "show": show,
+        }))
+        .map_err(|error| error.to_string())?;
+        call("dump_find", &args).await
+    }
+
     /// Close one native dump (frees the mapping).
     pub async fn close(id: u64) -> Result<(), String> {
         let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "id": id }))
@@ -687,7 +931,9 @@ mod ipc {
 
 #[allow(unused_imports)]
 #[cfg(feature = "tauri")]
-pub use ipc::{close, hierarchy, open, open_parts, try_open, try_open_parts, value_at, window};
+pub use ipc::{
+    close, find, hierarchy, open, open_parts, try_open, try_open_parts, value_at, window,
+};
 
 #[cfg(not(feature = "tauri"))]
 mod browser {
@@ -723,6 +969,16 @@ mod browser {
     ) -> Result<Option<String>, String> {
         Err("native dumps need the desktop build".to_string())
     }
+    pub async fn find(
+        _id: u64,
+        _signal: usize,
+        _query: &str,
+        _from: u64,
+        _backwards: bool,
+        _show: &str,
+    ) -> Result<Option<FindHitDto>, String> {
+        Err("native dumps need the desktop build".to_string())
+    }
     pub async fn close(_id: u64) -> Result<(), String> {
         Ok(())
     }
@@ -741,7 +997,9 @@ mod browser {
 // call sites compile in both builds, and nothing calls them here
 #[cfg(not(feature = "tauri"))]
 #[allow(unused_imports)]
-pub use browser::{close, hierarchy, open, open_parts, try_open, try_open_parts, value_at, window};
+pub use browser::{
+    close, find, hierarchy, open, open_parts, try_open, try_open_parts, value_at, window,
+};
 
 #[cfg(test)]
 mod tests {
@@ -938,9 +1196,207 @@ mod tests {
         );
     }
 
+    fn bits_value(width: usize, raw: u128) -> WaveValue {
+        let bits: Vec<BitValue> = (0..width)
+            .rev()
+            .map(|bit| {
+                if bit < 128 && raw & (1u128 << bit) != 0 {
+                    BitValue::One
+                } else {
+                    BitValue::Zero
+                }
+            })
+            .collect();
+        WaveValue::Bits(Bits::new_msb_first(bits))
+    }
+
     #[test]
-    fn the_value_format_is_hex_for_the_mvp() {
-        assert_eq!(show_argument(&ShowType::Hex), "hex");
-        assert_eq!(show_argument(&ShowType::Bin), "hex");
+    fn each_show_type_round_trips_through_the_rendered_text() {
+        // the backend renders with the row's ShowType; the renderer parses that
+        // text back into the pattern it draws, so the drawn value must not change
+        for (width, raw) in [
+            (1usize, 1u128),
+            (8, 0x1f),
+            (12, 0x117),
+            (16, 0xabcd),
+            (32, 0xdead_beef),
+        ] {
+            let value = bits_value(width, raw);
+            let expected = value.as_bits().expect("bits").bit_string();
+            for show in [
+                ShowType::Hex,
+                ShowType::Bin,
+                ShowType::Oct,
+                ShowType::UInt,
+                ShowType::SInt,
+            ] {
+                let text = value
+                    .render(width, &show)
+                    .unwrap_or_else(|| panic!("{show:?} renders {width} bits"));
+                let parsed = parse_rendered(&text, width, &show)
+                    .unwrap_or_else(|| panic!("{show:?} parses {text:?}"));
+                assert_eq!(
+                    parsed.as_bits().expect("bits").bit_string(),
+                    expected,
+                    "{show:?} text {text:?} lost bits"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_ascii_and_unknown_forms_parse_sensibly() {
+        // ascii renders the bytes; 2 bytes = 16 bits
+        let value = bits_value(16, 0x4142);
+        let text = value.render(16, &ShowType::Ascii).expect("ascii");
+        assert_eq!(text, "AB");
+        let parsed = parse_rendered(&text, 16, &ShowType::Ascii).expect("ascii parses");
+        assert_eq!(
+            parsed.as_bits().expect("bits").bit_string(),
+            "0100000101000010"
+        );
+        // uint/sint render "X" when a bit is unknown: every bit becomes unknown
+        let mixed_x = WaveValue::Bits(Bits::new_msb_first(vec![
+            BitValue::One,
+            BitValue::X,
+            BitValue::Zero,
+            BitValue::Z,
+        ]));
+        for show in [ShowType::UInt, ShowType::SInt] {
+            let text = mixed_x.render(4, &show).expect("renders");
+            assert_eq!(text, "X");
+            let parsed = parse_rendered(&text, 4, &show).expect("parses");
+            assert_eq!(parsed.as_bits().expect("bits").bit_string(), "xxxx");
+        }
+        // signed decimal keeps the two's complement pattern
+        let signed = parse_rendered("-1", 8, &ShowType::SInt).expect("sint");
+        assert_eq!(signed.as_bits().expect("bits").bit_string(), "11111111");
+        // a leading "'h2a" style value is accepted whatever the row format is
+        let prefixed = parse_rendered("'h2a", 8, &ShowType::Bin).expect("prefix");
+        assert_eq!(prefixed.as_bits().expect("bits").bit_string(), "00101010");
+        // hexadecimal text with unknown digits keeps them
+        let unknown = parse_rendered("x", 4, &ShowType::Hex).expect("hex x");
+        assert_eq!(unknown.as_bits().expect("bits").bit_string(), "xxxx");
+        // an empty/garbage value is not a value
+        assert!(parse_rendered("", 8, &ShowType::Hex).is_none());
+        assert!(parse_rendered("event", 8, &ShowType::Hex).is_none());
+    }
+
+    #[test]
+    fn the_show_name_maps_both_ways() {
+        let all = [
+            (ShowType::Hex, "hex"),
+            (ShowType::UInt, "uint"),
+            (ShowType::SInt, "sint"),
+            (ShowType::Oct, "oct"),
+            (ShowType::Bin, "bin"),
+            (ShowType::Ascii, "ascii"),
+        ];
+        for (show, name) in &all {
+            assert_eq!(show_name(show), *name);
+            assert_eq!(show_type_named(name), Some(show.clone()));
+        }
+        // the backend aliases
+        assert_eq!(show_type_named("dec"), Some(ShowType::UInt));
+        assert_eq!(show_type_named("signed"), Some(ShowType::SInt));
+        assert_eq!(show_type_named("asc"), Some(ShowType::Ascii));
+        assert_eq!(show_type_named("nonsense"), None);
+        // the backend's accepted names are exactly the ones the groups produce
+        for (show, name) in &all {
+            assert!(show_type_named(name).is_some(), "{show:?}");
+        }
+    }
+
+    #[test]
+    fn visible_rows_are_grouped_by_display_format() {
+        // a row's format is the group key: dump_window renders ONE show type
+        let shows = [ShowType::Hex, ShowType::Bin, ShowType::Hex, ShowType::Ascii];
+        let groups = window_groups(0..4, |row| shows[row].clone());
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].0, "hex");
+        assert_eq!(groups[0].1, vec![0, 2]);
+        assert_eq!(groups[1].0, "bin");
+        assert_eq!(groups[1].1, vec![1]);
+        assert_eq!(groups[2].0, "ascii");
+        assert_eq!(groups[2].1, vec![3]);
+        // every row lands in exactly one group
+        let total: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
+        assert_eq!(total, 4);
+        assert!(window_groups(0..0, |_| ShowType::Hex).is_empty());
+    }
+
+    #[test]
+    fn the_cursor_cache_holds_rendered_values_and_evicts_old_ones() {
+        let mut cache = CursorCache::new();
+        assert!(cache.get(3, 100).is_none());
+        assert!(!cache.contains(3, 100));
+        cache.insert(3, 100, "'h1".to_string());
+        assert_eq!(cache.get(3, 100), Some("'h1"));
+        // a different time is a different key
+        assert!(!cache.contains(3, 101));
+        cache.insert(3, 101, "'h2".to_string());
+        assert_eq!(cache.len(), 2);
+        // re-inserting the same key replaces the text, not the count
+        cache.insert(3, 100, "'h3".to_string());
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get(3, 100), Some("'h3"));
+        // the cap keeps the cache small: the oldest entry goes first
+        for row in 0..600 {
+            cache.insert(row, 5, "0".to_string());
+        }
+        assert!(cache.len() <= 512);
+        assert_eq!(cache.get(3, 100), None);
+        cache.clear();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn the_find_query_translates_the_ruler_forms() {
+        assert_eq!(find_query("'h2a"), "0x2a");
+        assert_eq!(find_query("'H2A"), "0x2A");
+        assert_eq!(find_query("'b1010"), "0b1010");
+        assert_eq!(find_query("'o17"), "0o17");
+        assert_eq!(find_query("'d42"), "0x2a");
+        // an unprefixed query is plain text and passes through
+        assert_eq!(find_query("  2a  "), "2a");
+        assert_eq!(find_query("event"), "event");
+        // an unparsable/empty form is left alone (the backend reports it)
+        assert_eq!(find_query("'dnot-a-number"), "'dnot-a-number");
+        assert_eq!(find_query("'"), "'");
+        assert_eq!(find_query("'h"), "'h");
+    }
+
+    #[test]
+    fn the_find_show_argument_uses_the_serde_names() {
+        // dump_find takes show: ShowType (unit variant names), NOT "hex"
+        assert_eq!(show_serde_name(&ShowType::Hex), "Hex");
+        assert_eq!(show_serde_name(&ShowType::UInt), "UInt");
+        assert_eq!(show_serde_name(&ShowType::SInt), "SInt");
+        assert_eq!(show_serde_name(&ShowType::Oct), "Oct");
+        assert_eq!(show_serde_name(&ShowType::Bin), "Bin");
+        assert_eq!(show_serde_name(&ShowType::Ascii), "Ascii");
+        // and they differ from the string-argument names on purpose
+        assert_ne!(show_serde_name(&ShowType::Hex), show_name(&ShowType::Hex));
+    }
+
+    #[test]
+    fn native_find_results_map_to_status_lines_and_a_view() {
+        let hit = FindHitDto {
+            time: 420,
+            value: "2a".to_string(),
+        };
+        let message = find_status("top.pc", "'h2a", &hit);
+        assert!(message.contains("found 'h2a in top.pc"));
+        assert!(message.contains("t=420"));
+        assert!(message.contains("(2a)"));
+        let miss = find_missing_status("top.pc", "'h2a", true);
+        assert!(miss.contains("no match"));
+        assert!(miss.contains("before cursor 1"));
+        assert!(find_missing_status("top.pc", "'h2a", false).contains("after cursor 1"));
+        // the found time lands a quarter into the window, like the wasm find
+        let view = view_for_time(View::new(0.0, 1.0), 800.0, 420);
+        assert!((view.x_axis - (420.0 - 200.0)).abs() < 1e-6);
+        // and never pans before time zero
+        assert_eq!(view_for_time(View::new(5.0, 1.0), 800.0, 3).x_axis, 0.0);
     }
 }

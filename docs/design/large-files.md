@@ -128,7 +128,7 @@ Implementation result (Wave 14), the foundation:
   honest.
 - **Desktop: native dump registry + IPC queries.** `src-tauri/src/dumps.rs`
   keeps a registry of natively opened dumps (monotonic ids, 32-dump cap) and
-  answers five commands over Tauri IPC (plus the dialog-parts variant of the
+  answers six commands over Tauri IPC (plus the dialog-parts variant of the
   open):
   `open_dump(path) -> DumpSummary` (absolute path - drag-and-drop and launch
   arguments; format/time range/signal+scope counts, retained/mapped bytes, open
@@ -140,13 +140,19 @@ Implementation result (Wave 14), the foundation:
   HierarchyPage` (pre-order flattened scope/signal rows, pages of at most 4096),
   `dump_window(id, signals, start, end, maxChangesPerSignal?, show?) ->
   [WindowDto]` (values already rendered to text, per-signal cap, `before`
-  context), `dump_value_at(id, signal, time, show?) -> String | null` and
-  `close_dump(id)`. The file bytes never cross IPC; the webview receives only
-  rendered windows. `close_dump` drops the mapping, and `open_dump` falls back
+  context), `dump_value_at(id, signal, time, show?) -> String | null`,
+  `dump_find(id, signal, query, from, backwards, show) -> { time, value } |
+  null` (a streaming value search: one pass with early exit, rendered-text
+  matching, `0x`/`0b`/`0o` radix prefixes, case-insensitive, x/z as text; a
+  backwards search keeps the last match and the worst case is a full trace scan,
+  not cancellable) and `close_dump(id)`. The file bytes never cross IPC; the
+  webview receives only rendered windows. `close_dump` drops the mapping, and `open_dump` falls back
   to the read path when a map cannot be created. Measured: a 4096-row hierarchy
   page 1.82 ms; 10 dense signals over the full trace 139 ms (debug build); first
-  `dump_value_at` 690 ms, warm 175 ms. Five native tests cover the registry and
-  query round-trip. On Windows the mapping keeps the file handle alive for the
+  `dump_value_at` 690 ms, warm 175 ms; `dump_find` on the real 97.5 MB FST
+  (debug) 98.8 ms forward near the start and 198.1 ms near the end, 14/46/97.5 ms
+  on the dense FST. Native tests cover the registry, the query round-trip, the
+  find semantics (directions and radix queries) and the dialog-parts resolver. On Windows the mapping keeps the file handle alive for the
   life of the open dump, so deleting/renaming/replacing it while open can fail
   until `close_dump`.
 - **CI: the native backend is tested.** A new `test-app` job runs the backend
@@ -160,34 +166,37 @@ Implementation result (Wave 14), the foundation:
   desktop build a dump **larger than 64 MiB** (`NATIVE_THRESHOLD_BYTES`) opens
   through the native backend - drag-and-drop passes the absolute path to
   `open_dump`, the in-app dialog its navigation parts to `open_dump_parts` - and
-  is drawn read-only from bounded `dump_window` queries over IPC
-  (`dump_value_at` is wired in the protocol; the MVP does not yet use it for the
-  ruler); smaller files and every native error fall back to the wasm path, so
-  normal dumps behave exactly as before. The mode is visible: a
+  is drawn read-only from bounded `dump_window` queries over IPC; smaller files
+  and every native error fall back to the wasm path, so normal dumps behave
+  exactly as before. Parity features landed in Wave 16: the ruler find box
+  (Enter/Shift+Enter) searches the native dump through `dump_find`, moves cursor
+  1 to the match and reports `found <query> in <row> at t=<time> (<value>)` (or a
+  no-match status); the pane fetches `dump_window` once per on-screen display
+  format (hex/uint/sint/oct/bin/ascii), so row format settings change the drawn
+  values and the value column; and a cursor outside the fetched window gets its
+  value from batched, cached `dump_value_at` calls (at most 64 requests per
+  redraw, a 512-entry (row, time) cache) instead of a per-row-per-frame call. The mode is visible: a
   `.dock-tab.native-badge` chip ("native (read-only, mmap)", with a
   path/size/signals/scopes/mapped tooltip) and the status line
   `waveform loaded (native read-only, mmap) — <FMT> <N> MB, range <start>..<end>
   in <ms> ms, mapped <M> MB, <signals> signals in <scopes> scopes`. The sidebar,
   rows and canvas reuse the existing components/classes, and single add and bulk
-  add work against the native hierarchy. MVP limits, recorded deliberately: one
-  native dump at a time (adopting another closes the previous), no split or
-  multi-dump tabs in native mode, the hierarchy is fetched eagerly (paged in
-  4096-row requests, capped at 400,000 rows), the backend sends hex values (the
-  renderer parses them back to bits, so row display settings still work), and
-  find-value/export are refused with an actionable message pointing at the wasm
-  path (files up to 64 MB).
-- **Next: native parity and the browser path.** The follow-up wave wires
-  `dump_value_at` (the ruler's cursor values), native find/export, split and
-  multi-dump support, and lazy hierarchy loading instead of the eager paged
-  fetch. The browser still has no mmap, so its analogue is the worker + OPFS lazy
-  byte source described in section 4.
+  add work against the native hierarchy. Remaining native limits, recorded
+  deliberately: one native dump at a time (adopting another closes the previous),
+  no split or multi-dump tabs in native mode, the hierarchy is fetched eagerly
+  (paged in 4096-row requests, capped at 400,000 rows), and export is refused
+  with an actionable message pointing at the wasm path (files up to 64 MB).
+- **Next: the rest of native parity and the browser path.** Export, split and
+  multi-dump support, and lazy hierarchy loading instead of the eager paged fetch
+  are the remaining desktop gaps. The browser still has no mmap, so its analogue
+  is the worker + OPFS lazy byte source described in section 4.
 - **Runtime status.** The desktop path is compile-verified in this repository
   (there is no desktop GUI here): real IPC round trips, drag-and-drop of a large
   file, the in-app dialog's part resolution against its base directory (host
   tested for `open_dump_parts`, but the full GUI path is unverified), the mmap
-  open/lock/close lifecycle, `dump_window` latency and zoom smoothness on huge
-  dumps must be validated on a desktop machine (the release checklist for the
-  desktop build).
+  open/lock/close lifecycle, `dump_window`/`dump_find` latency and zoom smoothness
+  on huge dumps must be validated on a desktop machine (the release checklist for
+  the desktop build); the find timings above are debug-build measurements.
 
 ## 4. Browser: worker + lazy byte source (mmap-like)
 

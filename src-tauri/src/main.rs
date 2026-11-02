@@ -18,7 +18,8 @@ use tauri::ipc::Response;
 
 mod dumps;
 
-use dumps::{DumpRegistry, DumpSummary, HierarchyPage, WindowDto};
+use dumps::{DumpRegistry, DumpSummary, FoundValue, HierarchyPage, WindowDto};
+use wave_insight_lib::waveform::ShowType;
 
 /// One row of the directory listing the open-file dialog shows.
 #[derive(serde::Serialize)]
@@ -262,6 +263,27 @@ fn dump_value_at(
     registry.value_at(id, signal, time, show.as_deref())
 }
 
+/// Find the first change of a signal whose rendered value matches a query.
+///
+/// `from` is a time cursor: forwards starts strictly after it (0 includes the
+/// start of the trace), backwards finds the last match strictly before it
+/// (u64::MAX means "from the end"). The matching rules are documented on
+/// DumpRegistry::find; the search streams the signal, so memory stays O(1) and
+/// it stops at the first match (worst case: a full trace scan when nothing
+/// matches or for a backwards search).
+#[tauri::command]
+fn dump_find(
+    registry: tauri::State<'_, DumpRegistry>,
+    id: u64,
+    signal: usize,
+    query: String,
+    from: u64,
+    backwards: bool,
+    show: ShowType,
+) -> Result<Option<FoundValue>, String> {
+    registry.find(id, signal, &query, from, backwards, &show)
+}
+
 /// Close one native dump and free its mapping.
 #[tauri::command]
 fn close_dump(registry: tauri::State<'_, DumpRegistry>, id: u64) -> Result<(), String> {
@@ -282,6 +304,7 @@ fn main() {
             dump_hierarchy,
             dump_window,
             dump_value_at,
+            dump_find,
             close_dump
         ])
         .run(tauri::generate_context!())

@@ -12,6 +12,9 @@
 
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::JsCast;
+
+#[cfg(feature = "tauri")]
+use wasm_bindgen_futures::spawn_local;
 use wave_insight_lib::waveform::TimeRange;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
@@ -64,6 +67,14 @@ pub enum Msg {
     /// The ruler box was submitted: an integer is a time to go to, anything
     /// else is a value to find. `backward` is the Shift+Enter direction.
     Goto { text: String, backward: bool },
+    /// A native value search answered: (hit or error, row name, query, backward).
+    #[cfg(feature = "tauri")]
+    RemoteFind(
+        Result<Option<crate::remote::FindHitDto>, String>,
+        String,
+        String,
+        bool,
+    ),
 }
 
 #[derive(Debug, Properties, PartialEq, Clone)]
@@ -72,6 +83,10 @@ pub struct TimeProps {
     pub store: Store,
     /// Width of the wave surface, measured by the pane.
     pub width: f64,
+    /// The native dump being drawn read-only (desktop build), when one is open:
+    /// the value box then searches it over IPC instead of the wasm store path.
+    #[prop_or_default]
+    pub remote: Option<crate::remote::RemoteSession>,
 }
 
 pub struct Time {
@@ -81,6 +96,8 @@ pub struct Time {
     width: f64,
     store: Store,
     time_range: Option<TimeRange>,
+    /// The native dump the value box searches (desktop build only).
+    remote: Option<crate::remote::RemoteSession>,
     drag: Option<Drag>,
     /// window listeners: the pan must follow the pointer outside the 30 px ruler
     on_move: Option<Closure<dyn FnMut(MouseEvent)>>,
@@ -107,6 +124,7 @@ impl Component for Time {
             width: ctx.props().width,
             store,
             time_range,
+            remote: ctx.props().remote.clone(),
             drag: None,
             on_move: None,
             on_up: None,
@@ -117,8 +135,43 @@ impl Component for Time {
         this
     }
 
-    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+    #[allow(unused_variables)] // ctx is used by the tauri-gated native find arm
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
+            #[cfg(feature = "tauri")]
+            Msg::RemoteFind(result, name, query, backward) => {
+                match result {
+                    Ok(Some(hit)) => {
+                        let mut cursors = self.viewport.cursors;
+                        cursors.one = Some(hit.time.min(i32::MAX as u64) as i32);
+                        self.store.dispatch(state::Action::CursorsChanged(cursors));
+                        // bring the match into the left quarter, like the wasm find
+                        let view = crate::remote::view_for_time(
+                            self.viewport.view,
+                            self.width,
+                            hit.time as i64,
+                        );
+                        self.commit_view(view);
+                        self.store
+                            .dispatch(state::Action::Status(state::Status::info(
+                                crate::remote::find_status(&name, &query, &hit),
+                            )));
+                    }
+                    Ok(None) => {
+                        self.store
+                            .dispatch(state::Action::Status(state::Status::error(
+                                crate::remote::find_missing_status(&name, &query, backward),
+                            )));
+                    }
+                    Err(error) => {
+                        self.store
+                            .dispatch(state::Action::Status(state::Status::error(format!(
+                                "native dump: value search failed ({error})"
+                            ))));
+                    }
+                }
+                true
+            }
             Msg::Viewport(viewport) => {
                 self.viewport = viewport;
                 self.rebuild();
@@ -194,6 +247,13 @@ impl Component for Time {
                 // an integer is a time (the old goto), anything else is a value
                 // to find in the selected row (Verdi's find-value box)
                 let Ok(time) = text.trim().parse::<i64>() else {
+                    // the desktop build may be drawing a native dump: search it
+                    // over IPC (same box, same Shift+Enter direction)
+                    #[cfg(feature = "tauri")]
+                    if self.remote.is_some() {
+                        self.find_native(ctx, text, backward);
+                        return false;
+                    }
                     let direction = if backward {
                         super::find::Direction::Previous
                     } else {
@@ -217,13 +277,17 @@ impl Component for Time {
     }
 
     fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
+        let mut changed = false;
         if (self.width - ctx.props().width).abs() > 0.5 {
             self.width = ctx.props().width;
             self.rebuild();
-            true
-        } else {
-            false
+            changed = true;
         }
+        if self.remote != ctx.props().remote {
+            self.remote = ctx.props().remote.clone();
+            changed = true;
+        }
+        changed
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
@@ -346,6 +410,53 @@ impl Component for Time {
 }
 
 impl Time {
+    /// Search the native dump from the ruler box (desktop build).
+    ///
+    /// The backend command is dump_find { id, signal, query, from, backwards,
+    /// show }: one IPC call per Enter, no whole-trace materialisation in wasm.
+    /// The answer comes back as a message ([`Msg::RemoteFind`]) which commits the
+    /// cursor/view and reports the value or the miss.
+    #[cfg(feature = "tauri")]
+    fn find_native(&self, ctx: &Context<Self>, query: String, backward: bool) {
+        let Some(remote) = self.remote.clone() else {
+            return;
+        };
+        let rows = self.store.select(select::rows);
+        let Some(row) = rows.items.iter().find(|row| row.chosen).cloned() else {
+            self.store
+                .dispatch(state::Action::Status(state::Status::error(
+                    "click a wave row first, then type a value to find it",
+                )));
+            return;
+        };
+        let Some(signal) = remote.signal_of_path(&row.path) else {
+            self.store
+                .dispatch(state::Action::Status(state::Status::error(format!(
+                    "{} is not in the native dump",
+                    row.name
+                ))));
+            return;
+        };
+        // dump_find takes show: ShowType (serde names), and its own query form
+        let show = crate::remote::show_serde_name(&row.setting.show_type).to_string();
+        // forwards starts strictly after the cursor (0 = the start of the trace);
+        // backwards starts from the end when there is no cursor
+        let from = match self.viewport.cursors.one {
+            Some(cursor) => cursor.max(0) as u64,
+            None if backward => u64::MAX,
+            None => 0,
+        };
+        let echo = query.clone();
+        let query = crate::remote::find_query(&query);
+        let link = ctx.link().clone();
+        let name = row.name.clone();
+        let id = remote.id();
+        spawn_local(async move {
+            let result = crate::remote::find(id, signal.index, &query, from, backward, &show).await;
+            link.send_message(Msg::RemoteFind(result, name, echo, backward));
+        });
+    }
+
     fn attach_listeners(&mut self, ctx: &Context<Self>) {
         let Some(window) = web_sys::window() else {
             return;

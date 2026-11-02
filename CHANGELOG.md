@@ -10,6 +10,38 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.19.0] - 2026-11-03
+
+### Added
+
+- Native value search over IPC: a new `dump_find(id, signal, query, from,
+  backwards, show) -> { time, value } | null` streams the signal with the
+  library's value filter and stops at the first match (O(1) memory, rendered-text
+  matching with `0x`/`0b`/`0o` radix prefixes, case-insensitive; x/z compare as
+  text). The ruler find box (Enter/Shift+Enter) uses it in the desktop large-file
+  mode, moves cursor 1 to the match and reports
+  `found <query> in <row> at t=<time> (<value>)`, or a no-match status. Measured
+  on the real 97.5 MB FST (debug): forward near the start 98.8 ms, near the end
+  198.1 ms; on the dense FST 14/46/97.5 ms. Worst case is a full trace scan
+  (nothing matches, or a backwards search) and the command is not cancellable;
+  the UI searches one signal at a time.
+- Native rows now fetch `dump_window` per display-format group (hex, uint, sint,
+  oct, bin, ascii), so the row format setting changes both the drawn values and
+  the value column in native mode instead of being limited to hex.
+- Native cursor values outside the fetched window: the value column asks
+  `dump_value_at` in a small batch (at most 64 requests per redraw) and caches
+  the rendered text in a 512-entry (row, time) cache, so a cursor over a large
+  dump shows values without a per-row-per-frame IPC call and without expanding
+  the fetched window.
+
+### Changed
+
+- Desktop large-file mode parity: value search, row display formats and the
+  cursor value column now work on native dumps like on wasm ones. The remaining
+  native limits are export (refused with an actionable message), no split view or
+  multi-dump tabs, the eager paged hierarchy (400,000-row cap) and one native
+  dump at a time.
+
 ## [0.18.1] - 2026-11-03
 
 ### Fixed
@@ -27,7 +59,6 @@ Nothing yet: the next wave lands here.
   cover the parts resolver (joining, ignored empty/separator-bearing components,
   the absolute result, the clean error for empty parts) and a temp-file open
   through the registry.
-
 
 ## [0.18.0] - 2026-11-03
 

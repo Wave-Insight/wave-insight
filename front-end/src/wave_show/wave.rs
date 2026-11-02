@@ -127,17 +127,21 @@ pub enum Msg {
     /// The settings dialog asked for a download: one row, or every row.
     Export((ExportFormat, ExportScope)),
 
-    /// Native windows arrived: (epoch, request, row/slot/width, answers).
+    /// Native windows arrived: (epoch, request, show, row/slot/width, answers).
     #[cfg(feature = "tauri")]
     RemoteWindows(
         u32,
         WindowRequest,
+        String,
         Vec<(usize, usize, usize)>,
         Vec<crate::remote::WindowDto>,
     ),
     /// The native backend refused a query.
     #[cfg(feature = "tauri")]
     RemoteFailed(u32, String),
+    /// One rendered value at the cursor arrived from dump_value_at.
+    #[cfg(feature = "tauri")]
+    RemoteCursorValue(usize, i32, String),
 }
 
 /// Geometry of the wave area, measured from the dom.
@@ -279,6 +283,13 @@ pub struct WaveShow {
     /// One error line per native backend failure, not one per redraw.
     #[cfg(feature = "tauri")]
     remote_error: bool,
+    /// Rendered values at the cursor times, keyed by (row, time): the value
+    /// column shows them when a cursor is outside the fetched window.
+    #[cfg(feature = "tauri")]
+    native_cursor: crate::remote::CursorCache,
+    /// `(row, time)` pairs whose dump_value_at is in flight (no duplicates).
+    #[cfg(feature = "tauri")]
+    native_cursor_inflight: std::collections::HashSet<(usize, i32)>,
     /// The component's link: async IPC answers arrive after the update.
     #[cfg(feature = "tauri")]
     link: Option<yew::html::Scope<Self>>,
@@ -361,6 +372,10 @@ impl Component for WaveShow {
             #[cfg(feature = "tauri")]
             remote_error: false,
             #[cfg(feature = "tauri")]
+            native_cursor: crate::remote::CursorCache::new(),
+            #[cfg(feature = "tauri")]
+            native_cursor_inflight: std::collections::HashSet::new(),
+            #[cfg(feature = "tauri")]
             link: Some(ctx.link().clone()),
         };
         this.sync_rows();
@@ -401,6 +416,8 @@ impl Component for WaveShow {
             self.remote_epoch = self.remote_epoch.wrapping_add(1);
             self.remote_error = false;
             self.signal_things.refresh(None);
+            self.native_cursor.clear();
+            self.native_cursor_inflight.clear();
             self.fitted = false;
             self.fit_committed = false;
             self.scroll_top = 0.0;
@@ -523,7 +540,8 @@ impl Component for WaveShow {
                 }else {
                     html!{}
                 }}
-                <TimeBar store={self.store.clone()} width={metrics.surface_w} />
+                <TimeBar store={self.store.clone()} width={metrics.surface_w}
+                    remote={self.remote_session()} />
                 // The grip for the label column. It has to be visible and to
                 // cover the seam: the old divider was an empty `<div>` with no
                 // css at all, i.e. a zero-height element nobody could hit, so
@@ -558,11 +576,11 @@ impl Component for WaveShow {
                                 let item = &self.signal_things[idx];
                                 // the cursor values live in the label column now,
                                 // not on the canvas next to the cursor line
-                                let value = self.value_text_at(item, self.cursors.one);
+                                let value = self.value_text_at(idx, item, self.cursors.one);
                                 let value2 = self
                                     .cursors
                                     .two
-                                    .map(|_| self.value_text_at(item, self.cursors.two).unwrap_or_default());
+                                    .map(|_| self.value_text_at(idx, item, self.cursors.two).unwrap_or_default());
                                 html!{<SignalName
                                     name={item.name.clone()}
                                     choose={item.choose}
@@ -604,6 +622,13 @@ impl WaveShow {
             Msg::Rows(rows) => {
                 self.rows = rows;
                 self.sync_rows();
+                // the cursor cache is keyed by row index: a reorder or removal
+                // invalidates every entry
+                #[cfg(feature = "tauri")]
+                {
+                    self.native_cursor.clear();
+                    self.native_cursor_inflight.clear();
+                }
                 // the name column, the settings and the canvas all follow the store
                 true
             }
@@ -747,6 +772,14 @@ impl WaveShow {
                     indices,
                     setting: set,
                 });
+                // the native cursor readout is rendered text in the old format:
+                // a format change invalidates it (the row windows hold parsed
+                // bits, so they stay valid and no window refetch is needed)
+                #[cfg(feature = "tauri")]
+                {
+                    self.native_cursor.clear();
+                    self.native_cursor_inflight.clear();
+                }
                 true
             }
             Msg::DeleteSig => {
@@ -1077,9 +1110,16 @@ impl WaveShow {
             // the values to show
             Msg::ValuesReady => true,
             #[cfg(feature = "tauri")]
-            Msg::RemoteWindows(epoch, req, rows, windows) => {
-                self.apply_remote_windows(epoch, req, &rows, windows);
+            Msg::RemoteWindows(epoch, req, show, rows, windows) => {
+                self.apply_remote_windows(epoch, req, &show, &rows, windows);
                 false
+            }
+            #[cfg(feature = "tauri")]
+            Msg::RemoteCursorValue(row, time, text) => {
+                self.native_cursor_inflight.remove(&(row, time));
+                self.native_cursor.insert(row, time, text);
+                // the value column shows the new readout: one extra render
+                true
             }
             #[cfg(feature = "tauri")]
             Msg::RemoteFailed(epoch, error) => {
@@ -1202,10 +1242,19 @@ impl WaveShow {
     ///
     /// `None` when the cursor is not set, the row has no decoded value (it is
     /// outside the decode window) or the value has no textual form (an event).
-    fn value_text_at(&self, item: &SignalItem, cursor: Option<i32>) -> Option<String> {
+    #[allow(unused_variables)] // row is used by the tauri-gated readout cache
+    fn value_text_at(&self, row: usize, item: &SignalItem, cursor: Option<i32>) -> Option<String> {
         let cursor = cursor?;
         if cursor < 0 {
             return None;
+        }
+        // a native cursor outside the fetched window has its rendered value
+        // cached from dump_value_at (already formatted with the row's show type)
+        #[cfg(feature = "tauri")]
+        if let Some(text) = self.native_cursor.get(row, cursor) {
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
         }
         let value = item.values.value_at(cursor as Time)?;
         canvas::value_text(value, item.format_width(), &item.setting)
@@ -1642,10 +1691,16 @@ impl WaveShow {
     /// Fetch the bounded windows for the visible rows from the native backend.
     ///
     /// Same window model as the wasm path ([`windowed::WindowRequest`]: visible
-    /// range + margin, cap from the surface width), but the values are rendered
-    /// to text in Rust and come back over IPC; [`apply_remote_windows`] stores
-    /// them when they arrive and the pane keeps drawing the previous windows in
-    /// the meantime. Answers from an older request are dropped by the epoch.
+    /// range + margin, cap from the surface width), but:
+    ///
+    /// * the rows are grouped by their display format, because dump_window
+    ///   renders the text with ONE show type: one request per format on screen
+    ///   (normally one or two), so row formats work natively exactly like wasm;
+    /// * the values come back as text and are parsed back into bit patterns
+    ///   ([`crate::remote::window_groups`], [`crate::remote::parse_rendered`]);
+    /// * [`apply_remote_windows`] stores them when they arrive and the pane keeps
+    ///   drawing the previous windows in the meantime. Answers from an older
+    ///   request are dropped by the epoch.
     #[cfg(feature = "tauri")]
     fn decode_remote(&mut self, fetch: std::ops::Range<usize>, width: f64) {
         let Some(session) = self.remote.clone() else {
@@ -1655,9 +1710,8 @@ impl WaveShow {
             return;
         };
         let req = WindowRequest::for_view(self.view, width);
-        let mut rows: Vec<(usize, usize, usize)> = Vec::new();
-        let mut signals: Vec<usize> = Vec::new();
-        let mut slot_of: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        // the rows that need a window, with everything the request needs
+        let mut pending: Vec<(usize, usize, usize)> = Vec::new();
         for row in fetch {
             let Some(item) = self.signal_things.iter().nth(row) else {
                 break;
@@ -1668,13 +1722,44 @@ impl WaveShow {
             if !windowed::needs_fetch(item.values.cached(), req) {
                 continue;
             }
-            let slot = *slot_of.entry(signal.index).or_insert_with(|| {
-                signals.push(signal.index);
-                signals.len() - 1
-            });
-            rows.push((row, slot, signal.width));
+            pending.push((row, signal.index, signal.width));
         }
-        if rows.is_empty() {
+        if pending.is_empty() {
+            self.last_decoded = 0;
+            return;
+        }
+        // one request per display format: the backend renders one show type
+        let rows: Vec<usize> = pending.iter().map(|(row, _, _)| *row).collect();
+        let groups = crate::remote::window_groups(rows.iter().copied(), |row| {
+            self.signal_things
+                .iter()
+                .nth(row)
+                .map(|item| item.setting.show_type.clone())
+                .unwrap_or_default()
+        });
+        let mut jobs: Vec<(&'static str, Vec<usize>, Vec<(usize, usize, usize)>)> = Vec::new();
+        for (show, group_rows) in groups {
+            let mut signals: Vec<usize> = Vec::new();
+            let mut slot_of: std::collections::HashMap<usize, usize> =
+                std::collections::HashMap::new();
+            let mut group: Vec<(usize, usize, usize)> = Vec::new();
+            for row in group_rows {
+                let Some(&(_, signal, row_width)) =
+                    pending.iter().find(|(member, _, _)| *member == row)
+                else {
+                    continue;
+                };
+                let slot = *slot_of.entry(signal).or_insert_with(|| {
+                    signals.push(signal);
+                    signals.len() - 1
+                });
+                group.push((row, slot, row_width));
+            }
+            if !signals.is_empty() {
+                jobs.push((show, signals, group));
+            }
+        }
+        if jobs.is_empty() {
             self.last_decoded = 0;
             return;
         }
@@ -1684,21 +1769,21 @@ impl WaveShow {
         let start = req.start;
         let end = req.end;
         let cap = req.cap;
-        spawn_local(async move {
-            match crate::remote::window(
-                id,
-                &signals,
-                start,
-                Some(end),
-                cap,
-                crate::remote::VALUE_FORMAT,
-            )
-            .await
-            {
-                Ok(windows) => link.send_message(Msg::RemoteWindows(epoch, req, rows, windows)),
-                Err(error) => link.send_message(Msg::RemoteFailed(epoch, error)),
-            }
-        });
+        for (show, signals, group) in jobs {
+            let link = link.clone();
+            spawn_local(async move {
+                match crate::remote::window(id, &signals, start, Some(end), cap, show).await {
+                    Ok(windows) => link.send_message(Msg::RemoteWindows(
+                        epoch,
+                        req,
+                        show.to_string(),
+                        group,
+                        windows,
+                    )),
+                    Err(error) => link.send_message(Msg::RemoteFailed(epoch, error)),
+                }
+            });
+        }
     }
 
     #[cfg(feature = "tauri")]
@@ -1706,18 +1791,20 @@ impl WaveShow {
         &mut self,
         epoch: u32,
         req: WindowRequest,
+        show: &str,
         rows: &[(usize, usize, usize)],
         windows: Vec<crate::remote::WindowDto>,
     ) {
         if epoch != self.remote_epoch {
             return;
         }
+        let show = crate::remote::show_type_named(show).unwrap_or_default();
         let mut decoded = 0usize;
         for &(row, slot, width) in rows {
             let Some(dto) = windows.get(slot) else {
                 continue;
             };
-            let window = crate::remote::row_window_with_width(dto, req, width);
+            let window = crate::remote::row_window_with_width_and_show(dto, req, width, &show);
             // an expanded bit is derived from the parent bus window, exactly like
             // the wasm path
             let bit = self.signal_things.iter().nth(row).and_then(|item| item.bit);
@@ -1735,6 +1822,87 @@ impl WaveShow {
         }
         // the answers are for the current view: repaint with them
         self.redraw();
+    }
+
+    /// Batch the dump_value_at calls the value column needs.
+    ///
+    /// When a cursor is outside the row's fetched window the value column has
+    /// nothing to format: ask the backend for the rendered value at that exact
+    /// time, once per (row, time, format), and cache it. There is no per-row
+    /// per-frame request: a redraw with the cursor already fetched does nothing,
+    /// and the batch is capped so a huge row list cannot flood the IPC channel.
+    #[cfg(feature = "tauri")]
+    fn fetch_native_cursor_values(&mut self, rows: std::ops::Range<usize>) {
+        const MAX_BATCH: usize = 64;
+        let Some(session) = self.remote.clone() else {
+            return;
+        };
+        let Some(link) = self.link.clone() else {
+            return;
+        };
+        let cursors: Vec<i32> = [self.cursors.one, self.cursors.two]
+            .into_iter()
+            .flatten()
+            .filter(|cursor| *cursor >= 0)
+            .collect();
+        if cursors.is_empty() {
+            return;
+        }
+        let id = session.id();
+        let mut batch = 0usize;
+        for row in rows {
+            if batch >= MAX_BATCH {
+                break;
+            }
+            let Some(item) = self.signal_things.iter().nth(row) else {
+                break;
+            };
+            let Some(signal) = session.signal_of_path(&item.path) else {
+                continue;
+            };
+            // inside the fetched window the value column already has bits
+            let inside_window = cursors
+                .iter()
+                .all(|cursor| item.values.value_at(*cursor as Time).is_some());
+            if inside_window {
+                continue;
+            }
+            let show = crate::remote::show_name(&item.setting.show_type).to_string();
+            for &cursor in &cursors {
+                if item.values.value_at(cursor as Time).is_some() {
+                    continue;
+                }
+                if self.native_cursor.contains(row, cursor)
+                    || self.native_cursor_inflight.contains(&(row, cursor))
+                {
+                    continue;
+                }
+                self.native_cursor_inflight.insert((row, cursor));
+                batch += 1;
+                let link = link.clone();
+                let show = show.clone();
+                spawn_local(async move {
+                    // an empty text is cached too: "no change yet" is an answer,
+                    // and it stops the row from being asked again for that time
+                    let text = match crate::remote::value_at(id, signal.index, cursor as u64, &show)
+                        .await
+                    {
+                        Ok(Some(text)) => text,
+                        Ok(None) | Err(_) => String::new(),
+                    };
+                    link.send_message(Msg::RemoteCursorValue(row, cursor, text));
+                });
+            }
+        }
+    }
+
+    /// The native session handed to the children (none in the browser build).
+    fn remote_session(&self) -> Option<crate::remote::RemoteSession> {
+        #[cfg(feature = "tauri")]
+        if let Some(session) = &self.remote {
+            return Some(session.clone());
+        }
+        None
     }
 
     /// The time range the ruler and the fit zoom use.
@@ -1789,6 +1957,10 @@ impl WaveShow {
             self.values_need_render = true;
         }
         self.trim_cache(draw.clone());
+        // native mode: fill the value column for cursors outside the fetched
+        // windows (batched + cached, never per row per frame)
+        #[cfg(feature = "tauri")]
+        self.fetch_native_cursor_values(draw.clone());
 
         if !self.fitted {
             //first real measurement (and the first decoded rows): show the whole

@@ -246,7 +246,15 @@ error, keep the wasm path, so normal dumps behave exactly as before. Both entry
 points reach the native mode: drag-and-drop passes the absolute path to
 `open_dump`, and the in-app file dialog passes its navigation parts to
 `open_dump_parts`, which resolves them against the dialog's base directory (the
-dialog never has an absolute path of its own). The mode
+dialog never has an absolute path of its own). In native mode the **value search** box works: Enter/Shift+Enter
+stream the dump over IPC (`dump_find`) and move cursor 1 to the match, reporting
+`found <query> in <row> at t=<time> (<value>)` (or a no-match status); a query is
+plain rendered text or a `0x`/`0b`/`0o` radix form, matched case-insensitively.
+Row **display-format settings** (hex/uint/sint/oct/bin/ascii) also change the
+drawn values and the value column: the pane fetches one window per on-screen
+format; and a **cursor outside the fetched window** gets its value from batched,
+cached `dump_value_at` calls (at most 64 requests per redraw, a 512-entry
+(row, time) cache), not a per-row-per-frame call. The mode
 announces itself: a `.dock-tab.native-badge` chip reading **native (read-only,
 mmap)** (tooltip: path, size, signal/scope counts and mapped MB) and a status
 line of the form
@@ -258,20 +266,24 @@ waveform loaded (native read-only, mmap) — <FMT> <N> MB, range <start>..<end> 
 The sidebar tree, the rows and the wave canvas reuse the normal components and
 classes, and both single add and bulk add work against the native hierarchy. MVP
 limits: one native dump at a time (opening another closes the previous), no split
-view or multi-dump tabs in native mode, the hierarchy is fetched eagerly at open
-(paged, with a 400,000-row safety cap) and the backend sends hex values (the row
-display settings still work on the parsed bits). Find-value and export are **not
-available** in native mode and are refused with an actionable message that points
-at reopening through the wasm path (files up to 64 MB).
+view or multi-dump tabs in native mode, and the hierarchy is fetched eagerly at
+open (paged, with a 400,000-row safety cap). Export is **not available** in native
+mode and is refused with an actionable message that points at reopening through
+the wasm path (files up to 64 MB); value search, row formats and cursor values do
+work (see above).
 
 **How to try it.** Build or run the desktop app (`cargo tauri build`, or
 `cargo tauri dev`), open a dump larger than 64 MiB (an FST is the intended case;
 VCD works too), and check for the badge and the status line, add signals one at a
-time and with the bulk add, then zoom and scroll. This repository's environment
+time and with the bulk add, then zoom and scroll; type a value in the ruler box
+and press Enter/Shift+Enter to search, switch a row's display format, and place a
+cursor outside the fetched window to see the cached readout. This repository's environment
 has no desktop GUI, so the runtime path is **compile-verified only**: the real IPC
-round trips, drag-and-drop of a large file, the file dialog's relative-path
-resolution, the mmap open/lock/close lifecycle, `dump_window` latency and zoom
-smoothness on huge dumps still need a run on a desktop machine.
+round trips, drag-and-drop of a large file, the in-app dialog's part resolution
+against its base directory (unit-tested, but not GUI-verified), the mmap
+open/lock/close lifecycle, `dump_window`/`dump_find` latency and zoom smoothness
+on huge dumps still need a run on a desktop machine; the find timings in this
+README are debug-build measurements.
 
 ### dependency migrations
 

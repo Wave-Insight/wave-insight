@@ -48,8 +48,8 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use wave_insight_lib::waveform::{
-    HierarchyView, ScopeNode, ShowType, SignalInfo, SignalKind, TimeRange, WaveValue, Waveform,
-    WaveformError,
+    HierarchyView, ScopeNode, ShowType, SignalInfo, SignalKind, TimeRange, ValueQuery, WaveValue,
+    Waveform, WaveformError,
 };
 
 /// How many dumps one desktop session may keep open at once.
@@ -157,6 +157,15 @@ pub struct WindowDto {
     /// The per-signal cap stopped the collection.
     pub capped: bool,
     pub changes: Vec<ChangeDto>,
+}
+
+/// One match of a streaming value search (dump_find).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FoundValue {
+    /// Time stamp of the matching change.
+    pub time: u64,
+    /// The matching change's value, rendered with the requested ShowType.
+    pub value: String,
 }
 
 /// A dump opened natively. Only the hierarchy is parsed; values are streamed on
@@ -419,6 +428,73 @@ impl DumpRegistry {
             .collect())
     }
 
+    /// Find the first change of `signal` whose rendered value matches `query`.
+    ///
+    /// The search streams the signal with the library's ValueQuery filter, so
+    /// memory stays O(1) and it stops at the first match. Semantics:
+    ///
+    /// * forwards (backwards == false): the first matching change with
+    ///   time > from (time >= 0 when from == 0);
+    /// * backwards (backwards == true): the last matching change with
+    ///   time < from (the end of the trace when from == u64::MAX);
+    /// * the value is rendered with `show` (the same rendering as dump_window)
+    ///   and compared case-insensitively;
+    /// * a query that starts with 0x/0b/0o is matched in that radix (letter
+    ///   case and leading zeros are ignored), independent of `show`.
+    ///
+    /// Worst case is a full trace scan (a value that never matches; or a
+    /// backwards search, because the stream is forward-only and has to scan
+    /// from the start up to `from`). The command cannot be cancelled, so the
+    /// front end should search one signal at a time.
+    pub fn find(
+        &self,
+        id: DumpId,
+        signal: usize,
+        query: &str,
+        from: u64,
+        backwards: bool,
+        show: &ShowType,
+    ) -> Result<Option<FoundValue>, String> {
+        let dump = self.dump(id)?;
+        let matcher = FindMatcher::parse(query)?;
+        let width = dump
+            .waveform
+            .signal(signal)
+            .map(|info| info.width())
+            .unwrap_or(0);
+        if backwards && from == 0 {
+            // nothing is strictly before time 0
+            return Ok(None);
+        }
+        let (start, end) = if backwards {
+            let end = if from == u64::MAX {
+                None
+            } else {
+                Some(from.saturating_sub(1))
+            };
+            (0u64, end)
+        } else {
+            (if from == 0 { 0 } else { from.saturating_add(1) }, None)
+        };
+        let window = ValueQuery::window(signal, start, end);
+        let mut found: Option<FoundValue> = None;
+        dump.waveform
+            .stream_changes(&window, |_signal, time, value| {
+                let rendered = render_value(&value, width, show);
+                if !matcher.matches(&rendered, width, show, &value) {
+                    return true;
+                }
+                found = Some(FoundValue {
+                    time,
+                    value: rendered,
+                });
+                // forwards: stop at the first match; backwards: keep the last
+                backwards
+            })
+            .map_err(|error| format!("dump_find: dump {id}: {}", error.message()))?;
+        Ok(found)
+    }
+
     /// The rendered value of one signal at time.
     pub fn value_at(
         &self,
@@ -533,6 +609,72 @@ fn format_real(value: f64) -> String {
         format!("{value:.0}")
     } else {
         format!("{value}")
+    }
+}
+
+/// How a dump_find query matches a rendered change.
+#[derive(Clone, Debug, PartialEq)]
+enum FindMatcher {
+    /// Plain text: case-insensitive equality with the rendered value.
+    Text(String),
+    /// A 0x/0b/0o query: the value is rendered in that radix and the digits
+    /// are compared (leading zeros and letter case ignored).
+    Radix { show: ShowType, digits: String },
+}
+
+impl FindMatcher {
+    fn parse(query: &str) -> Result<Self, String> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Err("dump_find: the query is empty".to_string());
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        let prefixed = lower
+            .strip_prefix("0x")
+            .map(|rest| (ShowType::Hex, rest))
+            .or_else(|| lower.strip_prefix("0b").map(|rest| (ShowType::Bin, rest)))
+            .or_else(|| lower.strip_prefix("0o").map(|rest| (ShowType::Oct, rest)));
+        if let Some((show, digits)) = prefixed {
+            if digits.is_empty() {
+                return Err(format!(
+                    "dump_find: the query '{trimmed}' has no digits after the radix prefix"
+                ));
+            }
+            return Ok(FindMatcher::Radix {
+                show,
+                digits: normalize_digits(digits),
+            });
+        }
+        Ok(FindMatcher::Text(lower))
+    }
+
+    fn matches(&self, rendered: &str, width: u32, show: &ShowType, value: &WaveValue) -> bool {
+        match self {
+            FindMatcher::Text(text) => rendered.trim().to_ascii_lowercase() == *text,
+            FindMatcher::Radix {
+                show: radix_show,
+                digits,
+            } => {
+                // render in the query's radix, independent of the display show
+                let text = if *radix_show == *show {
+                    rendered.to_string()
+                } else {
+                    render_value(value, width, radix_show)
+                };
+                normalize_digits(text.trim()) == *digits
+            }
+        }
+    }
+}
+
+/// Lowercase a digit string and drop leading zeros (all zeros stay "0").
+fn normalize_digits(text: &str) -> String {
+    let lower = text.trim().to_ascii_lowercase();
+    let trimmed = lower.trim_start_matches('0');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -855,5 +997,259 @@ mod tests {
         assert!(second.id > first_id);
         assert_eq!(second.retained_bytes, 0);
         assert!(registry.close(second.id).is_ok());
+    }
+
+    fn find_value(
+        registry: &DumpRegistry,
+        id: DumpId,
+        signal: usize,
+        query: &str,
+        from: u64,
+        backwards: bool,
+        show: ShowType,
+    ) -> Option<FoundValue> {
+        registry
+            .find(id, signal, query, from, backwards, &show)
+            .expect("find")
+    }
+
+    #[test]
+    fn small_dump_find_matches_and_directions() {
+        let path = write_small_vcd("find");
+        let registry = DumpRegistry::new();
+        let summary = registry.open(&path.display().to_string()).expect("open");
+        let clk = signal_index(&registry, summary.id, "top.clk");
+        let data = signal_index(&registry, summary.id, "top.data");
+
+        // forwards from 0 includes the change at time 0
+        assert_eq!(
+            find_value(&registry, summary.id, clk, "0", 0, false, ShowType::Hex),
+            Some(FoundValue {
+                time: 0,
+                value: "0".to_string()
+            })
+        );
+        // forwards is strictly after `from` when from > 0
+        assert_eq!(
+            find_value(&registry, summary.id, clk, "1", 0, false, ShowType::Hex),
+            Some(FoundValue {
+                time: 10,
+                value: "1".to_string()
+            })
+        );
+        assert_eq!(
+            find_value(&registry, summary.id, clk, "1", 10, false, ShowType::Hex),
+            None
+        );
+        // from the middle
+        assert_eq!(
+            find_value(&registry, summary.id, clk, "0", 15, false, ShowType::Hex),
+            Some(FoundValue {
+                time: 20,
+                value: "0".to_string()
+            })
+        );
+        // backwards from the end returns the last change ...
+        assert_eq!(
+            find_value(
+                &registry,
+                summary.id,
+                clk,
+                "0",
+                u64::MAX,
+                true,
+                ShowType::Hex
+            ),
+            Some(FoundValue {
+                time: 20,
+                value: "0".to_string()
+            })
+        );
+        // ... and backwards is strictly before `from`
+        assert_eq!(
+            find_value(&registry, summary.id, clk, "1", 20, true, ShowType::Hex),
+            Some(FoundValue {
+                time: 10,
+                value: "1".to_string()
+            })
+        );
+        assert_eq!(
+            find_value(&registry, summary.id, clk, "1", 10, true, ShowType::Hex),
+            None
+        );
+        assert_eq!(
+            find_value(&registry, summary.id, clk, "0", 0, true, ShowType::Hex),
+            None
+        );
+        // plain text is case-insensitive and trims the query
+        assert_eq!(
+            find_value(&registry, summary.id, data, " a ", 0, false, ShowType::Hex),
+            Some(FoundValue {
+                time: 10,
+                value: "a".to_string()
+            })
+        );
+        assert_eq!(
+            find_value(&registry, summary.id, data, "A", 0, false, ShowType::Hex),
+            Some(FoundValue {
+                time: 10,
+                value: "a".to_string()
+            })
+        );
+        // a 0x/0b/0o query is compared in that radix (leading zeros/case ignored)
+        for query in ["0xa", "0xA", "0x0a", "0b1010", "0o12"] {
+            assert_eq!(
+                find_value(&registry, summary.id, data, query, 0, false, ShowType::Hex),
+                Some(FoundValue {
+                    time: 10,
+                    value: "a".to_string()
+                }),
+                "{query}"
+            );
+        }
+        // the query radix wins over the display show type
+        assert_eq!(
+            find_value(&registry, summary.id, data, "0xa", 0, false, ShowType::Bin),
+            Some(FoundValue {
+                time: 10,
+                value: "1010".to_string()
+            })
+        );
+        // values that never appear
+        assert_eq!(
+            find_value(&registry, summary.id, clk, "x", 0, false, ShowType::Hex),
+            None
+        );
+        assert_eq!(
+            find_value(&registry, summary.id, data, "0xff", 0, false, ShowType::Hex),
+            None
+        );
+        registry.close(summary.id).expect("close");
+    }
+
+    #[test]
+    fn small_dump_find_errors_are_clean() {
+        let path = write_small_vcd("find-errors");
+        let registry = DumpRegistry::new();
+        let summary = registry.open(&path.display().to_string()).expect("open");
+        assert!(registry
+            .find(9999, 0, "0", 0, false, &ShowType::Hex)
+            .is_err());
+        assert!(registry
+            .find(summary.id, 99, "0", 0, false, &ShowType::Hex)
+            .is_err());
+        let error = registry
+            .find(summary.id, 0, "   ", 0, false, &ShowType::Hex)
+            .expect_err("empty query");
+        assert!(error.contains("query is empty"), "{error}");
+        let error = registry
+            .find(summary.id, 0, "0x", 0, false, &ShowType::Hex)
+            .expect_err("prefix without digits");
+        assert!(error.contains("no digits"), "{error}");
+        registry.close(summary.id).expect("close");
+    }
+
+    #[test]
+    fn small_dense_fst_find_when_present() {
+        // the generated 3 MB FST covers the FST streaming path without the
+        // 100 MB file; skipped when the fixture is not on this machine
+        let path = std::env::temp_dir().join("wi-fst").join("dense.fst");
+        if !path.is_file() {
+            eprintln!(
+                "skipping small-FST find test: {} is not present",
+                path.display()
+            );
+            return;
+        }
+        let registry = DumpRegistry::new();
+        let summary = registry
+            .open(&path.display().to_string())
+            .expect("open dense.fst");
+        assert_eq!(summary.format, "FST");
+        let clk = signal_index(&registry, summary.id, "top.clk");
+        let end = summary.time_range.expect("range").end;
+
+        let started = Instant::now();
+        let first = find_value(&registry, summary.id, clk, "1", 0, false, ShowType::Hex);
+        let first_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(
+            first,
+            Some(FoundValue {
+                time: 10,
+                value: "1".to_string()
+            })
+        );
+
+        let started = Instant::now();
+        let near = find_value(
+            &registry,
+            summary.id,
+            clk,
+            "1",
+            end.saturating_sub(100),
+            false,
+            ShowType::Hex,
+        );
+        let near_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let hit = near.expect("a 1 after the window");
+        assert!(hit.time > end.saturating_sub(100) && hit.value == "1");
+
+        let started = Instant::now();
+        let back = find_value(
+            &registry,
+            summary.id,
+            clk,
+            "1",
+            u64::MAX,
+            true,
+            ShowType::Hex,
+        );
+        let back_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert!(back.is_some(), "the clock is 1 on the last step");
+
+        eprintln!(
+            "dense.fst find: forward near start {:.2} ms, forward near end {:.2} ms, backwards {:.2} ms (range end {})",
+            first_ms, near_ms, back_ms, end
+        );
+        registry.close(summary.id).expect("close");
+    }
+
+    #[test]
+    fn large_fst_find_forward_near_start_and_end() {
+        let registry = DumpRegistry::new();
+        let Some(summary) = open_large_fst(&registry) else {
+            return;
+        };
+        let clk = signal_index(&registry, summary.id, "top.clk");
+        let end = summary.time_range.expect("range").end;
+
+        let started = Instant::now();
+        let first = find_value(&registry, summary.id, clk, "1", 0, false, ShowType::Hex);
+        let start_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(
+            first,
+            Some(FoundValue {
+                time: 10,
+                value: "1".to_string()
+            })
+        );
+
+        // the worst case the docs describe: the stream has to walk the file
+        // up to the window before it can answer
+        let from = end.saturating_sub(100);
+        let started = Instant::now();
+        let near = find_value(&registry, summary.id, clk, "1", from, false, ShowType::Hex);
+        let near_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let hit = near.expect("a 1 after the window");
+        assert!(hit.time > from && hit.value == "1");
+        assert!(near_ms < 60_000.0, "near-end find took {near_ms:.0} ms");
+        eprintln!(
+            "large.fst find: forward near start {:.2} ms (hit at {}), forward near end {:.2} ms (hit at {})",
+            start_ms,
+            first.expect("first hit").time,
+            near_ms,
+            hit.time
+        );
+        registry.close(summary.id).expect("close");
     }
 }

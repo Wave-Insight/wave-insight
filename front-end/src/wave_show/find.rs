@@ -91,9 +91,12 @@ pub fn find_value(store: &Store, query: &str, direction: Direction, width: f64) 
     }
     // the desktop build may be drawing a native dump: the whole-history search
     // is not wired to the IPC backend in this MVP, so say so instead of "no dump"
+    // the ruler box routes a native dump to dump_find; this path is only
+    // reachable if some other caller asks for a wasm search while native mode
+    // draws the window
     if crate::remote::native_active() {
         store.dispatch(Action::Status(Status::error(
-            "native (read-only, mmap) mode: value search is not available yet — reopen the dump through the wasm path (files up to 64 MB) to search it",
+            "native (read-only, mmap) mode: start the search from the ruler box — the desktop build finds values over IPC",
         )));
         return;
     }
