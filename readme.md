@@ -110,16 +110,18 @@ a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
-and asserts the user-visible behaviour (the current matrix has **55 scenarios /
-458 assertions**; `--list` prints them). The full matrix is green with the R2
+and asserts the user-visible behaviour (the current matrix has **57 scenarios /
+503 assertions**; `--list` prints them). The full matrix is green with the R2
 layout rules required. The newest scenarios cover the generated/arrayed design
 tree in the sidebar, elaboration diagnostics reaching the editor and the top-bar
 chip, the TXT export matching the CSV for the same row, multi-dump tabs and the
 split view, the driver/load bit ranges in the editor hover and the inspector
 (`bitRanges`, `inspectorBits`), editor completion (`completion`), and the
 `corruption` regression: deterministic truncated-FST / flipped-FST-length /
-header-truncated-VCD fixtures must produce an actionable error and recover to a
-valid dump instead of crashing the page. Each run stages its build in its own
+header-truncated-VCD fixtures (plus a conflicting-width VCD) must produce an
+actionable error and recover to a valid dump instead of crashing the page, and
+the `largeDump` scenario covers the memory hook, release on close, split
+accounting, the 512 MB guard and a well-formed wide dump. Each run stages its build in its own
 `qa/.stage/<pid>/`, so parallel matrix runs no longer collide. Build the front end first, then run:
 
 ```bash
@@ -300,6 +302,18 @@ placed.
   spacers keeping the scrollbar the real length - so a dump with thousands of
   signals stays responsive. Lists of 80 rows or fewer keep the plain DOM (and
   the same selection behaviour) they always had.
+- **Bulk add**: in the module tree, Ctrl/Cmd+click toggles a scope in a
+  multi-selection and Shift+click selects the visible range (selected rows are
+  marked `.tree-row.selected`/`aria-selected`); the Modules header shows an
+  **Add selected (N)** button (Ctrl/Cmd+Enter does the same) and each row's
+  **+** adds every signal in that scope. One batch adds them all: dedupe and the
+  remembered display settings apply, the row list updates once (500 rows = one
+  render), the status line says `added N signals (M already in the wave)`, and a
+  selection above the 2000-row cap is rejected with an error instead of a partial
+  add. Limits: the button is not disabled above the cap (it reports the error
+  when clicked), the selection is session-only and is cleared when the tree
+  rebuilds, bulk add does not move the inspector selection, and there is no
+  marquee or Shift+arrow selection yet.
 - **Persistence**: the window layout (sidebar width, editor/wave ratio, sidebar
   visibility) and each signal's display settings (format, fixed point, analog,
   colour) are remembered in the browser's `localStorage` and restored on the next
@@ -321,6 +335,51 @@ labelled modals (`role="dialog"`, `aria-modal`) that trap Tab, take focus on
 open and give it back to the opener on close; focus rings are visible, the tab
 closer is a real button, and the wave list and candidate picker expose
 `listbox`/`option` semantics.
+
+## Memory and very large dumps
+
+The browser build runs the whole engine (parser, hierarchy, decode cache, canvas
+renderer, LSP) inside one wasm32 module, and there is no mmap for a page-picked
+file. What that means in practice:
+
+- **What is kept.** The picked file is read into wasm memory in 8 MiB slices and
+  reserved once at its exact size (a fallible allocation: failure becomes an
+  error, not an allocator abort). VCD and GHW keep the file bytes and materialise
+  the whole trace body in wellen's packed form; FST streams its body and keeps
+  only the header and time table. On top sit the hierarchy and the decoded
+  histories of the rows that are (or recently were) on screen.
+- **Decode budget.** ONE global 64 MiB budget covers the decoded histories of
+  every open dump and of the split pane (it used to be 64 MiB per pane). When it
+  is exceeded, dumps that no pane draws give their decoded histories back first,
+  then their parsed bodies (re-parsed on the next visit); a dump that is being
+  drawn is never evicted, so a drawn signal's history is effectively unbounded
+  and the budget is soft - `overBudget` in the readout says when that happens.
+  Closing a dump or the split frees its decoded data and parsed body immediately.
+- **Pre-flight refusal.** Before a byte is read, the loader estimates the wasm
+  memory a file needs (48 MB base + 3.2x file for VCD, 0.6x for FST, 2.0x for
+  GHW) against a 1280 MiB policy cap and refuses with the numbers when it cannot
+  fit: "about N MB of wasm memory are needed ... close a dump you are not looking
+  at, split the dump, or open it in the desktop build". A 501 MB VCD is now
+  refused up front instead of attempting a ~1.5 GB allocation.
+- **Readout.** `window.__waveDebug.memory` publishes `{ wasmBytes, fileBytes,
+  decodedBytes, budget, dumps, unloaded, released, overBudget }`, and the load
+  line reports the wasm memory used.
+- **Measured.** The footprint work cut the load peak by 31-44%: 34 MB -> 85.9 MB
+  (was 137.7 MB), 139 MB -> 295.3 MB (was 521.8 MB), 349 MB -> 715.0 MB (was
+  1033.9 MB). Hierarchy string interning cut hierarchy bytes by 58.3% on a
+  200k-signal design (78.8 MB -> 32.9 MB, 394 B -> 164 B per signal).
+- **Honest limits.** The browser keeps the whole file for VCD/GHW (there is no
+  mmap in the browser); wasm linear memory never shrinks, so a tab's high-water
+  mark is its real footprint even after closing dumps; a drawn signal's history is
+  not evicted; and wasm32 has a hard 4 GiB address space (a browser tab usually
+  dies well before that). Prefer FST over VCD for very large dumps, keep one or
+  two dumps open in the browser, and use the desktop build for multi-GB sessions.
+- **Direction.** The desktop build can run the engine natively over a read-only
+  memory map (`memmap2`) and send only rendered slices to the webview; the
+  browser's analogue is a dedicated worker plus an OPFS lazy byte source. The
+  `ByteSource` trait (file or in-memory) is the Wave 12 groundwork for both. The
+  current model and both plans are in
+  [`docs/design/large-files.md`](docs/design/large-files.md).
 
 ## Known limitations
 
@@ -373,13 +432,14 @@ closer is a real button, and the wave list and candidate picker expose
   A VCD truncated only in its body has no trailer to detect, so it opens as a
   shorter but structurally valid dump; the corruption fixture therefore cuts the
   header.
-* **Very large dumps.** The lazy path keeps memory proportional to what is on
-  screen plus the raw file bytes, but a browser tab is not a database: the
-  105 MB test dump used during development loaded in well under a second and
-  stayed responsive, while its renderer memory grew by roughly 2.8x the file
-  size. That is why the loader refuses dumps over 512 MB up front (and warns from
-  100 MB) instead of letting the tab run out of wasm memory; a dump that large is
-  still better opened in the desktop build, which reads the file from disk.
+* **Very large dumps.** See [Memory and very large dumps](#memory-and-very-large-dumps):
+  the browser keeps the whole file for VCD/GHW, the 64 MiB decode budget is soft
+  (a drawn signal's history is not evicted) and wasm memory never shrinks. The
+  loader still refuses files over 512 MB up front (and warns from 100 MB), and
+  the memory pre-flight refuses a load whose estimated footprint will not fit
+  the 1280 MiB policy cap - with numbers and advice instead of an allocator
+  abort. For multi-GB dumps prefer FST and the desktop build (the native
+  memory-mapped backend is the next wave).
 * **Split-view limits.** The right pane is a comparison surface, not a second
   editor: in unlinked mode it scrolls, zooms and pans on its own but shows no
   cursors of its own yet, has no visible row scrollbar and stops a drag-pan at the
@@ -412,7 +472,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 55 scenarios / 458 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
+- [x] browser QA suite moved into the repository (`qa/`, 57 scenarios / 503 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
@@ -428,7 +488,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] fast dump open: the VCD time range is found from the header plus a bounded tail scan instead of the whole body (~20x cheaper on the 8.3 MB benchmark)
 - [x] migration plans for yew 0.21 and Tauri 2 added under `docs/migrations/` (breaker lists, steps, verification)
 - [x] LSP/design position queries indexed: `textDocument/definition` answers in ~12 us on the synthetic 100-module design (byte-identical to the old scan, differential-tested) with a new `bench lsp` suite
-- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs and the split view, driver/load bit ranges in the hover and the inspector, editor completion, and corruption recovery (truncated/flipped FST, header-truncated VCD) - 55 scenarios / 458 assertions
+- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs and the split view, driver/load bit ranges in the hover and the inspector, editor completion, corruption recovery (truncated/flipped FST, header-truncated VCD, conflicting-width VCD) and the memory-first large-dump behaviour - 57 scenarios / 503 assertions
 - [x] multi-dump + split-view design note under `docs/design/multi-dump.md` (planned Wave 8)
 - [x] Tauri 2 migration: v2 config + capabilities, `__TAURI__.core` IPC and `onDragDropEvent` drag-and-drop, Linux webkit2gtk-4.1 prerequisites, CI on Ubuntu 24.04 (compile-verified; runtime and bundles are validated by the tag workflow)
 - [x] waveform hardening: a corrupt/truncated FST is rejected by a structural pre-parse validator instead of aborting the viewer; aliased signals stream under the requested variable index; deterministic VCD/FST fuzz and query-tier differential tests cover the entry points
@@ -445,9 +505,16 @@ Done in the next release (unreleased at the time of writing):
 - [x] completion v3: arrayed-instance selectors, generate-scope qualifiers (literal must name an unrolled element), nested scope/instance chains, select-aware prefix handling and the port-connection leading-dot filter
 - [x] completion benchmarks in `benches/lsp.rs` (`completion_plain`/`completion_prefix`/`completion_member`), covered by the bench workflow's `lsp|design` filter
 - [x] three verifier-found bugs fixed before release: split unlinked toggle not freezing the right pane, the right canvas ignoring window resizes, and completion returning nothing at bit-select columns in instance port lists
+- [x] bulk add from the module tree: Ctrl/Cmd+click and Shift+click multi-selection, `Add selected (N)` + per-scope add + Ctrl/Cmd+Enter, one `RowsAdded` batch (dedupe, row prefs, one rows-version bump/session write), status line and the 2000-row cap error
+- [x] memory-first large dumps: one global 64 MiB decode budget across dumps/split with a free plan, exact fallible read buffer, pre-flight estimate (48 MB + 3.2x VCD / 0.6x FST / 2.0x GHW vs 1280 MiB cap) with actionable refusals, `window.__waveDebug.memory` readout, and freeing on dump/split close (load peaks down 31-44%)
+- [x] library memory efficiency: hierarchy string interning (-58.3% hierarchy bytes, 394 -> 164 B/signal on 200k signals), lazy full paths, exact `memory_stats` accounting and the file-or-memory `ByteSource` trait
+- [x] the user-reported crash root cause fixed: a malformed VCD with one variable id declared at conflicting widths is rejected as Corrupt at open (wellen used to panic and trap the wasm); same-width aliasing stays legal
+- [x] design note `docs/design/large-files.md`: current memory model, why the browser has no mmap, the desktop native memory-mapped backend plan and the browser worker/OPFS option
 
 Still open:
 
+- [ ] desktop native backend with memory-mapped files (`docs/design/large-files.md`, the next architectural wave)
+- [ ] browser worker + OPFS lazy byte source for large web sessions (the browser's mmap analogue)
 - [ ] split-view remaining limits: unlinked cursor independence, a visible row scrollbar, window-captured drag-pan, and persisting whether the split is open
 - [ ] completion: packages as qualifiers (optional; everything else the design models resolves)
 - [ ] inline python for writing your own process on signal values

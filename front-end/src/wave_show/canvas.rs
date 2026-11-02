@@ -686,6 +686,9 @@ pub struct DebugInfo {
     /// Last time stamp of the dump, when the format reports one. Rows stop
     /// drawing there and the view cannot be panned past it.
     pub trace_end: Option<i64>,
+    /// Memory readout: wasm linear memory, the open dumps' file bytes, the
+    /// decoded cache and its budget (Wave 12).
+    pub memory: super::memory::MemoryStats,
 }
 
 /// Expose one redraw's numbers on `window.__waveDebug` for the QA harness.
@@ -729,6 +732,26 @@ pub fn publish_debug(info: &DebugInfo) {
         info.cursor2
             .map_or(JsValue::NULL, |cursor| JsValue::from_f64(cursor as f64)),
     );
+    // Wave 12: the memory readout, as one nested object so a consumer reads
+    // `__waveDebug.memory.wasmBytes` and friends. Kept together because a
+    // memory assertion wants the four numbers as one snapshot.
+    let memory = js_sys::Object::new();
+    let set_memory = |key: &str, value: f64| {
+        let _ = js_sys::Reflect::set(&memory, &JsValue::from_str(key), &JsValue::from_f64(value));
+    };
+    set_memory("wasmBytes", info.memory.wasm_bytes as f64);
+    set_memory("fileBytes", info.memory.file_bytes as f64);
+    set_memory("decodedBytes", info.memory.decoded_bytes as f64);
+    set_memory("budget", info.memory.budget as f64);
+    set_memory("dumps", info.memory.dumps as f64);
+    set_memory("unloaded", info.memory.unloaded as f64);
+    set_memory("released", info.memory.released as f64);
+    let _ = js_sys::Reflect::set(
+        &memory,
+        &JsValue::from_str("overBudget"),
+        &JsValue::from_bool(info.memory.over_budget()),
+    );
+    set("memory", memory.into());
     // R2: the shell's re-render counter, written by `App::rendered` into
     // `__waveRenderCount`. Carried over here because this function replaces the
     // whole debug object on every redraw; it is *not* a per-component counter.

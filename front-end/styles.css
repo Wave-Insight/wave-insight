@@ -365,6 +365,73 @@ html, body {
   font-size: 12px;
 }
 
+/* Wave 12: bulk add - the multi-selection highlight and the per-row "add all
+   signals in this scope" button (icon only: the row text stays exactly the
+   scope name the QA matrix reads). */
+.tree-row.selected { background: var(--accent-soft); color: var(--text-0); }
+
+.tree-row.selected .tree-caret { color: var(--accent); }
+
+.tree-add {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  margin-left: auto;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.tree-add::before { content: "+"; }
+
+.tree-row:hover .tree-add,
+.tree-row.selected .tree-add,
+.tree-add:focus-visible {
+  opacity: 1;
+}
+
+.tree-add:hover {
+  background: var(--bg-4);
+  color: var(--accent);
+}
+
+.tree-add-selected {
+  appearance: none;
+  margin-left: auto;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  border-radius: var(--radius-sm);
+  padding: 1px 7px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: none;
+}
+
+.tree-add-selected:hover:not(:disabled) {
+  color: var(--text-0);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.tree-add-selected:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .tree-folder { color: var(--accent); flex: 0 0 auto; }
 
 /* ==========================================================================

@@ -18,16 +18,18 @@ use super::canvas;
 use super::ctrl::Ctrl;
 use super::export::{self, ExportFormat, ExportScope};
 use super::geometry::{self, content_height, visible_rows, Time, ROW_HEIGHT};
+use super::memory;
 use super::settings::Settings;
 use super::signal::SignalName;
 use super::time::{build_axis, Time as TimeBar};
 use super::util::signal_things::{derive_bit, RowValues, SignalItem, SignalThings};
 
-/// Decoded histories kept in memory before rows outside the viewport are
-/// dropped again. The backend charges ~40 bytes per decoded change.
-const CACHE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 /// Rows around the viewport that are kept decoded once they were shown, so a
 /// scroll back and forth does not decode again. In row units.
+///
+/// The decoded budget itself is global now ([~memory::DECODE_BUDGET_BYTES~],
+/// split over the open dumps): one budget for every dump and the split pane,
+/// instead of 64 MB per renderer instance.
 const KEEP_ROWS: usize = geometry::PREFETCH_ROWS * 4;
 /// Rows outside the viewport that are rendered into the DOM name column, so a
 /// fast scroll does not pop.
@@ -401,6 +403,15 @@ impl Component for WaveShow {
         self.keydown = None;
         self.keyup = None;
         self.onresize = None;
+        // Wave 12: the pane is going away: whatever it decoded for the dump it
+        // shows can be given back (the dump itself stays alive in the store, so
+        // the parsed body is only released when no other pane draws it).
+        if let Some(handle) = self.waveform.take() {
+            handle.waveform().unload_all_signals();
+            if !memory::is_drawn(&self.store, &handle) {
+                handle.waveform().release_cache();
+            }
+        }
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
@@ -556,6 +567,16 @@ impl WaveShow {
                 // a new dump means every row has to be resolved and decoded
                 // again; the handle itself lives in the store now
                 if self.waveform != waveform {
+                    // Wave 12: give back what the dump we are leaving held. Its
+                    // decoded histories are only needed again when the user
+                    // switches back, and its parsed body is only kept when
+                    // another pane (the split) still draws that dump.
+                    if let Some(previous) = self.waveform.take() {
+                        previous.waveform().unload_all_signals();
+                        if !memory::is_drawn(&self.store, &previous) {
+                            previous.waveform().release_cache();
+                        }
+                    }
                     self.waveform = waveform;
                     self.fitted = false;
                     self.fit_committed = false;
@@ -1443,20 +1464,28 @@ impl WaveShow {
 
     /// Give the memory back when the decoded histories grow past the budget.
     ///
-    /// Rows that are comfortably outside the viewport drop their handle and the
-    /// backend cache entry; scrolling back re-decodes them in one batch.
+    /// Two steps, because the budget is one number for the whole tab:
+    ///
+    /// 1. this pane's own share of the budget: rows comfortably outside the
+    ///    viewport drop their handle and the backend cache entry (scrolling back
+    ///    re-decodes them in one batch);
+    /// 2. the cross-dump part ([~memory::trim~]): dumps no pane draws give back
+    ///    their decoded histories, and their parsed bodies when that is still
+    ///    not enough. Nothing a pane draws is touched here.
     fn trim_cache(&mut self, draw: std::ops::Range<usize>) {
-        let Some(waveform) = self.waveform.as_ref().map(|waveform| waveform.waveform()) else {
-            return;
-        };
-        if waveform.cache_stats().decoded_bytes() <= CACHE_BUDGET_BYTES {
-            return;
+        if let Some(handle) = self.waveform.as_ref() {
+            let waveform = handle.waveform();
+            let open_dumps = memory::dump_handles(&self.store).len();
+            if waveform.cache_stats().decoded_bytes() > memory::per_dump_share(open_dumps) {
+                let rows = self.signal_things.len();
+                let keep = draw.start.saturating_sub(KEEP_ROWS)..(draw.end + KEEP_ROWS).min(rows);
+                for index in self.signal_things.drop_outside(keep) {
+                    let _ = waveform.unload_signal(index);
+                }
+            }
         }
-        let rows = self.signal_things.len();
-        let keep = draw.start.saturating_sub(KEEP_ROWS)..(draw.end + KEEP_ROWS).min(rows);
-        for index in self.signal_things.drop_outside(keep) {
-            let _ = waveform.unload_signal(index);
-        }
+        // the cross-dump budget: what no pane draws is given back
+        let _ = memory::trim(&self.store);
     }
 
     /// Paint the wave canvas from the current state.
@@ -1535,6 +1564,7 @@ impl WaveShow {
             cursor2: cursors.two,
             view: self.view,
             trace_end: self.time_range.map(|range| range.end as i64),
+            memory: memory::stats(&self.store),
         });
     }
 

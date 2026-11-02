@@ -12,7 +12,7 @@ use super::sources::SourcesSlice;
 use super::split::Split;
 use super::types::{
     Cursors, Dialog, DumpHandle, Focus, Goto, Layout, Picker, RowsSlice, SessionRestore, Status,
-    View, Viewport,
+    TreeSelection, View, Viewport,
 };
 
 /// The two CSS variables and the drawer flag. Subscribed by `App` only.
@@ -53,6 +53,11 @@ pub fn editor_ratio(state: &State) -> f32 {
 /// no-dump scratch list. Subscribed by the wave pane.
 pub fn rows(state: &State) -> RowsSlice {
     state.rows_slice()
+}
+
+/// The module-tree multi-selection (bulk add). Subscribed by the sidebar.
+pub fn tree_selection(state: &State) -> TreeSelection {
+    state.nav.tree_selection.clone()
 }
 
 /// The side-by-side split, when it is open.

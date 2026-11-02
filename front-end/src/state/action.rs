@@ -9,7 +9,7 @@
 //! multi-selection are owned by the reducer. The pane dispatches them and then
 //! renders from the resulting snapshot; it never mutates its own copy.
 
-use super::types::{Cursors, DumpHandle, DumpId, Focus, Layout, Settings, Status, View};
+use super::types::{Cursors, DumpHandle, DumpId, Focus, Layout, Row, Settings, Status, View};
 
 // `Layout`, `SetEditorRatio` and `ClearStatus` are the rest of the surface the
 // later R2 steps use; keeping the enum stable makes those steps additive.
@@ -126,6 +126,24 @@ pub enum Action {
     SplitLinkedToggled,
     /// The split divider moved, as the left pane's share of the wave frame.
     SetSplitRatio(f32),
+
+    /// A module-tree row was Ctrl/Cmd-clicked: toggle it in the multi-selection
+    /// and make it the Shift anchor.
+    TreeSelectionToggled { path: String },
+    /// A module-tree row was plain-clicked: the selection becomes that row (and
+    /// it becomes the Shift anchor). `focus.instance` is dispatched separately.
+    TreeSelectionReset { path: String },
+    /// A module-tree row was Shift-clicked: the selection becomes the visible
+    /// range the sidebar computed (`paths`, display order). The anchor stays.
+    TreeSelectionRanged { paths: Vec<String> },
+    /// The module-tree selection was cleared (Esc / empty click).
+    TreeSelectionCleared,
+
+    /// Several signals were added at once (bulk add from the module tree).
+    /// `rows` are resolved by `App`; the reducer dedupes them against the wave,
+    /// applies the remembered display settings, bumps the rows version once and
+    /// records the session once.
+    RowsAdded { rows: Vec<Row> },
 
     /// The committed zoom/pan of **one specific dump** (the split view's
     /// unlinked right pane). Unlike [`Action::ViewCommitted`], which targets the

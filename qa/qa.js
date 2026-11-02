@@ -2981,6 +2981,25 @@ scenarios.corruption = async (cdp) => {
       /intact VCD\/FST\/GHW dump/.test(s.status || ''), s.status);
     check('corruption: ' + item.what + ' is an error status, not a note', tone === 'error', tone);
   }
+  // a VCD that declares the same id twice with conflicting widths used to trap
+  // the wasm parser; the structural validation must turn it into the actionable
+  // refusal instead of a panic (fixture: the 298 B fe-auditor repro, committed
+  // as qa/fixtures/min_width_mismatch.vcd)
+  await cdp.upload([path.join(FIXTURES, 'min_width_mismatch.vcd')]);
+  await sleep(2500);
+  const mismatch = await state(cdp);
+  const mismatchTone = await cdp.eval('window.__qa.statusTone()');
+  const mismatchExceptions = await exceptions(cdp);
+  note('width mismatch', { status: mismatch.status, tone: mismatchTone, exceptions: mismatchExceptions });
+  check('corruption: a conflicting-width VCD is refused, not a wasm panic',
+    mismatchExceptions.length === 0, mismatchExceptions);
+  check('corruption: the conflicting-width VCD is named in an error status',
+    mismatchTone === 'error' && (mismatch.status || '').includes('min_width_mismatch.vcd'),
+    { status: mismatch.status, tone: mismatchTone });
+  check('corruption: the conflicting-width VCD error is actionable',
+    /could not be opened|malformed|invalid/i.test(mismatch.status || '')
+      && /intact VCD\/FST\/GHW dump|malformed|re-export/i.test(mismatch.status || ''),
+    mismatch.status);
   // the app must still be usable: the corrupt attempts left no broken state
   await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
   const loaded = await waitStatus(cdp, 'waveform loaded', 25000);
@@ -3608,6 +3627,386 @@ scenarios.splitView = async (cdp) => {
   check('splitView: the plain wave pane is back', st.surface && !st.surfaceInSplit && !st.canvas, st);
   check('splitView: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   await cdp.shot('qa-split-view.png');
+};
+
+
+// --- Wave 12: large dumps load (or refuse), never crash ------------------------
+// The generated dump is deterministic (qa/fixtures/generators/gen-large.js): a
+// realistic shape with thousands of signals and many time steps. The default
+// size keeps the matrix fast; bigger sizes are opt-in with QA_LARGE_MB=348,480.
+// A load must end in 'waveform loaded' or the actionable refusal, never a crash
+// or a blank page. The loader publishes its memory-first accounting on every
+// redraw as window.__waveDebug.memory = { wasmBytes, fileBytes, decodedBytes,
+// budget, dumps, unloaded, released, overBudget }: the decoded cache has to
+// stay inside its budget (visible rows are never evicted, so overBudget is the
+// documented soft flag), the wasm bytes inside the 1280 MB policy cap, closing
+// a dump must return its bytes, and a split view counts both dumps.
+// NOTE: the wide shape (200k signals / 16 MB) loads, but adding a row currently
+// panics the wasm (fe-auditor is diagnosing) - this scenario only asserts the
+// load for it until the fix lands; qa/README records the open bug.
+scenarios.largeDump = async (cdp) => {
+  const gen = require('./fixtures/generators/gen-large.js');
+  const dir = path.join(QA, 'artifacts', 'large');
+  fs.mkdirSync(dir, { recursive: true });
+  const ensure = async (name, bytes, options) => {
+    const file = path.join(dir, name);
+    if (!fs.existsSync(file) || fs.statSync(file).size < bytes) {
+      await gen.generate(file, bytes, options);
+    }
+    return { file: file, size: fs.statSync(file).size };
+  };
+  // wait for a terminal state: loaded, refused, or a hard timeout (a crash ends
+  // the CDP connection and fails the harness, which is the regression signal)
+  const loadAndWait = async (file, timeoutSeconds) => {
+    await cdp.upload([file]);
+    const started = Date.now();
+    let status = '';
+    for (let i = 0; i < timeoutSeconds; i++) {
+      await sleep(1000);
+      status = (await state(cdp)).status || '';
+      if (/waveform loaded|cannot open|too large|more than the \d+ MB|trim the dump/i.test(status)) break;
+    }
+    return { status: status, ms: Date.now() - started };
+  };
+  const loaded = (status) => /waveform loaded/.test(status || '');
+  const refused = (status) => /cannot open|too large|more than the \d+ MB|trim the dump/i.test(status || '');
+  const tabsInfo = () => cdp.eval('(function(){ const box = document.querySelector(".dump-tabs"); const names = Array.prototype.map.call(document.querySelectorAll(".dump-tab-name"), function(b){ return (b.innerText || "").trim(); }); return { present: !!box, names: names, title: box ? box.getAttribute("title") : null }; })()');
+  const memoryOf = () => cdp.eval('(function(){ const memory = window.__waveDebug ? window.__waveDebug.memory : null; if (!memory) return null; return { wasmBytes: memory.wasmBytes, fileBytes: memory.fileBytes, decodedBytes: memory.decodedBytes, budget: memory.budget, dumps: memory.dumps, unloaded: memory.unloaded, released: memory.released, overBudget: memory.overBudget }; })()');
+  const numeric = (value) => typeof value === 'number' && Number.isFinite(value);
+  const decodedOk = (memory) => !!memory && (memory.decodedBytes <= memory.budget + 8 * 1024 * 1024 || memory.overBudget === true);
+  // the generated fixtures must be well formed: unique ids, one width per id
+  // (the old two-char id scheme collided above 3969 signals and produced
+  // malformed dumps that used to trap the parser)
+  const wellFormed = (file) => {
+    const text = fs.readFileSync(file, 'utf8');
+    const widths = new Map();
+    let signals = 0;
+    let conflicts = 0;
+    for (const line of text.split('\n')) {
+      const match = /^\s*\$var wire (\d+) (\S+) /.exec(line);
+      if (match) {
+        signals += 1;
+        const previous = widths.get(match[2]);
+        if (previous !== undefined && previous !== match[1]) conflicts += 1;
+        widths.set(match[2], match[1]);
+      }
+      if (line.startsWith('$enddefinitions')) break;
+    }
+    return { signals: signals, unique: widths.size, conflicts: conflicts };
+  };
+  const defaultBytes = 30 * 1024 * 1024;
+  const first = await ensure('large-a-30mb.vcd', defaultBytes);
+  const second = await ensure('large-b-30mb.vcd', defaultBytes, { signals: 1200, changedPerStep: 300 });
+  const wide = await ensure('large-wide-200k.vcd', 16 * 1024 * 1024, { signals: 200000, changedPerStep: 200 });
+  const firstShape = wellFormed(first.file);
+  const wideShape = wellFormed(wide.file);
+  note('generated shapes', { first: firstShape, wide: wideShape });
+  check('largeDump: the generated fixtures are well formed (unique ids, one width per id)',
+    firstShape.signals > 0 && firstShape.unique === firstShape.signals && firstShape.conflicts === 0
+      && wideShape.signals === 200000 && wideShape.unique === wideShape.signals && wideShape.conflicts === 0,
+    { first: firstShape, wide: wideShape });
+  const sparse = path.join(dir, 'large-513mb.vcd');
+  if (!fs.existsSync(sparse) || fs.statSync(sparse).size < 513 * 1024 * 1024) {
+    // a valid VCD header so the format sniff succeeds, then a huge zero body:
+    // the 512 MB per-file guard must refuse it before the body is parsed
+    const header = ['$date qa oversized fixture $end', '$version qa $end', '$timescale 1ns $end',
+      '$scope module top $end', '$var wire 1 ! big $end', '$upscope $end', '$enddefinitions $end'].join('\n') + '\n';
+    fs.writeFileSync(sparse, header);
+    fs.truncateSync(sparse, 513 * 1024 * 1024);
+  }
+  await boot(cdp);
+  const firstLoad = await loadAndWait(first.file, 120);
+  const firstState = await state(cdp);
+  note('30 MB load', { ms: firstLoad.ms, status: firstLoad.status, tabs: firstState.tabs });
+  check('largeDump: a 30 MB dump ends in a load or an actionable refusal',
+    loaded(firstLoad.status) || refused(firstLoad.status), firstLoad.status);
+  check('largeDump: the load never leaves the app blank',
+    await cdp.eval('!!document.querySelector(".app")') === true && (await exceptions(cdp)).length === 0,
+    { status: firstLoad.status, exceptions: await exceptions(cdp) });
+  check('largeDump: the refusal path, when taken, names the limit and what to do',
+    !refused(firstLoad.status) || (/\d+ MB/.test(firstLoad.status) && /trim the dump/i.test(firstLoad.status)), firstLoad.status);
+  if (loaded(firstLoad.status)) {
+    const memoryMb = Number((firstLoad.status.match(/wasm memory (\d+) MB/) || [])[1]);
+    note('30 MB memory readout', memoryMb);
+    check('largeDump: the load reports its wasm memory',
+      Number.isFinite(memoryMb) && memoryMb > 0, firstLoad.status);
+    check('largeDump: the memory readout is inside the documented 512 MB tab budget',
+      memoryMb > 0 && memoryMb <= 512, memoryMb);
+    const memoryHook = await memoryOf();
+    note('30 MB memory hook', memoryHook);
+    check('largeDump: the memory hook is published with numeric accounting',
+      !!memoryHook && ['wasmBytes', 'fileBytes', 'decodedBytes', 'budget', 'dumps', 'unloaded', 'released'].every((field) => numeric(memoryHook[field])), memoryHook);
+    check('largeDump: the hook accounts for the loaded dump',
+      !!memoryHook && memoryHook.dumps === 1 && Math.abs(memoryHook.fileBytes - first.size) <= 1 && memoryHook.budget === 67108864, memoryHook);
+    check('largeDump: the wasm memory stays inside the 1280 MB policy cap',
+      !!memoryHook && memoryHook.wasmBytes <= 1280 * 1024 * 1024
+        && Math.abs(Math.round(memoryHook.wasmBytes / (1024 * 1024)) - memoryMb) <= 2,
+      { wasmBytes: memoryHook && memoryHook.wasmBytes, statusMb: memoryMb });
+    check('largeDump: the decode cache stays inside its budget (or flags overBudget)',
+      decodedOk(memoryHook), memoryHook);
+    // the dump is usable: rows can be added and the wave scrolls
+    const added = await cdp.eval('(function(){ const names = window.__qa.qa(".sidebar .sig-row .sig-name").slice(0, 3).map(function(n){ return n.innerText.trim().split("[")[0]; }); let n = 0; for (const name of names) { if (window.__qa.clickSignal(name) === "ok") n++; } return n; })()');
+    await sleep(1500);
+    const afterRows = await state(cdp);
+    note('30 MB rows', { clicked: added, rows: afterRows.waveNames.length, status: afterRows.status });
+    check('largeDump: rows can be added from a large dump',
+      added > 0 && afterRows.waveNames.length > 0, { clicked: added, rows: afterRows.waveNames });
+    const memoryAfterRows = await memoryOf();
+    note('memory after rows', memoryAfterRows);
+    check('largeDump: adding rows keeps the decode cache bounded',
+      decodedOk(memoryAfterRows), memoryAfterRows);
+    const surface = await cdp.eval('window.__qa.rect("#wave-surface")');
+    if (surface) {
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: Math.round(surface.x + surface.w / 2), y: Math.round(surface.y + surface.h / 2), deltaX: 0, deltaY: 400 });
+      await sleep(500);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: Math.round(surface.x + surface.w / 2), y: Math.round(surface.y + surface.h / 2), deltaX: 0, deltaY: -240, modifiers: 2 });
+      await sleep(700);
+    }
+    check('largeDump: scrolling and zooming a large dump raises no exceptions',
+      (await exceptions(cdp)).length === 0, await exceptions(cdp));
+    // a second dump: both are counted in the strip's total bytes
+    const secondLoad = await loadAndWait(second.file, 120);
+    await sleep(700);
+    const twoTabs = await tabsInfo();
+    const expectedMb = Math.round((first.size + second.size) / (1024 * 1024));
+    note('two dumps', { status: secondLoad.status, tabs: twoTabs, expectedMb: expectedMb });
+    check('largeDump: a second large dump opens beside the first',
+      loaded(secondLoad.status) && twoTabs.names.length === 2, twoTabs);
+    check('largeDump: the strip counts both dumps against the byte budget',
+      !!twoTabs.title && new RegExp('^2 dumps open, ' + expectedMb + ' MB of dump files$').test(twoTabs.title),
+      { title: twoTabs.title, expectedMb: expectedMb });
+    const memoryTwo = await memoryOf();
+    note('memory with two dumps', memoryTwo);
+    check('largeDump: the hook counts both dumps',
+      !!memoryTwo && memoryTwo.dumps === 2 && Math.abs(memoryTwo.fileBytes - (first.size + second.size)) <= 2, memoryTwo);
+    // closing the second dump returns its bytes to the budget
+    await cdp.eval('window.__qa.click(".dump-tab-close", 1)');
+    await sleep(800);
+    const oneTab = await tabsInfo();
+    const oneMb = Math.round(first.size / (1024 * 1024));
+    note('after closing the second dump', { tabs: oneTab, expectedMb: oneMb });
+    check('largeDump: closing a dump returns its bytes to the budget',
+      oneTab.present && oneTab.names.length === 1 && !!oneTab.title
+        && new RegExp('^1 dumps open, ' + oneMb + ' MB of dump files$').test(oneTab.title),
+      { title: oneTab.title, expectedMb: oneMb });
+    const memoryOne = await memoryOf();
+    note('memory after closing one dump', memoryOne);
+    check('largeDump: the hook returns the closed dump bytes',
+      !!memoryOne && memoryOne.dumps === 1 && Math.abs(memoryOne.fileBytes - first.size) <= 1, memoryOne);
+    // the split view counts both dumps again
+    await loadAndWait(second.file, 120);
+    await sleep(700);
+    await cdp.eval('(function(){ const b = Array.prototype.find.call(document.querySelectorAll(".split-btn"), function(x){ return x.getAttribute("aria-label") === "Split view"; }); if (b) b.click(); })()');
+    await sleep(1200);
+    const splitTabs = await tabsInfo();
+    const splitPane = await cdp.eval('(function(){ const pane = document.querySelector(".split-pane"); const name = pane ? pane.querySelector(".split-pane-name") : null; return { open: !!document.querySelector(".split-view"), name: name ? (name.textContent || "").trim() : null }; })()');
+    note('split over two large dumps', { tabs: splitTabs, pane: splitPane });
+    check('largeDump: the split view counts both dumps against the byte budget',
+      !!splitTabs.title && new RegExp('^2 dumps open, ' + expectedMb + ' MB of dump files$').test(splitTabs.title), splitTabs.title);
+    check('largeDump: the split right pane shows the other large dump',
+      splitPane.open && splitPane.name === 'large-a-30mb.vcd', splitPane);
+    const memorySplit = await memoryOf();
+    note('memory with the split open', memorySplit);
+    check('largeDump: the split counts both dumps in the hook',
+      !!memorySplit && memorySplit.dumps === 2, memorySplit);
+    await cdp.eval('(function(){ const b = Array.prototype.find.call(document.querySelectorAll(".split-btn"), function(x){ return x.getAttribute("aria-label") === "Close split view"; }); if (b) b.click(); })()');
+    await sleep(700);
+    // closing every dump releases its bytes (the second load made b the active
+    // dump, so close the first tab until the strip is gone)
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const stillOpen = await tabsInfo();
+      if (!stillOpen.present) break;
+      await cdp.eval('window.__qa.click(".dump-tab-close", 0)');
+      await sleep(700);
+    }
+    const closedTabs = await tabsInfo();
+    const memoryClosed = await memoryOf();
+    note('after closing every dump', { tabs: closedTabs, memory: memoryClosed });
+    check('largeDump: closing the last dump releases its bytes',
+      !!memoryClosed && memoryClosed.dumps === 0 && memoryClosed.fileBytes === 0 && !closedTabs.present
+        && memoryClosed.decodedBytes === 0,
+      { memory: memoryClosed, tabs: closedTabs });
+    check('largeDump: the start hint is back after closing every dump',
+      await cdp.eval('!!document.querySelector(".start-hint")') === true, closedTabs);
+  }
+  // the cheap refusal path: a sparse file above the 512 MB per-file guard
+  await boot(cdp);
+  await cdp.upload([sparse]);
+  await sleep(3000);
+  const refusalState = await state(cdp);
+  const refusalTone = await cdp.eval('window.__qa.statusTone()');
+  note('513 MB refusal', { status: refusalState.status, tone: refusalTone, tabs: refusalState.tabs });
+  check('largeDump: an oversized dump is refused with the documented 512 MB message',
+    /512 MB/.test(refusalState.status || '') && /trim the dump/i.test(refusalState.status || ''), refusalState.status);
+  check('largeDump: the refusal is an error and opens no tab',
+    refusalTone === 'error' && refusalState.tabs.length === 0, { tone: refusalTone, tabs: refusalState.tabs });
+  check('largeDump: the app is still alive after the refusal',
+    await cdp.eval('!!document.querySelector(".app")') === true && (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  // the sparse guard fixture is big and gitignored: drop it again
+  try { fs.rmSync(sparse, { force: true }); } catch (error) { /* best effort */ }
+  // the wide shape: loads and the first row adds (the generator now writes
+  // unique ids, so this is a well-formed 200k-signal dump)
+  await boot(cdp);
+  const wideLoad = await loadAndWait(wide.file, 120);
+  const wideState = await state(cdp);
+  const wideClicked = await cdp.eval('(function(){ const row = document.querySelector(".sidebar .sig-row"); if (!row) return null; row.click(); return true; })()');
+  await sleep(1500);
+  const wideAfter = await state(cdp);
+  const wideExceptions = await exceptions(cdp);
+  note('wide 200k load', { ms: wideLoad.ms, status: wideLoad.status, rows: wideState.waveNames.length, clicked: wideClicked, afterRows: wideAfter.waveNames.length, exceptions: wideExceptions });
+  check('largeDump: the wide 200k-signal shape loads without a crash',
+    loaded(wideLoad.status) && await cdp.eval('!!document.querySelector(".app")') === true
+      && wideExceptions.length === 0, wideLoad.status);
+  check('largeDump: the first row of the wide shape adds without a panic',
+    wideClicked === true && wideAfter.waveNames.length > 0 && wideExceptions.length === 0,
+    { clicked: wideClicked, rows: wideAfter.waveNames, exceptions: wideExceptions });
+  // opt-in: bigger sizes are manual (QA_LARGE_MB=348,480) and must end the same way
+  const extra = String(process.env.QA_LARGE_MB || '').split(',').map((value) => Number(value.trim())).filter((value) => value > 0 && value !== 30);
+  for (const mb of extra) {
+    const file = await ensure('large-' + mb + 'mb.vcd', mb * 1024 * 1024, { signals: 60, changedPerStep: 60 });
+    await boot(cdp);
+    const load = await loadAndWait(file.file, 180);
+    const optMemory = loaded(load.status) ? await memoryOf() : null;
+    note('opt-in ' + mb + ' MB', { ms: load.ms, status: load.status, memory: optMemory });
+    check('largeDump: a ' + mb + ' MB dump loads or is refused, never crashes',
+      (loaded(load.status) || refused(load.status)) && await cdp.eval('!!document.querySelector(".app")') === true,
+      load.status);
+    check('largeDump: a ' + mb + ' MB load stays inside the memory policy',
+      !loaded(load.status) || (!!optMemory && optMemory.wasmBytes <= 1280 * 1024 * 1024 && decodedOk(optMemory)),
+      { status: load.status, memory: optMemory });
+    // the opt-in dumps are hundreds of MB and gitignored: drop them again
+    try { fs.rmSync(file.file, { force: true }); } catch (error) { /* best effort */ }
+  }
+  check('largeDump: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-large-dump.png');
+};
+
+// --- Wave 12: bulk add from the module tree ------------------------------------
+// The Modules panel is a multi-select: plain click focuses a row and resets the
+// selection to it, Ctrl/Cmd+click toggles, Shift+click selects the visible range.
+// "Add selected (N)" (and Ctrl/Cmd+Enter) adds the deduped signals of the
+// selection in ONE RowsAdded batch; every .tree-row also has a .tree-add button
+// that adds its whole scope. The batch dedupes by path+bit and reports
+// 'added N signals (M already in the wave)' / 'no new signals: M already in the
+// wave'; above 2000 signals it refuses with 'too many signals to add at once'.
+scenarios.bulkAdd = async (cdp) => {
+  const treeState = () => cdp.eval(`(function(){
+    const rows = Array.prototype.map.call(document.querySelectorAll('.tree-row'), function(row){ const rect = row.getBoundingClientRect(); const name = row.querySelector('.tree-name'); return { text: name ? (name.innerText || '').trim() : (row.innerText || '').trim(), title: row.getAttribute('title'), selected: row.getAttribute('aria-selected'), classes: row.className, add: !!row.querySelector('.tree-add'), addLabel: row.querySelector('.tree-add') ? row.querySelector('.tree-add').getAttribute('aria-label') : null, x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }; });
+    const button = document.querySelector('.tree-add-selected');
+    return { rows: rows, button: button ? { text: (button.innerText || '').trim(), label: button.getAttribute('aria-label'), title: button.getAttribute('title'), disabled: button.disabled } : null };
+  })()`);
+  const counts = async () => {
+    const current = await state(cdp);
+    return { rows: current.waveNames.length, status: current.status, render: await cdp.eval('window.__qa.dbg("render_count")') };
+  };
+  const plainClick = async (row) => { await cdp.clickAt(row.x, row.y); await sleep(500); };
+  const ctrlClick = async (row) => {
+    await cdp.mouse('mousePressed', row.x, row.y, { buttons: 1, modifiers: 2 });
+    await cdp.mouse('mouseReleased', row.x, row.y, { buttons: 0, modifiers: 2 });
+    await sleep(450);
+  };
+  const shiftClick = async (row) => {
+    await cdp.mouse('mousePressed', row.x, row.y, { buttons: 1, modifiers: 8 });
+    await cdp.mouse('mouseReleased', row.x, row.y, { buttons: 0, modifiers: 8 });
+    await sleep(450);
+  };
+  const clickAddSelected = async () => { await cdp.eval('(function(){ const b = document.querySelector(".tree-add-selected"); if (b) b.click(); })()'); await sleep(1200); };
+  const clickTreeAdd = async (path) => cdp.eval('(function(){ const row = Array.prototype.find.call(document.querySelectorAll(".tree-row"), function(r){ return (r.getAttribute("title") || "") === ' + JSON.stringify(path) + '; }); if (!row) return null; const b = row.querySelector(".tree-add"); if (!b) return null; b.click(); return true; })()');
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'top.sv'), path.join(FIXTURES, 'cpu.sv')]);
+  await waitTabs(cdp, 2);
+  await sleep(2500);
+  let tree = await treeState();
+  note('bulkAdd tree', tree);
+  const rows = tree.rows;
+  const rowFor = (path) => rows.find((row) => row.title === path);
+  const first = rowFor('top.u_cpu');
+  const second = rowFor('top.u_cpu16');
+  check('bulkAdd: every tree row exposes its selection state and an add-scope button',
+    rows.length >= 2 && rows.every((row) => (row.selected === 'true' || row.selected === 'false') && row.add === true
+      && (row.addLabel || '').startsWith('Add all signals in ')), tree.rows);
+  check('bulkAdd: the add-selected button starts empty and disabled',
+    !!tree.button && tree.button.text === 'Add selected (0)' && tree.button.label === 'Add selected signals'
+      && tree.button.title === 'Add 0 signals from the selected scopes' && tree.button.disabled === true, tree.button);
+  // a scope add: the whole subtree in one batch
+  const beforeScope = await counts();
+  const scopeClicked = await clickTreeAdd('top.u_cpu');
+  await sleep(1200);
+  const afterScope = await counts();
+  note('scope add', { clicked: scopeClicked, before: beforeScope, after: afterScope });
+  check('bulkAdd: a .tree-add adds the whole scope in one batch',
+    scopeClicked === true && afterScope.rows === beforeScope.rows + 8
+      && afterScope.status === 'added 8 signals (0 already in the wave)',
+    { before: beforeScope, after: afterScope });
+  // plain click resets the selection to that row; ctrl-click toggles the second
+  await plainClick(first);
+  tree = await treeState();
+  note('after plain click', tree);
+  check('bulkAdd: a plain click focuses one row and resets the selection',
+    tree.rows.filter((row) => row.selected === 'true').length === 1
+      && (tree.rows.find((row) => row.title === 'top.u_cpu') || {}).selected === 'true'
+      && tree.button.text === 'Add selected (8)' && tree.button.disabled === false,
+    { rows: tree.rows.map((row) => row.selected), button: tree.button });
+  await ctrlClick(second);
+  tree = await treeState();
+  note('after ctrl click', tree);
+  check('bulkAdd: ctrl+click toggles a second row into the selection',
+    tree.rows.filter((row) => row.selected === 'true').length === 2 && tree.button.text === 'Add selected (16)',
+    { rows: tree.rows.map((row) => row.selected), button: tree.button });
+  // the batch adds the missing scope and reports the already-added signals
+  const beforeBatch = await counts();
+  await clickAddSelected();
+  const afterBatch = await counts();
+  note('partial duplicate batch', { before: beforeBatch, after: afterBatch });
+  check('bulkAdd: a batch reports the signals that were already in the wave',
+    afterBatch.rows === beforeBatch.rows + 8 && afterBatch.status === 'added 8 signals (8 already in the wave)',
+    { before: beforeBatch, after: afterBatch });
+  // adding the whole selection again is deduped into one 'no new signals' note
+  await clickAddSelected();
+  const afterBatchAgain = await counts();
+  note('add selected again', afterBatchAgain);
+  check('bulkAdd: adding the selection again is deduped',
+    afterBatchAgain.rows === afterBatch.rows && afterBatchAgain.status === 'no new signals: 16 already in the wave',
+    afterBatchAgain);
+  check('bulkAdd: the batch adds in one render, not one render per row',
+    afterBatch.render - beforeBatch.render <= 2, { before: beforeBatch.render, after: afterBatch.render });
+  // Ctrl+Enter is the keyboard path for the same batch
+  const ctrlEnter = await cdp.eval('(function(){ window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })); return true; })()');
+  await sleep(1200);
+  const afterKey = await counts();
+  note('ctrl+enter', { dispatched: ctrlEnter, after: afterKey });
+  check('bulkAdd: Ctrl+Enter runs the same batch as the button',
+    ctrlEnter === true && afterKey.rows === afterBatch.rows && /already in the wave/.test(afterKey.status || ''), afterKey);
+  // shift+click selects the visible range from the anchor
+  await plainClick(first);
+  await shiftClick(second);
+  tree = await treeState();
+  note('after shift click', tree);
+  check('bulkAdd: shift+click selects the range from the anchor',
+    tree.rows.filter((row) => row.selected === 'true').length === 2 && tree.button.text === 'Add selected (16)', tree.rows.map((row) => row.selected));
+
+  // the cap: 3000 signals selected -> actionable refusal, no rows, no crash
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'wide_scope.sv')]);
+  await waitTabs(cdp, 1);
+  await sleep(2000);
+  tree = await treeState();
+  note('cap tree', tree);
+  const capRows = tree.rows.filter((row) => (row.title || '').indexOf('wide_top.u_') >= 0);
+  for (const row of capRows) { await ctrlClick(row); }
+  tree = await treeState();
+  note('cap selected', tree);
+  const beforeCap = await counts();
+  await clickAddSelected();
+  const afterCap = await counts();
+  note('cap result', { rows: capRows.length, before: beforeCap, after: afterCap });
+  check('bulkAdd: a selection above the 2000-signal cap is refused with the limit and the way out',
+    capRows.length === 3 && beforeCap.status !== afterCap.status
+      && /^too many signals to add at once: \d+ \(limit 2000\) — select fewer modules$/.test(afterCap.status || '')
+      && /3000/.test(afterCap.status || ''), afterCap.status);
+  check('bulkAdd: the refused batch adds no rows', afterCap.rows === 0, afterCap.rows);
+  check('bulkAdd: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-bulk-add.png');
 };
 
 (async () => {

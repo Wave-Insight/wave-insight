@@ -498,6 +498,92 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             viewport.cursors = cursors;
             state.set_viewport(viewport);
         }
+        Action::TreeSelectionToggled { path } => {
+            let selection = &mut state.nav.tree_selection;
+            if let Some(index) = selection
+                .paths
+                .iter()
+                .position(|selected| selected == &path)
+            {
+                selection.paths.remove(index);
+            } else {
+                selection.paths.push(path.clone());
+            }
+            selection.anchor = Some(path);
+        }
+        Action::TreeSelectionReset { path } => {
+            state.nav.tree_selection = crate::state::types::TreeSelection {
+                paths: vec![path.clone()],
+                anchor: Some(path),
+            };
+        }
+        Action::TreeSelectionRanged { paths } => {
+            let mut paths = paths;
+            paths.dedup();
+            let anchor = state
+                .nav
+                .tree_selection
+                .anchor
+                .clone()
+                .or_else(|| paths.first().cloned());
+            state.nav.tree_selection = crate::state::types::TreeSelection { paths, anchor };
+        }
+        Action::TreeSelectionCleared => {
+            state.nav.tree_selection = crate::state::types::TreeSelection::default();
+        }
+        Action::RowsAdded { rows } => {
+            // bulk add: one dispatch, one rows-version bump, one session write
+            if rows.is_empty() {
+                return Vec::new();
+            }
+            if rows.len() > crate::state::bulk::BULK_ADD_CAP {
+                state.nav.status = Some(Status::error(format!(
+                    "too many signals to add at once: {} (limit {}) — select fewer modules",
+                    rows.len(),
+                    crate::state::bulk::BULK_ADD_CAP
+                )));
+                return Vec::new();
+            }
+            let mut items = state.rows_items();
+            // insert after the last chosen row, like a single add
+            let mut insert_at = items
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| row.chosen)
+                .map(|(index, _)| index)
+                .next_back()
+                .map(|index| index + 1)
+                .unwrap_or(items.len());
+            let mut added = 0usize;
+            let mut skipped = 0usize;
+            for mut row in rows {
+                if row.path.is_empty()
+                    || items
+                        .iter()
+                        .any(|existing| existing.path == row.path && existing.bit == row.bit)
+                {
+                    skipped += 1;
+                    continue;
+                }
+                // the remembered display settings win, exactly like a single add
+                row.setting = state.row_prefs.setting_for(&row.path);
+                row.chosen = false;
+                row.width = row.width.max(1);
+                items.insert(insert_at, row);
+                insert_at += 1;
+                added += 1;
+            }
+            if added == 0 {
+                state.nav.status = Some(Status::info(format!(
+                    "no new signals: {skipped} already in the wave"
+                )));
+                return Vec::new();
+            }
+            state.set_rows(items);
+            state.nav.status = Some(Status::info(format!(
+                "added {added} signals ({skipped} already in the wave)"
+            )));
+        }
         Action::RowSettingChanged { indices, setting } => {
             let mut items = state.rows_items();
             let mut changed = false;
@@ -606,6 +692,8 @@ fn refresh_tree(state: &mut State) {
         Some(entry) => entry.focus.instance = None,
         None => state.focus.instance = None,
     }
+    // the bulk selection belongs to the old tree
+    state.nav.tree_selection = crate::state::types::TreeSelection::default();
 }
 
 /// The rows a sources-only session already had on the wave, moved into the first
@@ -2118,5 +2206,199 @@ mod tests {
             },
         );
         assert!(state.rows.items.iter().all(|row| !row.chosen));
+    }
+
+    #[test]
+    fn tree_selection_toggles_ranges_and_resets() {
+        let mut state = state();
+        reduce(
+            &mut state,
+            Action::TreeSelectionToggled {
+                path: "top".to_string(),
+            },
+        );
+        reduce(
+            &mut state,
+            Action::TreeSelectionToggled {
+                path: "top.u_cpu".to_string(),
+            },
+        );
+        assert_eq!(
+            state.nav.tree_selection.paths,
+            vec!["top".to_string(), "top.u_cpu".to_string()]
+        );
+        assert_eq!(
+            state.nav.tree_selection.anchor.as_deref(),
+            Some("top.u_cpu")
+        );
+        // toggling again removes it; the anchor is the row just clicked
+        reduce(
+            &mut state,
+            Action::TreeSelectionToggled {
+                path: "top".to_string(),
+            },
+        );
+        assert_eq!(
+            state.nav.tree_selection.paths,
+            vec!["top.u_cpu".to_string()]
+        );
+        assert_eq!(state.nav.tree_selection.anchor.as_deref(), Some("top"));
+        // Shift+click: the sidebar hands the visible range over
+        reduce(
+            &mut state,
+            Action::TreeSelectionRanged {
+                paths: vec!["top".to_string(), "top.u_cpu".to_string()],
+            },
+        );
+        assert_eq!(
+            state.nav.tree_selection.paths,
+            vec!["top".to_string(), "top.u_cpu".to_string()]
+        );
+        // a plain click resets to one row and becomes the new anchor
+        reduce(
+            &mut state,
+            Action::TreeSelectionReset {
+                path: "top.g[0]".to_string(),
+            },
+        );
+        assert_eq!(state.nav.tree_selection.paths, vec!["top.g[0]".to_string()]);
+        assert_eq!(state.nav.tree_selection.anchor.as_deref(), Some("top.g[0]"));
+        // and the selection can be cleared
+        reduce(&mut state, Action::TreeSelectionCleared);
+        assert!(state.nav.tree_selection.is_empty());
+        assert_eq!(state.nav.tree_selection.anchor, None);
+    }
+
+    #[test]
+    fn bulk_add_dedupes_applies_settings_and_bumps_the_rows_version_once() {
+        let mut state = state();
+        add(&mut state, "top.clk");
+        // a remembered display setting must come back on the batch rows
+        reduce(
+            &mut state,
+            Action::RowSettingChanged {
+                indices: vec![0],
+                setting: Settings { ..Settings::new() },
+            },
+        );
+        let version = state.rows.version;
+        let rows = vec![
+            Row {
+                path: "top.clk".to_string(),
+                name: "top.clk".to_string(),
+                width: 8,
+                setting: Settings::new(),
+                chosen: false,
+                load: vec![],
+                drive: vec![],
+                bit: None,
+            },
+            Row {
+                path: "top.rst".to_string(),
+                name: "top.rst".to_string(),
+                width: 1,
+                setting: Settings::new(),
+                chosen: false,
+                load: vec![],
+                drive: vec![],
+                bit: None,
+            },
+            Row {
+                path: "top.pc".to_string(),
+                name: "top.pc".to_string(),
+                width: 8,
+                setting: Settings::new(),
+                chosen: false,
+                load: vec![],
+                drive: vec![],
+                bit: None,
+            },
+        ];
+        reduce(&mut state, Action::RowsAdded { rows });
+        assert_eq!(paths(&state), vec!["top.clk", "top.rst", "top.pc"]);
+        // one rows-version bump for the whole batch
+        assert_eq!(state.rows.version, version + 1);
+        // the duplicate is reported in the status line, not added twice
+        let status = state.nav.status.as_ref().expect("a status line");
+        assert!(status.text.contains("added 2 signals"), "{}", status.text);
+        assert!(
+            status.text.contains("1 already in the wave"),
+            "{}",
+            status.text
+        );
+    }
+
+    #[test]
+    fn bulk_add_refuses_more_than_the_cap_and_keeps_the_rows() {
+        let mut state = state();
+        let rows: Vec<Row> = (0..crate::state::bulk::BULK_ADD_CAP + 1)
+            .map(|index| Row {
+                path: format!("top.signal{index}"),
+                name: format!("top.signal{index}"),
+                width: 1,
+                setting: Settings::new(),
+                chosen: false,
+                load: vec![],
+                drive: vec![],
+                bit: None,
+            })
+            .collect();
+        let version = state.rows.version;
+        reduce(&mut state, Action::RowsAdded { rows });
+        assert!(state.rows_items().is_empty());
+        assert_eq!(state.rows.version, version);
+        let status = state.nav.status.as_ref().expect("a status line");
+        assert_eq!(status.tone, StatusTone::Error);
+        assert!(status.text.contains("too many signals"), "{}", status.text);
+    }
+
+    #[test]
+    fn bulk_add_remembers_the_session_once() {
+        let mut state = state();
+        let rows = vec![
+            Row {
+                path: "top.clk".to_string(),
+                name: "top.clk".to_string(),
+                width: 1,
+                setting: Settings::new(),
+                chosen: false,
+                load: vec![],
+                drive: vec![],
+                bit: None,
+            },
+            Row {
+                path: "top.rst".to_string(),
+                name: "top.rst".to_string(),
+                width: 1,
+                setting: Settings::new(),
+                chosen: false,
+                load: vec![],
+                drive: vec![],
+                bit: None,
+            },
+        ];
+        reduce(&mut state, Action::RowsAdded { rows });
+        // the session remembers the whole batch (it is the rows memory the
+        // persister writes), not just the last signal
+        let remembered = state.rows_items();
+        assert_eq!(remembered.len(), 2);
+        assert_eq!(remembered[0].path, "top.clk");
+        assert_eq!(remembered[1].path, "top.rst");
+    }
+
+    #[test]
+    fn a_new_tree_drops_the_bulk_selection() {
+        let mut state = state();
+        reduce(
+            &mut state,
+            Action::TreeSelectionToggled {
+                path: "top".to_string(),
+            },
+        );
+        assert!(!state.nav.tree_selection.is_empty());
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("a.vcd"), Some(size));
+        // the tree was rebuilt for the dump: the old selection is gone
+        assert!(state.nav.tree_selection.is_empty());
     }
 }

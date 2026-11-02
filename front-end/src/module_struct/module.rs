@@ -27,7 +27,7 @@ use crate::module_struct::seam;
 use crate::module_struct::virtual_list::{self, ROW_H};
 use crate::module_struct::SignalStruct;
 use crate::nav::SidebarTree;
-use crate::state::Focus;
+use crate::state::{bulk, Focus};
 
 /// One row of the flattened module tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,9 +44,24 @@ struct FlatRow {
     expanded: bool,
 }
 
+/// What a module-tree click means for the bulk selection.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TreeSelect {
+    /// Plain click: the selection becomes this row (and it becomes the anchor).
+    Reset(String),
+    /// Ctrl/Cmd click: toggle this row in the selection.
+    Toggle(String),
+    /// Shift click: the visible range from the anchor to this row.
+    Range(Vec<String>),
+}
+
 pub enum Msg {
-    /// A scope row was clicked: select it (and open it, as before).
-    Select(String),
+    /// A scope row was clicked; `ctrl`/`shift` are the modifier state.
+    Select {
+        path: String,
+        ctrl: bool,
+        shift: bool,
+    },
     /// A signal row was clicked: its hierarchical path.
     SignalAdd(String),
     /// The modules panel scrolled or was measured: (scroll top, viewport).
@@ -66,9 +81,24 @@ pub struct ModuleStructProps {
     /// the expanded set stays component-local).
     #[prop_or_default]
     pub focus: Focus,
-    /// A scope row was clicked: the store owns the selection.
+    /// A scope row was clicked: the store owns the single selection.
     #[prop_or_default]
     pub oninstance: Callback<String>,
+    /// The module-tree multi-selection (bulk add): selected scope paths.
+    #[prop_or_default]
+    pub selection: Vec<String>,
+    /// The Shift+click anchor (the last plain/ctrl click).
+    #[prop_or_default]
+    pub anchor: Option<String>,
+    /// A row was clicked with modifiers: the store owns the multi-selection.
+    #[prop_or_default]
+    pub onselection: Callback<TreeSelect>,
+    /// "Add all signals in this scope": the scope path.
+    #[prop_or_default]
+    pub onaddscope: Callback<String>,
+    /// "Add selected (N)": the app adds the selection's signals in one batch.
+    #[prop_or_default]
+    pub onaddselected: Callback<()>,
 }
 
 pub struct ModuleStruct {
@@ -77,6 +107,10 @@ pub struct ModuleStruct {
     /// The last module selection seen in the props: a focus change re-renders
     /// the sidebar even when the tree did not move.
     instance: Option<String>,
+    /// The multi-selection last seen in the props (bulk-add highlight).
+    selection: Vec<String>,
+    /// The Shift anchor last seen in the props.
+    anchor: Option<String>,
     /// Scope paths whose children are open (the old per-row show_sub flag).
     expanded: HashSet<String>,
     /// The flattened rows of the open tree. Rebuilt when the tree or the
@@ -103,6 +137,8 @@ impl Component for ModuleStruct {
         let mut this = Self {
             tree: None,
             instance: None,
+            selection: Vec::new(),
+            anchor: None,
             expanded: HashSet::new(),
             rows: Vec::new(),
             scope_count: 0,
@@ -128,6 +164,12 @@ impl Component for ModuleStruct {
         // signal list even though the tree is the same
         if self.instance != ctx.props().focus.instance {
             self.instance = ctx.props().focus.instance.clone();
+            return true;
+        }
+        // the multi-selection highlight lives in the props (store state)
+        if self.selection != ctx.props().selection || self.anchor != ctx.props().anchor {
+            self.selection = ctx.props().selection.clone();
+            self.anchor = ctx.props().anchor.clone();
             return true;
         }
         false
@@ -170,10 +212,27 @@ impl Component for ModuleStruct {
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::Select(path) => {
+            Msg::Select { path, ctrl, shift } => {
+                if ctrl {
+                    // Ctrl/Cmd+click toggles the row in the bulk selection; the
+                    // single (inspector) selection does not move
+                    ctx.props().onselection.emit(TreeSelect::Toggle(path));
+                    return true;
+                }
+                if shift {
+                    // Shift+click selects the visible range from the anchor
+                    let visible: Vec<String> =
+                        self.rows.iter().map(|row| row.path.clone()).collect();
+                    let paths = bulk::range_between(&visible, ctx.props().anchor.as_deref(), &path);
+                    ctx.props().onselection.emit(TreeSelect::Range(paths));
+                    return true;
+                }
                 // the store owns the selection; the component keeps only the
                 // expansion set (a presentation detail)
                 ctx.props().oninstance.emit(path.clone());
+                ctx.props()
+                    .onselection
+                    .emit(TreeSelect::Reset(path.clone()));
                 // clicking a scope opens it (the old row did the same)
                 let opens = self
                     .tree
@@ -243,7 +302,15 @@ impl Component for ModuleStruct {
             ROW_H,
         );
         self.module_window.set(window);
-        let onselect = link.callback(Msg::Select);
+        let selection: std::collections::HashSet<&str> =
+            ctx.props().selection.iter().map(String::as_str).collect();
+        // the button counts what would be added, deduped across the scopes
+        let selected_count = bulk::signals_under_many(tree, &ctx.props().selection).len();
+        let link = link.clone();
+        let onaddselected = {
+            let callback = ctx.props().onaddselected.clone();
+            Callback::from(move |_: MouseEvent| callback.emit(()))
+        };
         let onscroll = {
             let module_ref = self.module_ref.clone();
             link.callback(move |_: Event| {
@@ -258,7 +325,16 @@ impl Component for ModuleStruct {
         html! {
             <div class="side-stack">
                 <section class="panel">
-                    <div class="panel-head">{"Modules"}</div>
+                    <div class="panel-head">
+                        {"Modules"}
+                        <button type="button" class="tree-add-selected"
+                            aria-label="Add selected signals"
+                            title={format!("Add {selected_count} signals from the selected scopes")}
+                            disabled={ctx.props().selection.is_empty()}
+                            onclick={onaddselected.clone()}>
+                            {format!("Add selected ({selected_count})")}
+                        </button>
+                    </div>
                     <div class="panel-body" ref={self.module_ref.clone()} onscroll={onscroll}>
                         {
                             if window.top > 0.0 {
@@ -272,10 +348,12 @@ impl Component for ModuleStruct {
                         }
                         {
                             for rows.iter().map(|row| {
-                                let chosen = if row.path == selected {
-                                    "tree-row chosen"
-                                } else {
-                                    "tree-row"
+                                let is_selected = selection.contains(row.path.as_str());
+                                let chosen = match (row.path == selected, is_selected) {
+                                    (true, true) => "tree-row chosen selected",
+                                    (true, false) => "tree-row chosen",
+                                    (false, true) => "tree-row selected",
+                                    (false, false) => "tree-row",
                                 };
                                 let caret = if !row.has_children {
                                     ""
@@ -292,11 +370,27 @@ impl Component for ModuleStruct {
                                 let space: String = (0..row.depth * 2).map(|_| " ").collect();
                                 let path = row.path.clone();
                                 let title = row.path.clone();
+                                let add_path = row.path.clone();
+                                let add_label = format!("Add all signals in {}", row.path);
+                                let add_callback = ctx.props().onaddscope.clone();
+                                let click_link = link.clone();
                                 html! {
                                     <div class={chosen} title={title}
-                                        onclick={onselect.clone().reform(move |_: MouseEvent| path.clone())}>
+                                        aria-selected={if is_selected {"true"} else {"false"}}
+                                        onclick={click_link.callback(move |event: MouseEvent| Msg::Select {
+                                            path: path.clone(),
+                                            ctrl: event.ctrl_key() || event.meta_key(),
+                                            shift: event.shift_key(),
+                                        })}>
                                         <span class={caret_class}>{caret}</span>
                                         <span class="tree-name">{space + &row.name}</span>
+                                        <button type="button" class="tree-add"
+                                            aria-label={add_label.clone()}
+                                            title={add_label}
+                                            onclick={Callback::from(move |event: MouseEvent| {
+                                                event.stop_propagation();
+                                                add_callback.emit(add_path.clone());
+                                            })}></button>
                                     </div>
                                 }
                             })

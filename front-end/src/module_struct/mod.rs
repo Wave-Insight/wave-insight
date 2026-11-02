@@ -6,7 +6,7 @@
 //!
 //! Lists up to [`virtual_list::VIRTUALIZE_ABOVE`] rows are drawn whole, so the
 //! small fixtures the QA matrix drives keep exactly the DOM they had before.
-pub use module::ModuleStruct;
+pub use module::{ModuleStruct, TreeSelect};
 pub use signal_struct::SignalStruct;
 
 mod module;

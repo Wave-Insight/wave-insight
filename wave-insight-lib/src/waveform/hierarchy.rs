@@ -2,11 +2,19 @@
 //!
 //! `wellen` exposes a flat arena of scopes and variables linked by handles.
 //! The viewer wants paths (`top.u_cpu.pc`), widths, index ranges and a tree it
-//! can walk, so we resolve everything once when the file is opened and keep it
-//! as plain owned data. Resolving the hierarchy is cheap compared to reading
-//! values: it is the file header, not the body.
+//! can walk, so we resolve everything once when the file is opened. Resolving
+//! the hierarchy is cheap compared to reading values: it is the file header,
+//! not the body.
+//!
+//! The resolved form is deliberately compact: names and variable types are
+//! interned (`Arc<str>`), every signal in a scope shares that scope's
+//! `Arc<[String]>` components, and the full path is built lazily in a
+//! `OnceLock<String>` on first `path()`.  There is no path index map: a lookup
+//! walks the scope tree instead (see [`HierarchyView::signal_by_path`]).  The
+//! accounting lives in [`HierarchyStats`] and [`HierarchyView::memory_stats`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 
 use wellen::{Hierarchy, ItemRef, ScopeRef, SignalEncoding, SignalRef, VarRef};
 
@@ -50,12 +58,16 @@ impl SignalKind {
 pub struct SignalInfo {
     /// Dense index, valid as a value query argument.
     index: usize,
-    /// Name inside its scope, e.g. `pc`.
-    name: String,
-    /// Full dotted path, e.g. `top.u_cpu.pc`.
-    path: String,
+    /// Name inside its scope, e.g. `pc`.  Interned: the same local name in many
+    /// scopes shares one allocation.
+    name: Arc<str>,
     /// Path components of the enclosing scope, empty for top level variables.
-    scope: Vec<String>,
+    /// Shared by every signal declared in the same scope.
+    scope: Arc<[String]>,
+    /// Full dotted path, e.g. `top.u_cpu.pc`, built on first use only.  100k
+    /// signals no longer pre-allocate 100k full path strings (and no scope
+    /// path is stored per signal: it is rebuilt from the shared components).
+    path: OnceLock<String>,
     /// What the values look like.
     kind: SignalKind,
     /// Width in bits for [`SignalKind::BitVector`], `0` otherwise.
@@ -63,7 +75,8 @@ pub struct SignalInfo {
     /// Declared index range, e.g. `[7:0]` becomes `Some((7, 0))`.
     index_range: Option<(i64, i64)>,
     /// wellen's variable type, e.g. `"Wire"`, `"Logic"`, `"Parameter"`.
-    var_type: String,
+    /// Interned: there are only a handful of distinct types.
+    var_type: Arc<str>,
     /// Handle into wellen's hierarchy, used to request the values.
     pub(crate) signal_ref: SignalRef,
 }
@@ -84,7 +97,29 @@ impl SignalInfo {
     /// This is the key the wave view uses to match a row against the dump (the
     /// VCD identifier code is not preserved by wellen).
     pub fn path(&self) -> &str {
-        &self.path
+        let scope = Arc::clone(&self.scope);
+        let name = Arc::clone(&self.name);
+        self.path
+            .get_or_init(|| {
+                if scope.is_empty() {
+                    name.to_string()
+                } else {
+                    let mut path = String::with_capacity(
+                        scope
+                            .iter()
+                            .map(|component| component.len() + 1)
+                            .sum::<usize>()
+                            + name.len(),
+                    );
+                    for component in scope.iter() {
+                        path.push_str(component);
+                        path.push('.');
+                    }
+                    path.push_str(&name);
+                    path
+                }
+            })
+            .as_str()
     }
 
     /// Path components of the enclosing scope, e.g. `["top", "u_cpu"]`.
@@ -131,10 +166,13 @@ impl SignalInfo {
 /// A scope of the design, with the variables and child scopes it declares.
 #[derive(Clone, Debug, Default)]
 pub struct ScopeNode {
-    /// Name inside the parent scope, empty for the virtual root.
-    name: String,
-    /// Full dotted path, empty for the virtual root.
-    path: String,
+    /// Name inside the parent scope, empty for the virtual root; interned.
+    name: Arc<str>,
+    /// Full dotted path, empty for the virtual root; shared with the signals
+    /// declared in this scope.
+    path: Arc<str>,
+    /// Path components of this scope (same as the signals' `scope` field).
+    components: Arc<[String]>,
     /// Indices of the variables declared directly in this scope.
     signals: Vec<usize>,
     /// Child scopes in declaration order.
@@ -157,6 +195,11 @@ impl ScopeNode {
         &self.signals
     }
 
+    /// Path components of this scope (empty for the virtual root).
+    pub fn components(&self) -> &[String] {
+        &self.components
+    }
+
     /// Child scopes in declaration order.
     pub fn children(&self) -> &[ScopeNode] {
         &self.children
@@ -164,12 +207,12 @@ impl ScopeNode {
 
     /// Find a child scope by its local name.
     pub fn child(&self, name: &str) -> Option<&ScopeNode> {
-        self.children.iter().find(|child| child.name == name)
+        self.children.iter().find(|child| &*child.name == name)
     }
 
     /// Find a scope by full path, e.g. `"top.u_cpu"`. The empty path is the root.
     pub fn find(&self, path: &str) -> Option<&ScopeNode> {
-        if self.path == path {
+        if &*self.path == path {
             return Some(self);
         }
         self.children.iter().find_map(|child| child.find(path))
@@ -191,12 +234,50 @@ impl ScopeNode {
     }
 }
 
+/// Heap accounting of the resolved hierarchy, by category.
+///
+/// This is the library's own accounting (no allocator hooks): byte lengths of
+/// the strings, struct sizes and container capacities.  It is meant for a
+/// memory_stats()-style report and for regression tests that assert interning
+/// shrinks the hierarchy, not for exact RSS accounting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HierarchyStats {
+    /// Number of scopes, including the virtual root.
+    pub scopes: usize,
+    /// Number of variables.
+    pub signals: usize,
+    /// size_of of the scope tree and the signal vector.
+    pub struct_bytes: usize,
+    /// Bytes of the variable/scope names and variable types.
+    pub name_bytes: usize,
+    /// Bytes of the full-path strings (signal paths, scope paths, lookup keys).
+    pub path_bytes: usize,
+    /// Bytes of the per-signal scope component vectors.
+    pub scope_component_bytes: usize,
+    /// Approximate bytes of the path/alias lookup structures.
+    pub index_bytes: usize,
+    /// Unique interned strings (0 when interning is not used).
+    pub interned_strings: usize,
+    /// Bytes of the unique interned string allocations.
+    pub interned_bytes: usize,
+}
+
+impl HierarchyStats {
+    /// Sum of every category.
+    pub fn total_bytes(&self) -> usize {
+        self.struct_bytes
+            + self.name_bytes
+            + self.path_bytes
+            + self.scope_component_bytes
+            + self.index_bytes
+    }
+}
+
 /// The resolved variable hierarchy of a waveform file.
 #[derive(Clone, Debug)]
 pub struct HierarchyView {
     root: ScopeNode,
     signals: Vec<SignalInfo>,
-    by_path: HashMap<String, usize>,
     /// wellen signal handle index -> every variable index that uses it, first
     /// variable first.
     ///
@@ -207,6 +288,47 @@ pub struct HierarchyView {
 }
 
 impl HierarchyView {
+    /// Heap accounting of the hierarchy (see [HierarchyStats]).
+    pub fn memory_stats(&self) -> HierarchyStats {
+        let mut stats = HierarchyStats {
+            signals: self.signals.len(),
+            ..HierarchyStats::default()
+        };
+        let mut scopes = 0usize;
+        let mut unique: HashSet<(usize, usize)> = HashSet::new();
+        self.root.walk(&mut |node| {
+            scopes += 1;
+            if unique.insert((node.name.len(), node.name.as_ptr() as usize)) {
+                stats.interned_strings += 1;
+                stats.interned_bytes += node.name.len();
+            }
+            stats.path_bytes += node.path.len();
+            stats.scope_component_bytes += std::mem::size_of::<String>() * node.components.len()
+                + node.components.iter().map(String::len).sum::<usize>();
+            stats.index_bytes += node.children.capacity() * std::mem::size_of::<ScopeNode>();
+            stats.index_bytes += node.signals.capacity() * std::mem::size_of::<usize>();
+        });
+        stats.scopes = scopes;
+        stats.struct_bytes = self.signals.len() * std::mem::size_of::<SignalInfo>()
+            + scopes * std::mem::size_of::<ScopeNode>();
+        for signal in &self.signals {
+            if unique.insert((signal.name.len(), signal.name.as_ptr() as usize)) {
+                stats.interned_strings += 1;
+                stats.interned_bytes += signal.name.len();
+            }
+            if unique.insert((signal.var_type.len(), signal.var_type.as_ptr() as usize)) {
+                stats.interned_strings += 1;
+                stats.interned_bytes += signal.var_type.len();
+            }
+            if let Some(path) = signal.path.get() {
+                stats.path_bytes += path.len();
+            }
+        }
+        stats.index_bytes += self.var_of_signal.len()
+            * (std::mem::size_of::<u32>() + std::mem::size_of::<Vec<usize>>());
+        stats
+    }
+
     /// The virtual root; its children are the top level scopes of the file.
     pub fn root(&self) -> &ScopeNode {
         &self.root
@@ -233,8 +355,31 @@ impl HierarchyView {
     }
 
     /// Look a variable up by its full path (`top.u_cpu.pc`).
+    ///
+    /// The hierarchy no longer stores every full path (that was one allocation
+    /// per signal): the path is walked segment by segment through the scope tree
+    /// instead, with a linear scan for the variable name in its scope.  Lookups
+    /// are O(path depth + signals of the scope), the documented trade-off for
+    /// the memory win.
     pub fn signal_by_path(&self, path: &str) -> Option<&SignalInfo> {
-        self.by_path.get(path).and_then(|&i| self.signals.get(i))
+        if path.is_empty() {
+            return None;
+        }
+        let mut node = &self.root;
+        let mut parts = path.split('.');
+        let mut current = parts.next()?;
+        loop {
+            let Some(next) = parts.next() else {
+                let index = node
+                    .signals
+                    .iter()
+                    .copied()
+                    .find(|&index| self.signals[index].name() == current)?;
+                return self.signals.get(index);
+            };
+            node = node.children.iter().find(|child| child.name() == current)?;
+            current = next;
+        }
     }
 
     /// Map a decoded wellen signal handle back to every variable that aliases
@@ -253,14 +398,19 @@ impl HierarchyView {
     pub(crate) fn build(hierarchy: &Hierarchy) -> std::result::Result<Self, String> {
         let mut builder = Builder {
             signals: Vec::with_capacity(hierarchy.all_vars().count()),
-            by_path: HashMap::new(),
             var_of_signal: HashMap::new(),
+            interner: HashMap::new(),
         };
-        let root = builder.build_scope(hierarchy, None, "", 0)?;
+        let root = builder.build_scope(
+            hierarchy,
+            None,
+            Arc::from(""),
+            Arc::<[String]>::from(Vec::<String>::new()),
+            0,
+        )?;
         Ok(Self {
             root,
             signals: builder.signals,
-            by_path: builder.by_path,
             var_of_signal: builder.var_of_signal,
         })
     }
@@ -271,8 +421,22 @@ const MAX_SCOPE_DEPTH: usize = 256;
 
 struct Builder {
     signals: Vec<SignalInfo>,
-    by_path: HashMap<String, usize>,
     var_of_signal: HashMap<u32, Vec<usize>>,
+    /// The same scope/variable/type names repeat thousands of times; intern
+    /// them so one allocation serves every occurrence.
+    interner: HashMap<String, Arc<str>>,
+}
+
+impl Builder {
+    /// Intern a name: the first occurrence allocates, the rest clone the Arc.
+    fn intern(&mut self, text: &str) -> Arc<str> {
+        if let Some(existing) = self.interner.get(text) {
+            return Arc::clone(existing);
+        }
+        let string: Arc<str> = Arc::from(text);
+        self.interner.insert(text.to_owned(), Arc::clone(&string));
+        string
+    }
 }
 
 impl Builder {
@@ -282,7 +446,8 @@ impl Builder {
         &mut self,
         hierarchy: &Hierarchy,
         scope: Option<ScopeRef>,
-        path: &str,
+        path: Arc<str>,
+        components: Arc<[String]>,
         depth: usize,
     ) -> std::result::Result<ScopeNode, String> {
         if depth > MAX_SCOPE_DEPTH {
@@ -290,11 +455,14 @@ impl Builder {
                 "scope hierarchy is nested deeper than {MAX_SCOPE_DEPTH} levels"
             ));
         }
+        let name = match scope {
+            Some(scope) => self.intern(hierarchy[scope].name(hierarchy)),
+            None => self.intern(""),
+        };
         let mut node = ScopeNode {
-            name: scope
-                .map(|s| hierarchy[s].name(hierarchy).to_string())
-                .unwrap_or_default(),
-            path: path.to_string(),
+            name,
+            path,
+            components,
             signals: Vec::new(),
             children: Vec::new(),
         };
@@ -307,16 +475,25 @@ impl Builder {
         for item in items {
             match item {
                 ItemRef::Var(var) => {
-                    let index = self.add_var(hierarchy, var, path);
+                    let index = self.add_var(hierarchy, var, &node.components);
                     node.signals.push(index);
                 }
                 ItemRef::Scope(child) => {
-                    let child_name = hierarchy[child].name(hierarchy);
-                    let child_path = join_path(path, child_name);
+                    let child_name = self.intern(hierarchy[child].name(hierarchy));
+                    let child_path: Arc<str> = if node.path.is_empty() {
+                        Arc::clone(&child_name)
+                    } else {
+                        Arc::from(format!("{}.{}", node.path, child_name))
+                    };
+                    let mut child_components: Vec<String> =
+                        node.components.iter().cloned().collect();
+                    child_components.push(child_name.to_string());
+                    let child_components: Arc<[String]> = Arc::from(child_components);
                     node.children.push(self.build_scope(
                         hierarchy,
                         Some(child),
-                        &child_path,
+                        child_path,
+                        child_components,
                         depth + 1,
                     )?);
                 }
@@ -326,7 +503,7 @@ impl Builder {
         Ok(node)
     }
 
-    fn add_var(&mut self, hierarchy: &Hierarchy, var_ref: VarRef, scope_path: &str) -> usize {
+    fn add_var(&mut self, hierarchy: &Hierarchy, var_ref: VarRef, scope: &Arc<[String]>) -> usize {
         let var = &hierarchy[var_ref];
         let signal_ref = var.signal_ref();
 
@@ -344,38 +521,26 @@ impl Builder {
             },
         };
 
-        let name = var.name(hierarchy).to_string();
+        let name = self.intern(var.name(hierarchy));
+        let var_type = self.intern(&format!("{:?}", var.var_type()));
         let index = self.signals.len();
         let info = SignalInfo {
             index,
-            path: join_path(scope_path, &name),
             name,
-            scope: scope_path
-                .split('.')
-                .filter(|part| !part.is_empty())
-                .map(str::to_string)
-                .collect(),
+            scope: Arc::clone(scope),
+            path: OnceLock::new(),
             kind,
             width,
             index_range: var.index().map(|range| (range.msb(), range.lsb())),
-            var_type: format!("{:?}", var.var_type()),
+            var_type,
             signal_ref,
         };
 
-        self.by_path.insert(info.path.clone(), index);
         self.var_of_signal
             .entry(signal_ref.index() as u32)
             .or_default()
             .push(index);
         self.signals.push(info);
         index
-    }
-}
-
-fn join_path(parent: &str, name: &str) -> String {
-    if parent.is_empty() {
-        name.to_string()
-    } else {
-        format!("{parent}.{name}")
     }
 }

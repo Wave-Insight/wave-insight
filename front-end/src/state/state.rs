@@ -13,7 +13,9 @@ use super::dumps::Dumps;
 use super::persist::{RowPrefs, SessionRow, Sessions};
 use super::sources::{Source, Sources};
 use super::split::Split;
-use super::types::{Dialog, Focus, Goto, Layout, Picker, Row, RowsSlice, Status, Viewport};
+use super::types::{
+    Dialog, Focus, Goto, Layout, Picker, Row, RowsSlice, Status, TreeSelection, Viewport,
+};
 
 /// The wave rows, versioned so a subscriber compares one integer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -54,6 +56,9 @@ pub struct Nav {
     pub picker: Option<Picker>,
     /// The settings dialog, when it is open.
     pub dialog: Option<Dialog>,
+    /// The module-tree multi-selection (bulk add). `focus.instance` stays the
+    /// single selection the inspector follows.
+    pub tree_selection: TreeSelection,
 }
 
 /// The single source of truth.

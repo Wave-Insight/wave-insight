@@ -8,22 +8,22 @@ does not duplicate them.
 
 ## Where we are
 
-The last tagged release is **0.14.0** (2026-11-02): one-canvas waveform
+The last tagged release is **0.15.0** (2026-11-02): one-canvas waveform
 renderer, R2 state store, Verdi-style navigation, CI gate, fixed-point display,
 search options, CSV/TXT/MAT export, chunked large-dump loading, LSP diagnostics
-and completion (editor provider), the browser QA suite in `qa/`, generate/arrayed
-elaboration, sidebar virtualization, persistence, the accessibility/keyboard
-pass, the Verdi find-value flow, indexed LSP/design queries, the R3 legacy
-deletion, the Tauri 2 desktop shell, the waveform hardening, multi-dump tabs, the
-Yew 0.21 front end, the split-view MVP and inspector bit ranges. **Wave 11** is
-landing in this wave on `main` (commit follows 0.14.0): split-view polish (the
-unlinked right pane scrolls/zooms/pans on its own, the linked freeze fix, a
-draggable persisted divider), completion v3 (arrayed-instance and generate-scope
-qualifiers, select-aware prefixes), a completion benchmark group and a refreshed
-benchmark baseline, plus three verifier-found fixes; the QA matrix grows to 55
-scenarios / 458 assertions. The `Unreleased` section of
+and completion, the browser QA suite in `qa/`, generate/arrayed elaboration,
+sidebar virtualization, persistence, the accessibility/keyboard pass, the Verdi
+find-value flow, indexed LSP/design queries, the R3 legacy deletion, the Tauri 2
+desktop shell, the waveform hardening, multi-dump tabs, the Yew 0.21 front end,
+the split view (polished) and inspector bit ranges. **Wave 12** is landing in this
+wave on `main` (commit follows 0.15.0): bulk add from the module tree, the
+memory-first large-dump work (one global decode budget, pre-flight refusals, the
+`__waveDebug.memory` readout, library interning/accounting and the `ByteSource`
+groundwork), the structural VCD validation that fixes the user-reported
+conflicting-width crash, and a large-files design note; the QA matrix grows to 57
+scenarios / 503 assertions. The `Unreleased` section of
 [`CHANGELOG.md`](../CHANGELOG.md) is the authoritative list of what is on
-`main` beyond 0.14.0.
+`main` beyond 0.15.0.
 
 ## How a wave works
 
@@ -48,27 +48,29 @@ cut when the accumulated waves are coherent for users; no wave promises a date.
 |---|---|---|
 | **1** | released in 0.6.0 | CI gate; documentation truth pass; fixed-point display; search options; GHW time axis; LSP port connections; library panic hardening |
 | **2** | released in 0.6.0 | export signal values to CSV/TXT; large-dump loading UX (progress, cancel, 512 MB guard); LSP diagnostics in the editor + top bar; browser QA suite in `qa/` with an advisory CI smoke job |
-| **3** | released in 0.7.0 | constant-bound generate unrolling + arrayed instances (Verdi-flat paths); `unresolved-name`/`width-mismatch` driver/load diagnostics; sidebar virtualization above 80 rows; layout + per-signal display persistence; accessibility/keyboard/tier-A-ruler pass; tauri file browser home directory; data-URI favicon |
-| **4** | released in 0.8.0 | elaboration diagnostics merged into the editor's LSP diagnostics; criterion benchmarks + advisory bench workflow; `deny.toml` + `cargo deny` audit workflow + dependabot policy + tokio 1.54.1 security bump; per-dump session restore; MAT export |
-| **5** | released in 0.9.0 | R2 step 3 (sources/focus/goto/jump_token slices + real LSP/editor `Effect`s); fast VCD open; Verdi find-value in the ruler box; semver-compatible dependency refresh + CI deploy job split out |
-| **6** | released in 0.10.0 | R3 legacy data-model deletion; R2 step 3b partial; indexed design/LSP span structure + `bench lsp` suite; three QA scenarios -> 49 scenarios / 356 assertions; multi-dump/split-view design note |
-| **7** | released in 0.11.0 | Tauri 2 migration (v2 config/capabilities/IPC, CI on Ubuntu 24.04 + webkit2gtk-4.1, deny.toml cleanup); R2 step 3b finished; waveform hardening (structural FST validator, hierarchy depth bound, aliased-signal streaming, deterministic fuzz tests) |
-| **8** | released in 0.12.0 | multi-dump steps 1-2 (per-tab `State.dumps` + scratch slices, dump tab strip, dedupe/close semantics, per-tab session restore, 1.5 GiB budget, status hint); driver/load bit ranges + source-hover lines; browser corruption coverage |
+| **3** | released in 0.7.0 | constant-bound generate unrolling + arrayed instances; `unresolved-name`/`width-mismatch` driver/load diagnostics; sidebar virtualization; layout + per-signal display persistence; accessibility/keyboard/tier-A-ruler pass; tauri file browser home directory; data-URI favicon |
+| **4** | released in 0.8.0 | elaboration diagnostics merged into the editor's LSP diagnostics; criterion benchmarks + advisory bench workflow; `deny.toml` + `cargo deny` audit workflow + dependabot policy + tokio security bump; per-dump session restore; MAT export |
+| **5** | released in 0.9.0 | R2 step 3 (sources/focus/goto/jump_token slices + real LSP/editor `Effect`s); fast VCD open; Verdi find-value; semver-compatible dependency refresh + CI deploy job split out |
+| **6** | released in 0.10.0 | R3 legacy data-model deletion; R2 step 3b partial; indexed design/LSP span structure + `bench lsp`; three QA scenarios -> 49 scenarios / 356 assertions; multi-dump/split-view design note |
+| **7** | released in 0.11.0 | Tauri 2 migration; R2 step 3b finished; waveform hardening (structural FST validator, hierarchy depth bound, aliased-signal streaming, deterministic fuzz tests) |
+| **8** | released in 0.12.0 | multi-dump steps 1-2 (per-tab store model, dump tab strip, dedupe/close semantics, per-tab session restore, 1.5 GiB budget); driver/load bit ranges; browser corruption coverage |
 | **9** | released in 0.13.0 | Yew 0.21 migration; language-server completion (server side); browser `bitRanges` QA scenario -> 52 scenarios / 414 assertions |
-| **10** | released in 0.14.0 | split-view MVP (toolbar, read-only right pane, linked time axis, per-dump selectors); Monaco completion provider + server-side member completion; inspector bit ranges; per-run QA staging; weekly full-matrix `qa.yml` -> 55 scenarios / 446 assertions |
-| **11** | shipped in this wave | split-view polish (unlinked right-pane scroll/zoom/pan committed per dump, linked freeze on unlink, resize observer, draggable 25-75% divider with persisted `split_ratio`); completion v3 (arrayed-instance selectors, generate scopes, select-aware prefix, port-list leading-dot filter); completion benchmark group + refreshed benchmark baseline; three verifier-found fixes; QA 55 scenarios / 458 assertions |
-| **12** | chosen for the next wave, not started | remaining split-view limits (unlinked cursor independence, visible row scrollbar, window-captured drag-pan, persisted split open/closed state) |
-| **13** | later candidates | completion packages as qualifiers; signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
+| **10** | released in 0.14.0 | split-view MVP; Monaco completion provider + member completion; inspector bit ranges; per-run QA staging; weekly full-matrix `qa.yml` -> 55 scenarios / 446 assertions |
+| **11** | released in 0.15.0 | split-view polish (per-dump unlinked scroll/zoom/pan, linked freeze, resize observer, draggable persisted ratio); completion v3 (arrayed/generate qualifiers, select-aware prefix, port-list filter); completion benchmarks + refreshed baseline; three verifier fixes; QA 55 scenarios / 458 assertions |
+| **12** | shipped in this wave | bulk add from the module tree (multi-select, Add selected, one `RowsAdded` batch, cap); memory-first large dumps (global 64 MiB decode budget + free plan, fallible read buffer, pre-flight estimate/refusals, `__waveDebug.memory`, release on close, load peaks -31..-44%); library interning/lazy paths/`memory_stats`/`ByteSource`; structural VCD validation fixing the conflicting-width crash; `docs/design/large-files.md`; QA 57 scenarios / 503 assertions |
+| **13** | chosen for the next wave, not started | desktop native backend with memory-mapped files (the `ByteSource`/memmap2 plan in [`docs/design/large-files.md`](design/large-files.md)); browser worker + OPFS lazy byte source; completion packages as qualifiers; the remaining split-view limits (unlinked cursors, row scrollbar, window-captured pan, persisted split) |
+| **14** | later candidates | signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
 
 Statuses are honest: *released* means a tagged release, *shipped in this wave*
 means committed on `main` and waiting for the next release, *chosen* means the
 next wave's agreed top items (not started), and *later candidates* are unordered.
 Items can move between waves when the tree says a wave should be smaller.
 
-Wave 12's top items are the remaining split-view limits (unlinked cursor
-independence, a visible row scrollbar, window-captured drag-pan, persisted
-split-open state); after that the candidates are the smaller features listed
-above. The multi-dump note records what is deliberately still limited.
+Wave 13's top items are the two large-file architectures (desktop native
+memory-mapped backend first, then the browser worker/OPFS lazy byte source), then
+the completion and split-view leftovers. The design note
+[`docs/design/large-files.md`](design/large-files.md) records the current model and
+both plans; the multi-dump note covers the split-view remainder.
 
 ## Invariants every wave keeps
 

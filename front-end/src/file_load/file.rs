@@ -14,6 +14,8 @@
 //! per-chunk progress (there is nothing to slice through invoke).
 
 use crate::state::types::DumpHandle;
+#[cfg(not(feature = "tauri"))]
+use crate::wave_show::memory as wave_memory;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::console;
 use yew::prelude::*;
@@ -484,6 +486,9 @@ impl FileLoad {
     /// Queue picked/dropped files: refuse what cannot be loaded at all, warn
     /// about what is large, then start the first read.
     fn enqueue(&mut self, ctx: &Context<Self>, files: Vec<File>) {
+        // the pre-flight estimate is cumulative over the files of this drop: two
+        // 400 MB dumps each look fine on an empty tab and are fatal together
+        let mut projected = wave_memory::wasm_bytes();
         for file in files {
             let name = file.name();
             console::log_1(&format!("file name:{name}").into());
@@ -503,6 +508,30 @@ impl FileLoad {
                     continue;
                 }
                 ctx.props().onstatus.emit(message);
+            }
+            // Wave 12: the static guard above is about the file size; this one is
+            // about this tab's *leftover* wasm memory. The estimate is measured
+            // (base + ~3.2x the file size for a VCD), so a near-limit dump is
+            // refused with the numbers instead of aborting the allocator halfway
+            // through the read.
+            match wave_memory::preflight(&name, size, projected) {
+                wave_memory::Preflight::Refuse(message) => {
+                    ctx.props().onerror.emit(message);
+                    continue;
+                }
+                wave_memory::Preflight::Tight(message) => {
+                    ctx.props().onstatus.emit(message);
+                    projected = projected.saturating_add(wave_memory::estimated_need(
+                        size,
+                        wave_memory::format_of(&name),
+                    ));
+                }
+                wave_memory::Preflight::Ok => {
+                    projected = projected.saturating_add(wave_memory::estimated_need(
+                        size,
+                        wave_memory::format_of(&name),
+                    ));
+                }
             }
             self.queue.push_back(PendingFile {
                 file,
@@ -549,9 +578,17 @@ impl FileLoad {
             // the file (and the Blob view of it) lives inside the future: the
             // reader must own everything it borrows across an await
             let blob = file_blob(&file);
-            // do not reserve the whole file up front: growing the vector as the
-            // chunks arrive keeps the peak allocation close to the file size
-            let mut bytes: Vec<u8> = Vec::with_capacity(size.min(progress::CHUNK_BYTES) as usize);
+            // Wave 12: reserve the file once and fallibly. Growing a Vec by
+            // reallocation needs up to twice the file size at the copy, and an
+            // allocation failure in wasm aborts the tab; try_reserve_exact gives
+            // the exact final capacity and turns "no memory" into a message.
+            let mut bytes: Vec<u8> = match reserve_buffer(size) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    link.send_message(Msg::LoadFailed(name.clone(), error));
+                    return;
+                }
+            };
             let mut estimate = if vcd {
                 Some(progress::SignalEstimate::new())
             } else {
@@ -643,6 +680,29 @@ impl FileLoad {
     }
 }
 
+/// Reserve the read buffer for a whole file in one fallible allocation.
+///
+/// The old reader started at 8 MB and let the vector grow: every growth step
+/// copies the data (up to twice the file size transiently) and an allocation
+/// failure in wasm does not return an error, it aborts the tab. This reserves
+/// the exact capacity up front and turns "not enough memory" into a message the
+/// loader can show (the pre-flight check should have caught it first).
+#[cfg(not(feature = "tauri"))]
+fn reserve_buffer(total: u64) -> Result<Vec<u8>, String> {
+    let size = usize::try_from(total).map_err(|_| {
+        "the file is too large for this build's address space — open it in the desktop build"
+            .to_string()
+    })?;
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|_| {
+        format!(
+            "not enough free wasm memory to hold {} — close a dump you are not looking at and try again",
+            progress::format_size(total)
+        )
+    })?;
+    Ok(bytes)
+}
+
 /// Read one slice of a browser File as raw bytes.
 #[cfg(not(feature = "tauri"))]
 async fn read_slice(blob: &web_sys::Blob, start: u64, end: u64) -> Result<Vec<u8>, String> {
@@ -668,5 +728,27 @@ fn files_from(list: web_sys::FileList) -> Vec<File> {
     match js_sys::try_iter(&list) {
         Ok(Some(files)) => files.filter_map(|file| file.ok()).map(File::from).collect(),
         _ => Vec::new(),
+    }
+}
+#[cfg(all(test, not(feature = "tauri")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_read_buffer_is_reserved_exactly() {
+        let bytes = reserve_buffer(1024 * 1024).expect("a small reservation succeeds");
+        assert!(bytes.is_empty());
+        assert!(bytes.capacity() >= 1024 * 1024);
+    }
+
+    #[test]
+    fn an_impossible_reservation_is_an_error_not_an_abort() {
+        // the old path let the vector grow into the allocator, which aborts a
+        // wasm tab; the reserve has to come back as a message instead
+        let error = reserve_buffer(u64::MAX).expect_err("this cannot be reserved");
+        assert!(
+            error.contains("wasm memory") || error.contains("address space"),
+            "unhelpful message: {error}"
+        );
     }
 }

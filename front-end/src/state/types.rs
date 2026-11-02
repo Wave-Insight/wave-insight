@@ -113,6 +113,24 @@ pub struct Dialog {
     pub indices: Vec<usize>,
 }
 
+/// The module-tree multi-selection (Wave 12: bulk add).
+///
+/// `focus.instance` stays the *single* selection the inspector and the signal
+/// list follow; this set is the highlight the bulk-add buttons work on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TreeSelection {
+    /// Selected scope paths, in the order they were selected.
+    pub paths: Vec<String>,
+    /// The row a Shift+click ranges from (the last plain/ctrl click).
+    pub anchor: Option<String>,
+}
+
+impl TreeSelection {
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+}
+
 /// The inspector selection.
 ///
 /// `signal` is the hierarchical path selected in the wave view (the inspector

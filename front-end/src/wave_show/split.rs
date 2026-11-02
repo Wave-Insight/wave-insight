@@ -19,6 +19,7 @@ use crate::state::{self, select, Action, DumpHandle, RowsSlice, Store, Subscript
 
 use super::canvas;
 use super::geometry::{visible_rows, View};
+use super::memory;
 use super::time::build_axis;
 use super::util::signal_things::{derive_bit, SignalThings};
 
@@ -152,7 +153,20 @@ impl Component for SplitPane {
         match msg {
             Msg::Rows(rows) => self.rows = rows,
             Msg::Viewport(viewport) => self.viewport = viewport,
-            Msg::Waveform(waveform) => self.waveform = waveform,
+            Msg::Waveform(waveform) => {
+                if self.waveform != waveform {
+                    // Wave 12: the dump the pane leaves gives its decoded data
+                    // back (the split is read-only, so nothing of it is needed
+                    // unless another pane still draws that dump)
+                    if let Some(previous) = self.waveform.take() {
+                        previous.waveform().unload_all_signals();
+                        if !memory::is_drawn(&self.store, &previous) {
+                            previous.waveform().release_cache();
+                        }
+                    }
+                    self.waveform = waveform;
+                }
+            }
             Msg::TimeRange(range) => self.time_range = range,
             Msg::LeftViewport(viewport) => {
                 self.left_viewport = viewport;
@@ -253,6 +267,15 @@ impl Component for SplitPane {
             observer.disconnect();
         }
         self.resize_callback = None;
+        // Wave 12: closing the split gives the second dump's decoded data back;
+        // when nothing else draws that dump its parsed body goes too (opening
+        // the split again re-reads it).
+        if let Some(handle) = self.waveform.take() {
+            handle.waveform().unload_all_signals();
+            if !memory::is_drawn(&self.store, &handle) {
+                handle.waveform().release_cache();
+            }
+        }
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, _first: bool) {
@@ -321,6 +344,9 @@ impl SplitPane {
                 let _ = waveform.unload_signal(index);
             }
         }
+        // Wave 12: one decoded budget for the whole tab (both panes and every
+        // open dump); the cross-dump half gives back what no pane draws
+        let _ = memory::trim(&self.store);
         let rows = self.signal_things.len();
         self.surface_h = height;
         // the same virtualized window the left pane uses: only the rows that

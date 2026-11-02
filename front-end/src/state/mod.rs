@@ -40,6 +40,7 @@
 //! reads the elaborated design.
 
 pub mod action;
+pub mod bulk;
 pub mod design;
 pub mod dumps;
 pub mod persist;
@@ -76,6 +77,6 @@ pub use store::{Store, Subscription};
 #[allow(unused_imports)]
 pub use types::{
     Cursors, Dialog, DumpHandle, DumpId, Focus, Goto, Picker, Row, RowsSlice, SessionRestore,
-    Settings, StatusTone, View, Viewport,
+    Settings, StatusTone, TreeSelection, View, Viewport,
 };
 pub use types::{Layout, Status};

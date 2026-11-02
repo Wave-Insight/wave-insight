@@ -10,6 +10,70 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.16.0] - 2026-11-02
+
+### Added
+
+- Bulk add from the module tree: Ctrl/Cmd+click toggles a scope in a
+  multi-selection, Shift+click selects the visible range (rows marked
+  `.tree-row.selected`/`aria-selected`), the Modules header shows **Add selected
+  (N)** and each row's **+** adds everything in that scope; Ctrl/Cmd+Enter is the
+  keyboard path. All signals go through one batch reducer action (`RowsAdded`):
+  dedupe, remembered display settings, ONE rows-version bump and session write
+  (500 rows = one render), status `added N signals (M already in the wave)`, and
+  a selection above the 2000-row cap is rejected with an error instead of a
+  partial add.
+- Memory-first large dumps: ONE global 64 MiB decode budget covers the decoded
+  histories of every open dump and of the split pane (it used to be 64 MiB per
+  pane); when it is exceeded, dumps no pane draws give their decoded histories
+  back first and their parsed bodies only if that is not enough, while a drawn
+  dump is never evicted (the budget is soft, reported as `overBudget`). The
+  loader reserves the read buffer exactly and fallibly, and a pre-flight estimate
+  (48 MB base + 3.2x file for VCD, 0.6x for FST, 2.0x for GHW, against a 1280 MiB
+  policy cap) refuses a load before any byte is read with an actionable message
+  instead of aborting the allocator. `window.__waveDebug.memory` publishes
+  `{ wasmBytes, fileBytes, decodedBytes, budget, dumps, unloaded, released,
+  overBudget }` and the load line reports the wasm memory. Closing a dump or a
+  split frees its decoded data and parsed body immediately. Measured load peaks
+  dropped 31-44% (34 MB: 137.7 -> 85.9 MB; 139 MB: 521.8 -> 295.3 MB; 349 MB:
+  1033.9 -> 715.0 MB), and a 501 MB VCD is refused up front instead of attempting
+  a ~1.5 GB allocation.
+- Library memory efficiency: hierarchy names are interned (`Arc<str>`), full
+  paths are built lazily, and `memory_stats` reports exact retained bytes; on a
+  200k-signal hierarchy, hierarchy bytes dropped 58.3% (78.8 MB -> 32.9 MB,
+  394 -> 164 B/signal). A `ByteSource` trait (file or in-memory implementations)
+  is the groundwork for a memory-mapped native backend.
+- A design note (`docs/design/large-files.md`) documenting the current memory
+  model, why the browser has no mmap, the desktop native memory-mapped backend
+  plan (memmap2) and the browser worker/OPFS lazy-byte-source option, with
+  budgets and verification.
+- Browser QA: `largeDump` (29 assertions - memory hook, release on close, split
+  accounting, the 512 MB guard, a well-formed wide dump) and three new corruption
+  assertions for the conflicting-width VCD; the matrix is 57 scenarios / 503
+  assertions, green with the R2 layout rules required. The `gen-large` fixture
+  generator's id encoding was fixed too (base-94 counter, unique ids at any
+  signal count).
+
+### Changed
+
+- The decode cache budget is global across open dumps and the split pane instead
+  of per renderer instance; the free plan, the pre-flight estimate and the
+  memory readout live in one front-end module, and closing a dump or the split
+  releases its decoded data and parsed body. VCD/GHW still keep the file bytes
+  and materialise the body (FST streams), which the readme now states as an
+  explicit limit.
+
+### Fixed
+
+- The user-reported large-dump crash root cause: a malformed VCD that declares
+  one variable id with conflicting widths made wellen panic, and with the release
+  profile's `panic = "abort"` the resulting wasm trap killed the add path (a
+  blank viewer). A structural VCD validation at open now rejects it as
+  `Corrupt` with an actionable message - "malformed VCD: variable id ! is
+  declared with conflicting widths (64 and 8)" - while same-width aliasing stays
+  legal. A 501 MB file is also refused by the pre-flight now instead of attempting
+  a ~1.5 GB allocation.
+
 ## [0.15.0] - 2026-11-02
 
 ### Added

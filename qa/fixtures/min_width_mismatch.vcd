@@ -1,0 +1,13 @@
+$date minimal wellen width-mismatch repro $end
+$version diag $end
+$timescale 1ns $end
+$scope module top $end
+$var wire 64 ! big [63:0] $end
+$var wire 8 ! small [7:0] $end
+$upscope $end
+$enddefinitions $end
+$dumpvars
+b0 !
+$end
+#10
+b1111111111111111111111111111111111111111111111111111111111111111 !

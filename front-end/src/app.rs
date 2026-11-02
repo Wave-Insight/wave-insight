@@ -5,10 +5,11 @@ use yew::prelude::*;
 use crate::code_reader::CodeReader;
 use crate::lsp::LspBridge;
 use crate::module_struct::ModuleStruct;
+use crate::module_struct::TreeSelect;
 use crate::nav::{match_dump_candidates, PathPicker, SidebarTree, SignalInspector, SourceClick};
 use crate::state::{
     self, Action, Cursors, DumpHandle, DumpId, DumpsTabsSlice, Effect, Focus, Goto, Layout, Picker,
-    RowsSlice, SourcesSlice, Split, Status, Store, Subscription,
+    Row, RowsSlice, SourcesSlice, Split, Status, Store, Subscription, TreeSelection,
 };
 use crate::wave_show::{SplitPane, WaveShow};
 
@@ -75,6 +76,14 @@ pub enum Msg {
     SplitSeparatorKey(KeyboardEvent),
     /// A module-tree row was clicked: the sidebar selection moved.
     InstanceSelected(String),
+    /// The store's module-tree multi-selection changed.
+    TreeSelectionChanged(TreeSelection),
+    /// A module-tree row was clicked with modifiers (bulk selection).
+    TreeSelected(TreeSelect),
+    /// "Add all signals in this scope" was clicked for this scope path.
+    AddScope(String),
+    /// "Add selected (N)" / Ctrl+Enter: bulk-add the tree selection.
+    AddSelected,
     /// The editor buffer changed; the store re-syncs the document and the LSP.
     SourceEdited((String, String)),
     /// A source tab was clicked.
@@ -205,6 +214,8 @@ pub struct App {
     /// `window.addEventListener("resize")`: unlike `window.onresize` (owned by
     /// the wave pane) this one does not steal another component's listener.
     resize_listener: Option<Closure<dyn FnMut()>>,
+    /// `window.addEventListener("keydown")` for Ctrl/Cmd+Enter (bulk add).
+    keys_listener: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
     /// The sidebar tree, mirrored from the store (the reducer derives it from
     /// the dump hierarchy or the elaborated design).
     tree: Option<SidebarTree>,
@@ -238,6 +249,9 @@ pub struct App {
     _goto_sub: Subscription,
     /// The inspector selection, mirrored from the store.
     focus: Focus,
+    /// The module-tree multi-selection (bulk add), mirrored from the store.
+    tree_selection: TreeSelection,
+    _tree_selection_sub: Subscription,
     /// The path picker, mirrored from the store (the store owns whether it is
     /// open; the app still performs the choice, which needs the dump/design).
     picker: Option<Picker>,
@@ -389,6 +403,11 @@ impl Component for App {
         let split = store.select(state::select::split);
         let split_sub =
             store.subscribe(state::select::split, ctx.link().callback(Msg::SplitChanged));
+        let tree_selection = store.select(state::select::tree_selection);
+        let tree_selection_sub = store.subscribe(
+            state::select::tree_selection,
+            ctx.link().callback(Msg::TreeSelectionChanged),
+        );
         let mut this = Self {
             store,
             layout,
@@ -398,12 +417,15 @@ impl Component for App {
             main: NodeRef::default(),
             main_h: 0.0,
             resize_listener: None,
+            keys_listener: None,
             tree,
             _tree_sub: tree_sub,
             dump_tabs,
             _dumps_sub: dumps_sub,
             split,
             _split_sub: split_sub,
+            tree_selection,
+            _tree_selection_sub: tree_selection_sub,
             split_view: NodeRef::default(),
             split_drag: None,
             split_preview: None,
@@ -457,6 +479,10 @@ impl Component for App {
             let _ = window
                 .remove_event_listener_with_callback("resize", listener.as_ref().unchecked_ref());
         }
+        if let (Some(window), Some(listener)) = (web_sys::window(), self.keys_listener.take()) {
+            let _ = window
+                .remove_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
+        }
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
@@ -485,6 +511,11 @@ impl Component for App {
                             <ModuleStruct tree={self.tree.clone()}
                                 focus={self.focus.clone()}
                                 oninstance={link.callback(Msg::InstanceSelected)}
+                                selection={self.tree_selection.paths.clone()}
+                                anchor={self.tree_selection.anchor.clone()}
+                                onselection={link.callback(Msg::TreeSelected)}
+                                onaddscope={link.callback(Msg::AddScope)}
+                                onaddselected={link.callback(|_| Msg::AddSelected)}
                                 signaladd={link.callback(|(_name, path): (String, String)| Msg::SidebarAdd(path))}/>
                         </aside>
                         }
@@ -806,6 +837,38 @@ impl App {
         {
             self.resize_listener = Some(listener);
         }
+        // Ctrl/Cmd+Enter adds the module-tree selection in one batch (the
+        // keyboard path for "Add selected"), unless a text field or the editor
+        // has the focus and owns the shortcut
+        let link = ctx.link().clone();
+        let keys = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+            move |event: web_sys::KeyboardEvent| {
+                if !(event.ctrl_key() || event.meta_key()) || event.key() != "Enter" {
+                    return;
+                }
+                let owns = event
+                    .target()
+                    .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    .and_then(|element| {
+                        element
+                            .closest("input, textarea, select, .monaco-editor")
+                            .ok()
+                            .flatten()
+                    })
+                    .is_some();
+                if owns {
+                    return;
+                }
+                event.prevent_default();
+                link.send_message(Msg::AddSelected);
+            },
+        );
+        if window
+            .add_event_listener_with_callback("keydown", keys.as_ref().unchecked_ref())
+            .is_ok()
+        {
+            self.keys_listener = Some(keys);
+        }
     }
 
     #[allow(unused_variables)] // `ctx` is only used by the tauri/server transports
@@ -1027,6 +1090,26 @@ impl App {
                         instance: Some(path),
                     },
                 });
+                false
+            }
+            Msg::TreeSelectionChanged(selection) => {
+                self.tree_selection = selection;
+                true
+            }
+            Msg::TreeSelected(event) => {
+                match event {
+                    TreeSelect::Reset(path) => self.apply(Action::TreeSelectionReset { path }),
+                    TreeSelect::Toggle(path) => self.apply(Action::TreeSelectionToggled { path }),
+                    TreeSelect::Range(paths) => self.apply(Action::TreeSelectionRanged { paths }),
+                }
+                false
+            }
+            Msg::AddScope(path) => {
+                self.bulk_add_scopes(std::slice::from_ref(&path));
+                false
+            }
+            Msg::AddSelected => {
+                self.bulk_add_selected();
                 false
             }
             Msg::SourceEdited((file, text)) => {
@@ -1455,6 +1538,89 @@ impl App {
                 onselect={link.callback(Msg::WaveSelect)}
                 onjump={link.callback(Msg::WaveJump)}
                 onlocate={link.callback(Msg::Locate)} />
+        }
+    }
+
+    /// "Add selected (N)": bulk-add every signal of the module-tree selection.
+    fn bulk_add_selected(&self) {
+        if self.tree_selection.is_empty() {
+            return;
+        }
+        self.bulk_add_scopes(&self.tree_selection.paths);
+    }
+
+    /// Bulk-add every signal of `scopes` (and their subtrees) in ONE batch.
+    ///
+    /// The paths come from the store's sidebar tree; each one is resolved to a
+    /// dump path exactly like a single add, then handed to the reducer as one
+    /// `RowsAdded` (dedupe, row_prefs, one rows-version bump, one session write).
+    fn bulk_add_scopes(&self, scopes: &[String]) {
+        let Some(tree) = self.tree.clone() else {
+            self.note(Status::error(
+                "load sources or a dump before adding signals".to_string(),
+            ));
+            return;
+        };
+        let paths = crate::state::bulk::signals_under_many(&tree, scopes);
+        if paths.is_empty() {
+            self.note(Status::info(
+                "no signals in the selected scopes".to_string(),
+            ));
+            return;
+        }
+        if paths.len() > crate::state::bulk::BULK_ADD_CAP {
+            self.note(Status::error(format!(
+                "too many signals to add at once: {} (limit {}) — select fewer modules",
+                paths.len(),
+                crate::state::bulk::BULK_ADD_CAP
+            )));
+            return;
+        }
+        let dump = self.dump();
+        let mut rows: Vec<Row> = Vec::with_capacity(paths.len());
+        let mut unresolved = 0usize;
+        for path in paths {
+            let row_path = match &dump {
+                Some(waveform) => {
+                    // the dump is the source of values: a path it cannot resolve
+                    // would draw nothing, so it is skipped (and counted)
+                    let candidates = match_dump_candidates(waveform.waveform(), &path);
+                    if candidates.len() != 1 {
+                        unresolved += 1;
+                        continue;
+                    }
+                    candidates[0].clone()
+                }
+                None => path.clone(),
+            };
+            let signal = self.signal_for_path(&row_path);
+            rows.push(Row {
+                path: row_path.clone(),
+                name: row_path,
+                width: signal.size,
+                setting: state::Settings::new(),
+                chosen: false,
+                load: signal.load,
+                drive: signal.drive,
+                bit: None,
+            });
+        }
+        if rows.is_empty() {
+            self.note(Status::error(format!(
+                "none of the {unresolved} selected signals are in the loaded dump"
+            )));
+            return;
+        }
+        self.apply(Action::RowsAdded { rows });
+        if unresolved > 0 {
+            // keep the reducer's summary and say how many paths the dump could
+            // not resolve, instead of silently dropping them
+            if let Some(status) = self.store.select(state::select::status) {
+                self.note(Status::info(format!(
+                    "{} — {unresolved} not in the loaded dump",
+                    status.text
+                )));
+            }
         }
     }
 

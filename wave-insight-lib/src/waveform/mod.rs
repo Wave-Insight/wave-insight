@@ -104,13 +104,38 @@
 //!    that a renderer draws: `size_of::<Change>()` (40 bytes on 64 bit) per
 //!    change plus bus payloads, so 500k changes of one signal are ~20 MB. That
 //!    is the price of a redraw that never touches the file. It is built per
-//!    displayed signal on first use and [`Waveform::unload_signal`] frees it
-//!    again; [`Waveform::cache_stats`] reports what is held. A signal that is
-//!    too big to hold should be drawn with [`Waveform::changes_in_window`]
-//!    instead.
+//!    displayed signal on first use and [`Waveform::unload_signal`] /
+//!    [`Waveform::unload_all_signals`] free it again (the precise byte counts
+//!    are in [`CacheStats`]). A signal that is too big to hold should be drawn
+//!    with [`Waveform::changes_in_window`] instead.
 //! 5. [`Waveform::end_time`] is the only call that materialises the whole body
 //!    on purpose (VCD/GHW); the UI never needs it, [`Waveform::time_range_hint`]
 //!    is what the ruler uses.
+//! 6. The hierarchy does not duplicate strings: scope/variable/type names are
+//!    interned (one allocation per distinct name), every signal in a scope
+//!    shares that scope's path prefix and component vector, and full signal
+//!    paths are built lazily on first `path()` instead of at open.  A 200k
+//!    signal / 100 scope hierarchy therefore costs ~164 bytes per signal
+//!    (32.9 MB) instead of ~394 bytes (78.8 MB).  [`Waveform::signal_by_path`]
+//!    walks the scope tree (O(path depth + signals of the scope)) instead of
+//!    keeping one hash-map-full of path copies.
+//! 7. [`Waveform::memory_stats`] reports the library-side accounting: retained
+//!    source bytes, the hierarchy breakdown and the random access cache
+//!    (time table, packed decodes, decoded histories and their payloads).
+//!    [`CacheStats::total_bytes`] plus a sum over every open [`Waveform`] is the
+//!    number a global memory budget should use.
+//!
+//! # Source ownership and byte sources
+//!
+//! A [`WaveformSource::Memory`] keeps its `Arc<[u8]>` alive for the lifetime of
+//! the [`Waveform`] (streaming queries re-read it), so
+//! [`MemoryStats::source_retained_bytes`] reports the whole file.  A
+//! [`WaveformSource::Path`] keeps no bytes: streaming queries and the FST body
+//! reader open the file fresh through [`ByteSource`], and the VCD/GHW bodies
+//! are decoded into wellen's own in-memory representation.  All parsing goes
+//! through the [`ByteSource`] trait (file and in-memory implementations only for
+//! now), so a desktop memory-mapped source can be added as another
+//! [`WaveformSource`] variant without touching the parser path.
 //!
 //! # Limitations
 //!
@@ -143,6 +168,7 @@ mod value;
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Seek;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -151,16 +177,16 @@ use wellen::{LoadOptions, Signal, SignalRef, SignalSource, Time};
 pub use decoded::{Change, DecodedSignal};
 pub use error::{Result, WaveformError};
 pub use format::{TimeUnit, Timescale, WaveFormat};
-pub use hierarchy::{HierarchyView, ScopeNode, SignalInfo, SignalKind};
+pub use hierarchy::{HierarchyStats, HierarchyView, ScopeNode, SignalInfo, SignalKind};
 pub use query::ValueQuery;
 // R3: the display preference lives with the waveform types now (the render API
 // needs it); the legacy shared-types module it used to live in is gone.
 pub use show_type::ShowType;
-pub use source::WaveformSource;
+pub use source::{ByteReader, ByteSource, WaveformSource};
 pub use value::{BitValue, Bits, WaveValue};
 
 use error::catch_parse;
-use source::detect_format;
+use source::{detect_format, validate_vcd};
 
 /// Options used for every wellen read.
 ///
@@ -259,6 +285,14 @@ impl Waveform {
         //FST probe, which would otherwise panic on it
         let mut reader = source.reader()?;
         let detected = detect_format(&mut reader)?;
+        // VCD is decoded lazily (per signal, on first draw); a body value wider
+        // than its declared variable would panic inside wellen then, which is an
+        // unrecoverable abort in the release/wasm build.  Validate the whole VCD
+        // structurally now, while we can still return a Corrupt error.
+        if detected == WaveFormat::Vcd {
+            reader.seek(std::io::SeekFrom::Start(0))?;
+            validate_vcd(&mut reader)?;
+        }
 
         let options = load_options();
         let header = catch_parse(detected, "read header", || {
@@ -543,6 +577,43 @@ impl Waveform {
         }
     }
 
+    /// Library-side memory accounting of this waveform.
+    ///
+    /// Sums the retained source bytes (only for [`WaveformSource::Memory`]; a
+    /// file source keeps no bytes), the resolved hierarchy (names, paths,
+    /// lookup tables) and the random access cache (time table, wellen packed
+    /// decodes, decoded histories including bus payloads).
+    ///
+    /// The account is a heap estimate, not RSS: allocator overhead and wellen's
+    /// own copy of the hierarchy inside [`EagerBody`] are not counted.
+    pub fn memory_stats(&self) -> MemoryStats {
+        let hierarchy = self.hierarchy.memory_stats();
+        let source_retained_bytes = match &self.source {
+            WaveformSource::Memory(bytes) => bytes.len(),
+            WaveformSource::Path(_) => 0,
+        };
+        let mut stats = MemoryStats {
+            source_retained_bytes,
+            hierarchy_bytes: hierarchy.total_bytes(),
+            hierarchy,
+            ..MemoryStats::default()
+        };
+        let guard = self.lock_body();
+        if let Some(body) = guard.as_ref() {
+            let cache = body.cache_stats();
+            stats.packed_signals = cache.loaded_signals;
+            stats.packed_bytes = cache.packed_bytes;
+            stats.decoded_signals = cache.decoded_signals;
+            stats.decoded_changes = cache.decoded_changes;
+            stats.decoded_struct_bytes = cache.decoded_struct_bytes;
+            stats.decoded_payload_bytes = cache.decoded_payload_bytes;
+            stats.time_table_bytes = cache.time_table_bytes;
+            stats.cache_bytes = cache.total_bytes();
+        }
+        stats.total_bytes = stats.hierarchy_bytes + stats.source_retained_bytes + stats.cache_bytes;
+        stats
+    }
+
     /// The value one variable had at `time`.
     ///
     /// Returns the last change at or before `time`, `None` if the variable has
@@ -802,16 +873,74 @@ pub struct CacheStats {
     pub decoded_signals: usize,
     /// Total number of changes in all decoded histories.
     pub decoded_changes: usize,
+    /// Bytes of the time table.
+    pub time_table_bytes: usize,
+    /// Bytes of wellen's packed signal decodes (time indices + payload).
+    pub packed_bytes: usize,
+    /// Bytes of the decoded history arrays (`decoded_changes * size_of::<Change>()`).
+    pub decoded_struct_bytes: usize,
+    /// Heap payload of the decoded values (bit vectors, strings).
+    pub decoded_payload_bytes: usize,
 }
 
 impl CacheStats {
     /// Bytes held by the decoded histories, excluding bus value payloads.
     ///
-    /// This is `decoded_changes * size_of::<Change>()`; each bus value also owns
-    /// its own allocation, and the packed decodes are not counted at all.
+    /// This is `decoded_changes * size_of::<Change>()`; see
+    /// [`CacheStats::total_bytes`] for the full accounting including the packed
+    /// decodes and the value payloads.
     pub fn decoded_bytes(&self) -> usize {
-        self.decoded_changes * std::mem::size_of::<Change>()
+        self.decoded_struct_bytes
     }
+
+    /// Every byte the random access cache holds: time table, packed decodes and
+    /// decoded histories including their value payloads.
+    ///
+    /// Summing this over the open [`Waveform`]s gives the global cache budget a
+    /// front end needs (together with [`Waveform::memory_stats`] for the
+    /// hierarchy and the retained source bytes).
+    pub fn total_bytes(&self) -> usize {
+        self.time_table_bytes
+            + self.packed_bytes
+            + self.decoded_struct_bytes
+            + self.decoded_payload_bytes
+    }
+}
+
+/// Library-side memory accounting of one [`Waveform`].
+///
+/// All numbers are heap estimates: byte lengths of the owned strings, struct
+/// sizes and container capacities.  Allocator overhead, wellen's internal copy
+/// of the hierarchy inside the body cache and the loaded library itself are not
+/// counted.  Meant for diagnostics, regression tests and a global memory budget
+/// (the front end can sum a field such as [`MemoryStats::total_bytes`] or
+/// [`CacheStats::total_bytes`] over every open waveform).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MemoryStats {
+    /// Source bytes kept alive by [`WaveformSource::Memory`] (0 for a file source).
+    pub source_retained_bytes: usize,
+    /// Hierarchy accounting, broken down by category.
+    pub hierarchy: HierarchyStats,
+    /// Sum of the hierarchy categories.
+    pub hierarchy_bytes: usize,
+    /// Signals decoded from the file into wellen's packed representation.
+    pub packed_signals: usize,
+    /// Bytes of those packed decodes.
+    pub packed_bytes: usize,
+    /// Signals with a decoded history.
+    pub decoded_signals: usize,
+    /// Changes in all decoded histories.
+    pub decoded_changes: usize,
+    /// Bytes of the decoded change arrays.
+    pub decoded_struct_bytes: usize,
+    /// Heap payload of the decoded values (bit vectors, strings).
+    pub decoded_payload_bytes: usize,
+    /// Bytes of the body time table.
+    pub time_table_bytes: usize,
+    /// Sum of the random access cache categories (see [`CacheStats::total_bytes`]).
+    pub cache_bytes: usize,
+    /// Everything above: hierarchy + retained source + cache.
+    pub total_bytes: usize,
 }
 
 /// A signal in the cache: the packed decode plus, once someone asked for it, the
@@ -969,13 +1098,20 @@ impl EagerBody {
     fn cache_stats(&self) -> CacheStats {
         let mut stats = CacheStats {
             time_steps: self.time_table.len(),
+            time_table_bytes: self.time_table.capacity() * std::mem::size_of::<Time>(),
             ..CacheStats::default()
         };
         for cached in self.signals.values() {
             stats.loaded_signals += 1;
+            stats.packed_bytes += cached.packed.size_in_memory();
             if let Some(decoded) = &cached.decoded {
                 stats.decoded_signals += 1;
                 stats.decoded_changes += decoded.len();
+                stats.decoded_struct_bytes += decoded.len() * std::mem::size_of::<Change>();
+                stats.decoded_payload_bytes += decoded
+                    .iter()
+                    .map(|(_, value)| value.heap_bytes())
+                    .sum::<usize>();
             }
         }
         stats
@@ -1025,6 +1161,334 @@ fn assert_send_sync() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wide, header-only VCD: one top scope with many child scopes, each with
+    /// the same local signal names (that is exactly the duplication the
+    /// hierarchy interning removes).
+    fn wide_vcd(scopes: usize, per_scope: usize) -> String {
+        let mut vcd = String::with_capacity(scopes * per_scope * 48);
+        vcd.push_str("$date today $end\n$version memory-test $end\n");
+        vcd.push_str("$timescale 1ns $end\n$scope module top $end\n");
+        for scope in 0..scopes {
+            vcd.push_str(&format!("$scope module s{scope} $end\n"));
+            for signal in 0..per_scope {
+                let identifier = scope * per_scope + signal;
+                vcd.push_str(&format!(
+                    "$var wire 8 v{identifier} sig_{signal} [7:0] $end\n"
+                ));
+            }
+            vcd.push_str("$upscope $end\n");
+        }
+        vcd.push_str("$upscope $end\n$enddefinitions $end\n#0\n");
+        vcd
+    }
+
+    // -- VCD structural validation (malformed width/body guard) -------------
+
+    /// The minimal user repro: identifier ! declared first as 64 bits, then as
+    /// 8 bits, with a 64 bit body value.  wellen keeps the last declaration and
+    /// its deferred body decoder would panic (abort in release/wasm); opening
+    /// must reject it as Corrupt instead.
+    #[test]
+    fn vcd_with_conflicting_widths_for_one_id_is_rejected_at_open() {
+        // Byte-for-byte the 298 byte report: $dumpvars holds a short value and
+        // the later change is 64 bits wide for the 8 bit second declaration.
+        let vcd = format!(
+            "$date minimal wellen width-mismatch repro $end\n             $version diag $end\n             $timescale 1ns $end\n             $scope module top $end\n             $var wire 64 ! big [63:0] $end\n             $var wire 8 ! small [7:0] $end\n             $upscope $end\n$enddefinitions $end\n\
+             $dumpvars\nb0 !\n$end\n#10\nb{} !\n",
+            "1".repeat(64)
+        );
+        let error = Waveform::open_bytes(vcd.into_bytes()).expect_err("must be rejected");
+        let message = error.to_string();
+        assert!(
+            matches!(error, WaveformError::Corrupt { .. }),
+            "expected Corrupt, got {error:?}"
+        );
+        assert!(
+            message.contains("conflicting widths (64 and 8)"),
+            "{message}"
+        );
+        assert!(message.contains("variable id !"), "{message}");
+    }
+
+    /// Same-width aliasing (several names for one VCD identifier) is legal and
+    /// must keep opening and decoding.
+    #[test]
+    fn vcd_with_same_width_alias_still_opens_and_decodes() {
+        let vcd = "$timescale 1ns $end\n$scope module top $end\n\
+                   $var wire 8 ! first [7:0] $end\n\
+                   $var wire 8 ! second [7:0] $end\n\
+                   $upscope $end\n$enddefinitions $end\n#0\nb10101010 !\n#5\nb11110000 !\n";
+        let waveform = Waveform::open_bytes(vcd.as_bytes().to_vec()).expect("alias VCD opens");
+        assert_eq!(waveform.signal_count(), 2);
+        assert_eq!(
+            waveform.signal_by_path("top.first").expect("first").path(),
+            "top.first"
+        );
+        assert_eq!(
+            waveform
+                .signal_by_path("top.second")
+                .expect("second")
+                .path(),
+            "top.second"
+        );
+        let first = waveform.decoded_changes(0).expect("decode first");
+        assert_eq!(first.len(), 2);
+        assert_eq!(first.changes()[0].1.to_u64(), Some(0b1010_1010));
+        let second = waveform.decoded_changes(1).expect("decode second");
+        assert_eq!(second.len(), 2);
+    }
+
+    #[test]
+    fn vcd_body_value_wider_than_the_declared_width_is_rejected_at_open() {
+        let vcd = "$timescale 1ns $end\n$scope module top $end\n\
+                   $var wire 8 ! small [7:0] $end\n\
+                   $upscope $end\n$enddefinitions $end\n#0\nb1111111111111111 !\n";
+        let error = Waveform::open_bytes(vcd.as_bytes().to_vec()).expect_err("must be rejected");
+        let message = error.to_string();
+        assert!(
+            matches!(error, WaveformError::Corrupt { .. }),
+            "expected Corrupt, got {error:?}"
+        );
+        assert!(message.contains("16 bits"), "{message}");
+        assert!(message.contains("declared width is 8"), "{message}");
+    }
+
+    #[test]
+    fn vcd_body_value_that_cannot_be_extended_is_rejected_at_open() {
+        // A short all-h vector cannot be zero/x/z extended by wellen.
+        let vcd = "$timescale 1ns $end\n$scope module top $end\n\
+                   $var wire 8 ! small [7:0] $end\n\
+                   $upscope $end\n$enddefinitions $end\n#0\nbhhh !\n";
+        let error = Waveform::open_bytes(vcd.as_bytes().to_vec()).expect_err("must be rejected");
+        assert!(
+            matches!(error, WaveformError::Corrupt { .. }),
+            "expected Corrupt, got {error:?}"
+        );
+        assert!(error.to_string().contains("can be extended"), "{error}");
+    }
+
+    #[test]
+    fn well_formed_vcd_with_scalar_and_extended_values_still_opens() {
+        let vcd = "$timescale 1ns $end\n$scope module top $end\n\
+                   $var wire 1 ! clk $end\n\
+                   $var wire 8 & data [7:0] $end\n\
+                   $upscope $end\n$enddefinitions $end\n#0\n1!\nb1010 &\n#5\n0!\nbxxxxxxxx &\n";
+        let waveform = Waveform::open_bytes(vcd.as_bytes().to_vec()).expect("valid VCD opens");
+        let clk = waveform.decoded_changes(0).expect("decode clk");
+        assert_eq!(clk.len(), 2);
+        let data = waveform.decoded_changes(1).expect("decode data");
+        assert_eq!(data.len(), 2);
+    }
+
+    #[test]
+    fn memory_accounting_of_a_wide_hierarchy() {
+        let (scopes, per_scope) = (100usize, 2000usize);
+        let input = wide_vcd(scopes, per_scope);
+        let input_bytes = input.len();
+        let waveform = Waveform::open_bytes(input.into_bytes()).expect("wide VCD opens");
+        let stats = waveform.memory_stats();
+        eprintln!("WIDE_VCD input_bytes={input_bytes}");
+        eprintln!("WIDE_VCD hierarchy={:?}", stats.hierarchy);
+        eprintln!("WIDE_VCD stats={stats:?}");
+        eprintln!(
+            "WIDE_VCD hierarchy_bytes={} total_bytes={}",
+            stats.hierarchy_bytes, stats.total_bytes
+        );
+        assert_eq!(stats.hierarchy.signals, scopes * per_scope);
+        assert_eq!(waveform.signal_count(), scopes * per_scope);
+        assert_eq!(stats.source_retained_bytes, input_bytes);
+        assert!(stats.hierarchy_bytes > 0);
+        assert_eq!(stats.cache_bytes, 0, "a header-only open has no cache yet");
+        let signal = waveform
+            .signal_by_path("top.s42.sig_17")
+            .expect("path lookup works");
+        assert_eq!(signal.name(), "sig_17");
+        assert_eq!(signal.path(), "top.s42.sig_17");
+        assert_eq!(signal.scope(), &["top".to_owned(), "s42".to_owned()]);
+
+        // The regression this guards: 200k signals must not keep 200k full path
+        // strings, duplicated scope vectors or 200k name allocations.  The same
+        // 2000 local names are interned once, so there are only a few thousand
+        // unique strings.
+        assert!(
+            stats.hierarchy.interned_strings < stats.hierarchy.signals / 50,
+            "expected interned names, got {} unique strings for {} signals",
+            stats.hierarchy.interned_strings,
+            stats.hierarchy.signals
+        );
+        assert!(
+            stats.hierarchy.path_bytes < 10_000,
+            "full paths must be lazy, found {} path bytes",
+            stats.hierarchy.path_bytes
+        );
+        assert!(
+            stats.hierarchy.scope_component_bytes < 100_000,
+            "scope components must be shared, found {} bytes",
+            stats.hierarchy.scope_component_bytes
+        );
+        assert!(
+            stats.hierarchy_bytes < 40_000_000,
+            "hierarchy should stay well below the duplicated layout (~79 MB), got {}",
+            stats.hierarchy_bytes
+        );
+
+        // Building a path on demand is accounted for, and the lazy cache does
+        // not change the identity of the signal.
+        let before = waveform.memory_stats().hierarchy.path_bytes;
+        let _ = waveform.signal(0).expect("first signal").path();
+        let after = waveform.memory_stats().hierarchy.path_bytes;
+        assert!(after > before, "lazy path should add to path_bytes");
+    }
+
+    #[test]
+    fn cache_accounting_and_unload_are_precise() {
+        let vcd = "$timescale 1ns $end\n$scope module top $end\n$var wire 8 ! data $end\n$upscope $end\n$enddefinitions $end\n#0\nb00000000 !\n#5\nb11111111 !\n";
+        let input_len = vcd.len();
+        let waveform = Waveform::open_bytes(vcd.as_bytes().to_vec()).expect("small VCD opens");
+
+        assert_eq!(waveform.cache_stats(), CacheStats::default());
+        let memory = waveform.memory_stats();
+        assert_eq!(memory.source_retained_bytes, input_len);
+        assert!(memory.hierarchy_bytes > 0);
+        assert_eq!(memory.cache_bytes, 0);
+        assert_eq!(
+            memory.total_bytes,
+            memory.hierarchy_bytes + memory.source_retained_bytes
+        );
+
+        let decoded = waveform.decoded_changes(0).expect("decode the one signal");
+        assert_eq!(decoded.len(), 2);
+        drop(decoded);
+
+        let stats = waveform.cache_stats();
+        assert_eq!(stats.loaded_signals, 1);
+        assert_eq!(stats.decoded_signals, 1);
+        assert_eq!(stats.decoded_changes, 2);
+        assert_eq!(stats.time_steps, 2);
+        assert_eq!(
+            stats.decoded_struct_bytes,
+            2 * std::mem::size_of::<Change>()
+        );
+        assert_eq!(stats.decoded_bytes(), stats.decoded_struct_bytes);
+        assert!(
+            stats.decoded_payload_bytes >= 2 * 8,
+            "two byte-vector values of 8 bits: {stats:?}"
+        );
+        assert!(stats.packed_bytes > 0);
+        assert!(stats.time_table_bytes >= 2 * std::mem::size_of::<Time>());
+        assert_eq!(
+            stats.total_bytes(),
+            stats.time_table_bytes
+                + stats.packed_bytes
+                + stats.decoded_struct_bytes
+                + stats.decoded_payload_bytes
+        );
+        let memory = waveform.memory_stats();
+        assert_eq!(memory.cache_bytes, stats.total_bytes());
+        assert_eq!(memory.decoded_signals, 1);
+        assert_eq!(memory.decoded_changes, 2);
+        assert_eq!(memory.decoded_struct_bytes, stats.decoded_struct_bytes);
+        assert_eq!(memory.decoded_payload_bytes, stats.decoded_payload_bytes);
+        assert_eq!(
+            memory.total_bytes,
+            memory.hierarchy_bytes + memory.source_retained_bytes + memory.cache_bytes
+        );
+
+        // unload_signal frees everything it can: packed decode, decoded array and
+        // its value payload.  The time table (part of the parsed body) stays.
+        waveform.unload_signal(0).expect("unload signal");
+        let after = waveform.cache_stats();
+        assert_eq!(after.loaded_signals, 0);
+        assert_eq!(after.decoded_signals, 0);
+        assert_eq!(after.decoded_changes, 0);
+        assert_eq!(after.packed_bytes, 0);
+        assert_eq!(after.decoded_struct_bytes, 0);
+        assert_eq!(after.decoded_payload_bytes, 0);
+        assert_eq!(after.time_table_bytes, stats.time_table_bytes);
+        assert!(
+            after.total_bytes()
+                + stats.packed_bytes
+                + stats.decoded_struct_bytes
+                + stats.decoded_payload_bytes
+                >= stats.total_bytes(),
+            "unloading must not grow the cache"
+        );
+
+        // unload_all_signals is the bulk variant.
+        waveform.decoded_changes(0).expect("decode again");
+        assert_eq!(waveform.cache_stats().decoded_signals, 1);
+        waveform.unload_all_signals();
+        let after = waveform.cache_stats();
+        assert_eq!(after.loaded_signals, 0);
+        assert_eq!(after.decoded_signals, 0);
+        assert_eq!(after.packed_bytes, 0);
+        assert!(after.time_steps > 0);
+
+        // release_cache drops the body as well; only the hierarchy (and a memory
+        // source) remain.
+        waveform.release_cache();
+        assert_eq!(waveform.cache_stats(), CacheStats::default());
+        let memory = waveform.memory_stats();
+        assert_eq!(memory.cache_bytes, 0);
+        assert_eq!(memory.source_retained_bytes, input_len);
+        assert!(memory.hierarchy_bytes > 0);
+    }
+
+    #[test]
+    fn byte_source_trait_covers_memory_and_file_sources() {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"hello waveform"[..]);
+        assert_eq!(bytes.byte_len(), Some(14));
+        let mut reader = bytes.open().expect("memory reader");
+        let mut buffer = [0u8; 5];
+        reader.read_exact(&mut buffer).expect("read prefix");
+        assert_eq!(&buffer, b"hello");
+        reader.seek(SeekFrom::Start(0)).expect("seek");
+        let mut first = [0u8; 1];
+        reader.read_exact(&mut first).expect("read first byte");
+        assert_eq!(&first, b"h");
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("data")
+            .join("io_mode_wave.fst");
+        let length = path.byte_len().expect("file length");
+        assert!(length > 0);
+        let mut file_reader = path.open().expect("file reader");
+        let mut magic = [0u8; 1];
+        file_reader.read_exact(&mut magic).expect("read file");
+        assert_eq!(magic[0], 0, "FST header block starts with block type 0");
+    }
+
+    #[test]
+    fn memory_accounting_of_the_fst_fixture() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/io_mode_wave.fst");
+        let waveform = Waveform::open_path(path).expect("FST opens");
+        assert_eq!(
+            waveform.memory_stats().source_retained_bytes,
+            0,
+            "a path source retains no bytes"
+        );
+        let decoded = waveform.decoded_changes(0).expect("decode first signal");
+        eprintln!(
+            "FST_FIXTURE decoded_changes={} memory={:?}",
+            decoded.len(),
+            waveform.memory_stats()
+        );
+        let memory = waveform.memory_stats();
+        let stats = waveform.cache_stats();
+        assert!(stats.loaded_signals >= 1);
+        assert!(stats.decoded_changes == decoded.len());
+        assert_eq!(memory.cache_bytes, stats.total_bytes());
+        assert_eq!(
+            memory.total_bytes,
+            memory.hierarchy_bytes + memory.cache_bytes
+        );
+        assert!(stats.packed_bytes > 0);
+        assert!(stats.time_table_bytes > 0);
+    }
 
     // A real corrupt FST whose packed signal points past the body time table is
     // not something the public constructors can build (wellen derives both from

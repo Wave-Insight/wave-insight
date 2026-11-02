@@ -112,6 +112,11 @@ impl Bits {
         self.bits.len()
     }
 
+    /// Heap bytes held by this vector (its allocation, not the struct itself).
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.bits.capacity() * std::mem::size_of::<BitValue>()
+    }
+
     /// `true` if the vector has no bits at all.
     pub fn is_empty(&self) -> bool {
         self.bits.is_empty()
@@ -307,6 +312,16 @@ impl WaveValue {
     /// `true` if this is an event.
     pub fn is_event(&self) -> bool {
         matches!(self, WaveValue::Event)
+    }
+
+    /// Heap bytes owned through this value (bit vectors and strings); the
+    /// struct itself lives inline in the change array.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        match self {
+            WaveValue::Bits(bits) => bits.heap_bytes(),
+            WaveValue::String(string) => string.capacity(),
+            WaveValue::Event | WaveValue::Real(_) => 0,
+        }
     }
 
     /// Copy a value out of `wellen`'s decoder.
