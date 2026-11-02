@@ -65,6 +65,14 @@ pub enum Msg {
     SplitRight(usize),
     /// Linked time axis toggled.
     SplitLinkedToggled,
+    /// The split divider was grabbed.
+    SplitSeparatorDown(MouseEvent),
+    /// The pointer moved while the divider was grabbed.
+    SplitSeparatorMove(MouseEvent),
+    /// The divider drag finished.
+    SplitSeparatorUp,
+    /// A key press on the focused divider (arrow keys move it).
+    SplitSeparatorKey(KeyboardEvent),
     /// A module-tree row was clicked: the sidebar selection moved.
     InstanceSelected(String),
     /// The editor buffer changed; the store re-syncs the document and the LSP.
@@ -210,6 +218,12 @@ pub struct App {
     /// The split view (right pane dump + linked flag), mirrored from the store.
     split: Option<Split>,
     _split_sub: Subscription,
+    /// The split container, measured while its divider is dragged.
+    split_view: NodeRef,
+    /// Pointer x at the divider press.
+    split_drag: Option<f64>,
+    /// Live ratio while the divider is dragged (tier A: no shell render).
+    split_preview: Option<f32>,
     /// The language server client the source editor talks to.
     lsp: LspBridge,
     /// Cursor/dump subscriptions for the editor inlay hints; they update the
@@ -390,6 +404,9 @@ impl Component for App {
             _dumps_sub: dumps_sub,
             split,
             _split_sub: split_sub,
+            split_view: NodeRef::default(),
+            split_drag: None,
+            split_preview: None,
             lsp,
             _cursors_sub: cursors_sub,
             _rows_sub: rows_sub,
@@ -652,11 +669,26 @@ impl Component for App {
                             }}
                             <div class="dock-body">
                                 {if let Some(split) = self.split {
+                                    let ratio = self.split_preview.unwrap_or(self.layout.split_ratio);
                                     html!{
-                                    <div class="split-view">
+                                    <div class="split-view" ref={self.split_view.clone()}
+                                        style={format!("--split-ratio:{ratio:.3}")}>
                                         {self.wave_pane(link)}
+                                        <div class={if self.split_drag.is_some() {"split-separator dragging"} else {"split-separator"}}
+                                            role="separator"
+                                            aria-orientation="vertical"
+                                            aria-label="Split divider"
+                                            aria-valuemin={format!("{:.0}", state::types::SPLIT_RATIO_MIN * 100.0)}
+                                            aria-valuemax={format!("{:.0}", state::types::SPLIT_RATIO_MAX * 100.0)}
+                                            aria-valuenow={format!("{:.0}", ratio * 100.0)}
+                                            tabindex="0"
+                                            title="Drag to resize the two panes"
+                                            onmousedown={link.callback(Msg::SplitSeparatorDown)}
+                                            onkeydown={link.callback(Msg::SplitSeparatorKey)} />
                                         <SplitPane
-                                            key={format!("{}-{}", split.right, split.linked)}
+                                            // keyed by the dump only: the pane must survive the
+                                            // linked toggle so it can freeze its window on unlink
+                                            key={split.right.to_string()}
                                             store={self.store.clone()}
                                             dump={split.right}
                                             linked={split.linked} />
@@ -681,6 +713,17 @@ impl Component for App {
                             paths={picker.paths.clone()}
                             onchoose={link.callback(Msg::PickPath)}
                             oncancel={link.callback(|_| Msg::CancelPick)} />
+                    }
+                }else {
+                    html!{}
+                }}
+                {if self.split_drag.is_some() {
+                    html!{
+                        <div class="split-shield"
+                            onmousemove={link.callback(Msg::SplitSeparatorMove)}
+                            onmouseup={link.callback(|_| Msg::SplitSeparatorUp)}
+                            // releasing outside the window never fires mouseup
+                            onmouseout={link.callback(|_| Msg::SplitSeparatorUp)} />
                     }
                 }else {
                     html!{}
@@ -921,6 +964,61 @@ impl App {
             Msg::SplitLinkedToggled => {
                 self.apply(Action::SplitLinkedToggled);
                 false
+            }
+            Msg::SplitSeparatorDown(event) => {
+                event.prevent_default();
+                self.split_drag = Some(event.client_x() as f64);
+                self.split_preview = Some(self.layout.split_ratio);
+                true
+            }
+            Msg::SplitSeparatorMove(event) => {
+                let Some(start) = self.split_drag else {
+                    return false;
+                };
+                let Some(container) = self.split_view.cast::<web_sys::Element>() else {
+                    return false;
+                };
+                let rect = container.get_bounding_client_rect();
+                if rect.width() <= 1.0 {
+                    return false;
+                }
+                let ratio = ((event.client_x() as f64 - rect.left()) / rect.width()) as f32;
+                let ratio = state::types::clamp_split_ratio(ratio);
+                self.split_preview = Some(ratio);
+                // tier A: write the CSS variable straight to the DOM, no shell
+                // render while the pointer moves (the commit is on mouseup)
+                let _ = container.set_attribute("style", &format!("--split-ratio:{ratio:.3}"));
+                let _ = start;
+                false
+            }
+            Msg::SplitSeparatorUp => {
+                self.split_drag = None;
+                match self.split_preview.take() {
+                    Some(ratio) => {
+                        self.apply(Action::SetSplitRatio(ratio));
+                        false
+                    }
+                    None => true,
+                }
+            }
+            Msg::SplitSeparatorKey(event) => {
+                let step = 0.02;
+                let current = self.layout.split_ratio;
+                let next = match event.key().as_str() {
+                    "ArrowLeft" => Some(current - step),
+                    "ArrowRight" => Some(current + step),
+                    "Home" => Some(state::types::SPLIT_RATIO_MIN),
+                    "End" => Some(state::types::SPLIT_RATIO_MAX),
+                    _ => None,
+                };
+                match next {
+                    Some(ratio) => {
+                        event.prevent_default();
+                        self.apply(Action::SetSplitRatio(ratio));
+                        false
+                    }
+                    None => false,
+                }
             }
             Msg::InstanceSelected(path) => {
                 self.apply(Action::FocusChanged {

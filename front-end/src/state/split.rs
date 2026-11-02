@@ -9,6 +9,11 @@ use wave_insight_lib::waveform::TimeRange;
 
 use super::types::View;
 
+/// Height of one wave row, in css pixels (kept in sync with `--row-h` and with
+/// `wave_show::geometry::ROW_HEIGHT`; the state module cannot import the
+/// renderer, so the value is repeated here for the scroll clamp).
+pub const ROW_HEIGHT: f64 = 30.0;
+
 /// Which dump the right pane shows and whether the panes share a time window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Split {
@@ -64,6 +69,18 @@ pub fn linked_view(left: View, left_range: TimeRange, right_range: TimeRange, wi
     View::new(axis, width / span)
 }
 
+/// The largest row scroll offset that still shows a full surface.
+///
+/// The right pane scrolls its row window with the same virtualized slice logic
+/// as the left pane; this is the clamp (never negative, never past the last
+/// row).
+pub fn max_row_scroll(rows: usize, surface_h: f64) -> f64 {
+    if !surface_h.is_finite() || surface_h <= 0.0 {
+        return 0.0;
+    }
+    (rows as f64 * ROW_HEIGHT - surface_h).max(0.0)
+}
+
 /// Map one committed cursor time of the left dump onto the right dump.
 ///
 /// Returns `None` when the cursor lies outside the left trace (there is no
@@ -117,6 +134,17 @@ mod tests {
         assert!(mapped.size.is_finite() && mapped.size > 0.0);
         let mapped = linked_view(View::new(f64::NAN, 1.0), range(0, 10), range(0, 10), 100.0);
         assert!(mapped.x_axis.is_finite() && mapped.size.is_finite());
+    }
+
+    #[test]
+    fn the_row_scroll_clamps_to_the_row_count() {
+        // 10 rows of 30 px in a 100 px surface: the last row can reach the top
+        assert_eq!(max_row_scroll(10, 100.0), 200.0);
+        // fewer rows than fit: no scrolling at all
+        assert_eq!(max_row_scroll(2, 100.0), 0.0);
+        // a degenerate surface is not a panic
+        assert_eq!(max_row_scroll(10, f64::NAN), 0.0);
+        assert_eq!(max_row_scroll(10, 0.0), 0.0);
     }
 
     #[test]

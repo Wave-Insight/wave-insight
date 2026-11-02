@@ -707,14 +707,37 @@ impl LspServer {
     ///   parameters, genvars and instances are returned.  An unknown qualifier
     ///   yields an empty list.
     ///
-    /// In both modes the partial last segment filters labels case-insensitively
-    /// (`U_CPU` matches `u_cpu`).  Locals sort before module names.
+    /// Two further qualifier shapes are understood:
+    ///
+    /// * **arrayed instance elements** ("u[1].", "u[i]."): an instance declared
+    ///   with unpacked dimensions is resolved through its selector to the
+    ///   instantiated module; a genvar/expression selector is accepted as "any
+    ///   element".  An arrayed instance *without* a selector is ambiguous and
+    ///   yields an empty list;
+    /// * **generate scopes** ("g[0].", "g[i]."): the scope's own names
+    ///   (instances/signals declared in that block) are listed; a literal
+    ///   selector must name an existing unrolled element, a genvar/expression
+    ///   selector matches every element (duplicates deduped).
+    ///
+    /// A select on a signal ("q[3:0].") is not a member access and yields an
+    /// empty list rather than silently stripping the select.  In every mode the
+    /// partial last segment filters labels case-insensitively ("U_CPU" matches
+    /// "u_cpu").  Locals sort before module names.
     fn completion(&mut self, params: &Json) -> Result<Json, RpcError> {
         let Some(query) = self.resolve_position(params)? else {
             return Ok(Json::Array(Vec::new()));
         };
         let prefix = completion_prefix(self, params);
-        let (qualifier, last_segment) = split_completion_prefix(&prefix);
+        let next_character = completion_next_character(self, params);
+        let dot = last_top_level_dot(&prefix);
+        // A dot typed before the caret is the normal member access.  A dot that
+        // has not been typed yet but comes right after a select expression
+        // (caret in "q[3:0]" of "q[3:0].") is the same member intent; a plain
+        // word before a dot ("single." with the caret before the dot) stays a
+        // plain-name prefix.
+        let has_dot = dot.is_some_and(|index| index > 0);
+        let select_member_intent = !has_dot && next_character == Some('.') && prefix.contains('[');
+
         let modules = self.db.modules_in_file(&query.path);
         let Some(module) = module_at_position(&modules, query.line) else {
             // Before the first module (file header comment etc.): nothing is
@@ -722,60 +745,134 @@ impl LspServer {
             return Ok(Json::Array(Vec::new()));
         };
 
-        let filter = last_segment.to_ascii_lowercase();
-        let target = if qualifier.is_empty() {
-            Some(module)
+        if has_dot || select_member_intent {
+            let (qualifier, filter) = if has_dot {
+                split_completion_prefix(&prefix)
+            } else {
+                (prefix.clone(), String::new())
+            };
+            let segments = split_top_level(&qualifier);
+            let Some(target) = self.resolve_completion_target(module, &segments) else {
+                // Unknown instance/scope (or a select on a signal, which has no
+                // members): an honest empty list, not the module-scoped one.
+                return Ok(Json::Array(Vec::new()));
+            };
+            let filter = member_completion_filter(&filter).to_ascii_lowercase();
+            return Ok(Json::Array(self.completion_items(&target, &filter, false)));
+        }
+
+        // Plain-name mode: only an identifier-shaped partial word filters.  A
+        // complete selector ("u[1:0]") or a number ("4" inside "a[7:4]") is an
+        // expression the caret is parked in, not a name being typed, so it falls
+        // back to the enclosing module instead of matching no label at all.
+        //
+        // A leading dot is a port-connection name being typed (".cl" in a port
+        // list): the segment after the dot is the partial name and filters the
+        // list (".cl" -> clk, "." -> everything).  If that segment matches
+        // nothing (the caret is parked inside an arbitrary expression) the
+        // enclosing scope stays visible instead of an empty list.
+        let leading_dot = prefix.starts_with('.');
+        let filter = if leading_dot {
+            let segment = prefix.rsplit('.').next().unwrap_or_default();
+            member_completion_filter(segment).to_ascii_lowercase()
         } else {
-            let segments: Vec<&str> = qualifier
-                .split('.')
-                .filter(|segment| !segment.is_empty())
-                .collect();
-            self.resolve_member_module(module, &segments)
+            plain_completion_filter(&prefix).to_ascii_lowercase()
         };
-        let Some(target) = target else {
-            return Ok(Json::Array(Vec::new()));
-        };
-        let include_modules = qualifier.is_empty();
-        Ok(Json::Array(self.module_completion_items(
-            target,
-            &filter,
-            include_modules,
-        )))
+        let target = CompletionTarget::Module(module);
+        let mut items = self.completion_items(&target, &filter, true);
+        if leading_dot && items.is_empty() && !filter.is_empty() {
+            items = self.completion_items(&target, "", true);
+        }
+        Ok(Json::Array(items))
     }
 
-    /// Walk instance names (or a leading module name) to the module a dotted
-    /// prefix refers to.
+    /// Walk a dotted qualifier to what completion should list.
     ///
-    /// Nested access is only possible through instances the design models; a
-    /// qualifier that is not an instance (or module) returns None.
-    fn resolve_member_module<'a>(
+    /// The design models three kinds of steps:
+    ///
+    /// * a generate-scope component (`g[0]`, `g[i]`): every unrolled scope with
+    ///   that label is entered; a numeric selector must name an existing
+    ///   element, a genvar/expression selector matches every element;
+    /// * an instance name, optionally with an element selector for an arrayed
+    ///   instance (`u[1]`, `u[i]`); an arrayed instance *without* a selector is
+    ///   ambiguous and resolves to nothing instead of pretending to know the
+    ///   element;
+    /// * a module name as the first qualifier.
+    ///
+    /// A select on a signal (`q[3:0]`) is not a member access and also resolves
+    /// to nothing (kept explicit rather than silently stripping the select).
+    fn resolve_completion_target<'a>(
         &'a self,
         start: &'a ModuleDef,
         segments: &[&str],
-    ) -> Option<&'a ModuleDef> {
-        let mut current = start;
-        for (index, segment) in segments.iter().enumerate() {
-            if let Some(instance) = current
-                .instances
-                .iter()
-                .find(|instance| instance.name == *segment && instance.array.is_empty())
-            {
-                current = self.db.module(&instance.module)?;
-            } else if index == 0 {
-                current = self.db.module(segment)?;
-            } else {
+    ) -> Option<CompletionTarget<'a>> {
+        let mut module = start;
+        let mut scope: Vec<String> = Vec::new();
+        for segment in segments {
+            if segment.is_empty() {
                 return None;
             }
+            if scope_component_exists(module, &scope, segment) {
+                scope.push((*segment).to_owned());
+                continue;
+            }
+            let (base, has_selector) = split_selector(segment);
+            if base.is_empty() {
+                return None;
+            }
+            let instance = module.instances.iter().find(|instance| {
+                instance.name == base
+                    && instance.scope.len() == scope.len()
+                    && scope_pattern_matches(&scope, &instance.scope)
+            });
+            let Some(instance) = instance else {
+                if scope.is_empty() && !has_selector {
+                    return self.db.module(base).map(CompletionTarget::Module);
+                }
+                return None;
+            };
+            if has_selector {
+                if instance.array.is_empty() {
+                    return None;
+                }
+            } else if !instance.array.is_empty() {
+                return None;
+            }
+            module = self.db.module(&instance.module)?;
+            scope.clear();
         }
-        Some(current)
+        Some(if scope.is_empty() {
+            CompletionTarget::Module(module)
+        } else {
+            CompletionTarget::Scope(module, scope)
+        })
     }
 
-    /// The completion items of one module, case-insensitively filtered by
-    /// `filter` (empty = everything).  Module names are only included for the
-    /// plain-name mode.
-    fn module_completion_items(
+    /// The completion items of one resolved target (whole module or a generate
+    /// scope), case-insensitively filtered by `filter` (empty = everything).
+    fn completion_items(
+        &self,
+        target: &CompletionTarget<'_>,
+        filter: &str,
+        include_modules: bool,
+    ) -> Vec<Json> {
+        match target {
+            CompletionTarget::Module(module) => {
+                self.module_items(module, &[], filter, include_modules)
+            }
+            CompletionTarget::Scope(module, scope) => {
+                self.module_items(module, scope, filter, false)
+            }
+        }
+    }
+
+    /// The completion items of one module, limited to `scope` when it is not
+    /// empty (generate-scope member completion).  Module names are only
+    /// included for the plain-name mode.
+    fn module_items(
         &self,
         module: &ModuleDef,
+        scope: &[String],
         filter: &str,
         include_modules: bool,
     ) -> Vec<Json> {
@@ -796,26 +893,32 @@ impl LspServer {
             ));
         };
 
-        // Ports: Variable, detail direction/type/width.
-        for port in &module.ports {
-            let detail = format!(
-                "{} {}",
-                port.direction.as_str(),
-                type_detail(port.kind.as_str(), &port.packed, port.width)
-            );
-            push(&port.name, COMPLETION_VARIABLE, detail, "0");
+        // Ports: Variable, detail direction/type/width.  Ports belong to the
+        // module body, never to a generate scope.
+        if scope.is_empty() {
+            for port in &module.ports {
+                let detail = format!(
+                    "{} {}",
+                    port.direction.as_str(),
+                    type_detail(port.kind.as_str(), &port.packed, port.width)
+                );
+                push(&port.name, COMPLETION_VARIABLE, detail, "0");
+            }
         }
         // Signals, including declarations inside generate blocks (their scope
         // is part of the detail so "g[0].x" stays distinguishable).
         for signal in &module.signals {
+            if !scope.is_empty() && !scope_pattern_matches_prefix(&signal.scope, scope) {
+                continue;
+            }
             let mut detail = type_detail(signal.kind.as_str(), &signal.packed, signal.width);
             if !signal.scope.is_empty() {
                 detail.push_str(&format!(" in {}", signal.scope.join(".")));
             }
             push(&signal.name, COMPLETION_VARIABLE, detail, "0");
         }
-        // Parameters and localparams: Field.
-        for parameter in &module.parameters {
+        // Parameters and localparams: Field (module body only).
+        for parameter in module.parameters.iter().filter(|_| scope.is_empty()) {
             let keyword = if parameter.is_local {
                 "localparam"
             } else {
@@ -828,11 +931,14 @@ impl LspServer {
             push(&parameter.name, COMPLETION_FIELD, detail, "0");
         }
         // Genvars (declarations and generate-loop variables): Field.
-        for genvar in &module.genvars {
+        for genvar in module.genvars.iter().filter(|_| scope.is_empty()) {
             push(genvar, COMPLETION_FIELD, "genvar".to_owned(), "0");
         }
         // Instance names: Reference, detail names the instantiated module.
         for instance in &module.instances {
+            if !scope.is_empty() && !scope_pattern_matches_prefix(&instance.scope, scope) {
+                continue;
+            }
             let mut detail = format!("instance of {}", instance.module);
             if !instance.array.is_empty() {
                 detail.push_str(" (arrayed)");
@@ -1286,19 +1392,158 @@ fn completion_prefix(server: &LspServer, params: &Json) -> String {
         .unwrap_or_default()
 }
 
-/// Split `u_mid.u_leaf.` into (`u_mid.u_leaf`, ``) and `u_cpu.pc` into
-/// (`u_cpu`, `pc`); a plain name has an empty qualifier.
-fn split_completion_prefix(prefix: &str) -> (&str, &str) {
+/// The character right at the caret (one past the text already typed).
+fn completion_next_character(server: &LspServer, params: &Json) -> Option<char> {
+    let uri = params
+        .get("textDocument")
+        .and_then(|text_document| text_document.get_str("uri"))?;
+    let position = params.get("position").and_then(Position::from_json)?;
+    server
+        .document(uri)
+        .and_then(|document| document.character_at(position))
+}
+
+/// The filter a plain-name completion uses.
+///
+/// Only a partial identifier filters: a complete selector (`u[1:0]`), a number
+/// from an expression (`a[7:4]`), a leading `.` or any other non-identifier
+/// prefix means "no word is being typed here", so the enclosing module scope is
+/// returned instead of an empty list.
+fn plain_completion_filter(prefix: &str) -> &str {
+    if prefix.is_empty() || prefix.contains('[') || prefix.starts_with('.') {
+        return "";
+    }
+    match prefix.chars().next() {
+        Some(first) if first.is_alphabetic() || first == '_' || first == '$' => prefix,
+        _ => "",
+    }
+}
+
+/// The filter a member completion uses: a partial selector after the last dot
+/// (`u[1].q[3`) filters by the name so far (`q`).
+fn member_completion_filter(filter: &str) -> &str {
+    filter.split('[').next().unwrap_or("")
+}
+
+/// Split a completion prefix into qualifier and partial last segment.
+///
+/// Dots inside selectors do not split, so u[1].q keeps u[1] as the qualifier.
+fn split_completion_prefix(prefix: &str) -> (String, String) {
     if prefix.is_empty() {
-        return ("", "");
+        return (String::new(), String::new());
     }
-    if let Some(without_dot) = prefix.strip_suffix('.') {
-        return (without_dot, "");
+    match last_top_level_dot(prefix) {
+        Some(index) => (prefix[..index].to_owned(), prefix[index + 1..].to_owned()),
+        None => (String::new(), prefix.to_owned()),
     }
-    match prefix.rsplit_once('.') {
-        Some((qualifier, last_segment)) => (qualifier, last_segment),
-        None => ("", prefix),
+}
+
+/// Byte index of the last '.' that is outside any [...] selector.
+fn last_top_level_dot(text: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut last = None;
+    for (index, byte) in text.bytes().enumerate() {
+        match byte {
+            b'[' => depth += 1,
+            b']' => depth = (depth - 1).max(0),
+            b'.' if depth == 0 => last = Some(index),
+            _ => {}
+        }
     }
+    last
+}
+
+/// Split a dotted qualifier on top-level dots (selectors kept intact).
+fn split_top_level(text: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (index, byte) in text.bytes().enumerate() {
+        match byte {
+            b'[' => depth += 1,
+            b']' => depth = (depth - 1).max(0),
+            b'.' if depth == 0 => {
+                segments.push(&text[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    segments.push(&text[start..]);
+    segments
+}
+
+/// A dotted segment: the base name and whether it carries an element selector.
+fn split_selector(segment: &str) -> (&str, bool) {
+    match segment.find('[') {
+        Some(index) => (&segment[..index], true),
+        None => (segment, false),
+    }
+}
+
+/// Does one qualifier component match one scope component?
+///
+/// A literal numeric selector must name the actual unrolled scope element
+/// (g[0] matches g[0] only); a genvar or expression selector matches any element
+/// of that scope name (g[i] matches g[0] and g[1]).
+fn completion_component_matches(scope_component: &str, qualifier: &str) -> bool {
+    let (scope_base, scope_has_selector) = split_selector(scope_component);
+    let (qualifier_base, qualifier_has_selector) = split_selector(qualifier);
+    if scope_base != qualifier_base || scope_has_selector != qualifier_has_selector {
+        return false;
+    }
+    if !qualifier_has_selector {
+        return scope_component == qualifier;
+    }
+    let selector = qualifier
+        .find('[')
+        .map(|index| &qualifier[index + 1..qualifier.len().saturating_sub(1)])
+        .unwrap_or_default();
+    if selector.trim().parse::<u64>().is_ok() {
+        scope_component == qualifier
+    } else {
+        true
+    }
+}
+
+/// True when the generated scope of an item starts with the qualifier pattern.
+fn scope_pattern_matches_prefix(item_scope: &[String], pattern: &[String]) -> bool {
+    item_scope.len() >= pattern.len()
+        && pattern
+            .iter()
+            .zip(item_scope.iter())
+            .all(|(qualifier, component)| completion_component_matches(component, qualifier))
+}
+
+/// Exact-length scope match (arrayed instance lookup inside a generate scope).
+fn scope_pattern_matches(pattern: &[String], item_scope: &[String]) -> bool {
+    pattern.len() == item_scope.len() && scope_pattern_matches_prefix(item_scope, pattern)
+}
+
+/// Does the module declare a generate scope component matching this qualifier
+/// at the current depth?
+fn scope_component_exists(module: &ModuleDef, scope: &[String], qualifier: &str) -> bool {
+    let (base, _) = split_selector(qualifier);
+    if base.is_empty() {
+        return false;
+    }
+    let matches = |item_scope: &[String]| {
+        item_scope.len() > scope.len()
+            && scope_pattern_matches_prefix(&item_scope[..scope.len()], scope)
+            && completion_component_matches(&item_scope[scope.len()], qualifier)
+    };
+    module
+        .instances
+        .iter()
+        .any(|instance| matches(&instance.scope))
+        || module.signals.iter().any(|signal| matches(&signal.scope))
+}
+
+/// What a dotted qualifier resolved to: a whole module, or one generate scope
+/// inside a module (member completion for g[0]. etc.).
+enum CompletionTarget<'a> {
+    Module(&'a ModuleDef),
+    Scope(&'a ModuleDef, Vec<String>),
 }
 
 fn module_at_position<'a>(modules: &[&'a ModuleDef], line: u32) -> Option<&'a ModuleDef> {
@@ -2653,6 +2898,262 @@ mod tests {
         assert_eq!(d.get_str("detail"), Some("input logic [7:0]"), "{d:?}");
         let q = completion_item_named(&reply, "q");
         assert_eq!(q.get_str("detail"), Some("output logic [7:0]"), "{q:?}");
+    }
+
+    // -- completion v3: arrayed selectors and generate scopes --------------
+
+    fn completion_at(
+        server: &mut LspServer,
+        uri: &str,
+        source: &str,
+        needle: &str,
+        advance_characters: usize,
+    ) -> Json {
+        let position = {
+            let start = position_of(source, needle);
+            Position::new(start.line, start.character + advance_characters as u32)
+        };
+        request(
+            server,
+            "textDocument/completion",
+            position_params(uri, position),
+        )
+    }
+
+    #[test]
+    fn member_completion_through_an_arrayed_instance_selector() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("completion_arrays.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "completion_arrays.sv");
+        let source = fixture_text("completion_arrays.sv");
+
+        for needle in ["u[0].", "u[1].", "u[i]."] {
+            let reply = completion_at(&mut server, &uri, &source, needle, needle.len());
+            let labels = completion_labels(&reply);
+            assert_eq!(labels, vec!["clk", "d", "q"], "{needle}: {labels:?}");
+        }
+
+        // An arrayed instance without an element selector is ambiguous and is
+        // reported honestly as "no answer", not as one element's members.
+        let reply = completion_at(&mut server, &uri, &source, "u.", 2);
+        assert_eq!(
+            reply.as_array().map(<[Json]>::len),
+            Some(0),
+            "u.: {reply:?}"
+        );
+    }
+
+    #[test]
+    fn select_on_a_signal_has_no_members_and_keeps_the_modes_honest() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("completion_arrays.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "completion_arrays.sv");
+        let source = fixture_text("completion_arrays.sv");
+
+        // q[3:0]. is a member access on a selected signal: no members.
+        let reply = completion_at(&mut server, &uri, &source, "q[3:0].", "q[3:0].".len());
+        assert_eq!(reply.as_array().map(<[Json]>::len), Some(0), "{reply:?}");
+
+        // q[3:0] without the dot stays a plain-name prefix (and honestly
+        // matches no label, because labels are bare identifiers).
+        let reply = completion_at(&mut server, &uri, &source, "q[3:0].", "q[3:0]".len());
+        assert_eq!(reply.as_array().map(<[Json]>::len), Some(0), "{reply:?}");
+
+        // The plain mode still works next to it.
+        let reply = completion_at(&mut server, &uri, &source, "single.", "single".len());
+        assert_eq!(completion_labels(&reply), vec!["single"], "{reply:?}");
+    }
+
+    #[test]
+    fn generate_scope_member_completion() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("completion_scopes.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "completion_scopes.sv");
+        let source = fixture_text("completion_scopes.sv");
+
+        // A concrete unrolled scope lists the names declared inside it.
+        let reply = completion_at(&mut server, &uri, &source, "g[0].", "g[0].".len());
+        assert_eq!(
+            completion_labels(&reply),
+            vec!["marker", "u_leaf"],
+            "{reply:?}"
+        );
+
+        // A genvar selector matches every element; duplicates are deduped.
+        let reply = completion_at(&mut server, &uri, &source, "g[i].", "g[i].".len());
+        assert_eq!(
+            completion_labels(&reply),
+            vec!["marker", "u_leaf"],
+            "{reply:?}"
+        );
+
+        // Nested: scope + instance -> that instance's module members.
+        for needle in ["g[0].u_leaf.", "g[i].u_leaf."] {
+            let reply = completion_at(&mut server, &uri, &source, needle, needle.len());
+            assert_eq!(
+                completion_labels(&reply),
+                vec!["a", "y"],
+                "{needle}: {reply:?}"
+            );
+        }
+
+        // A numeric selector that names no element is an unknown scope.
+        let reply = completion_at(&mut server, &uri, &source, "g[9].", "g[9].".len());
+        assert_eq!(reply.as_array().map(<[Json]>::len), Some(0), "{reply:?}");
+    }
+
+    #[test]
+    fn generate_scope_completion_filters_by_the_member_prefix() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("completion_scopes.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "completion_scopes.sv");
+        let source = fixture_text("completion_scopes.sv");
+        let reply = completion_at(&mut server, &uri, &source, "g[0].u", "g[0].u".len());
+        assert_eq!(completion_labels(&reply), vec!["u_leaf"], "{reply:?}");
+    }
+
+    // -- completion context classification (Wave 13 follow-up) --------------
+
+    /// Request completion at every character column of one line and return the
+    /// columns that answered with an empty list.
+    fn empty_columns(
+        server: &mut LspServer,
+        uri: &str,
+        source: &str,
+        line_contains: &str,
+    ) -> Vec<usize> {
+        let lines: Vec<&str> = source.split('\n').collect();
+        let line = lines
+            .iter()
+            .position(|line| line.contains(line_contains))
+            .unwrap_or_else(|| panic!("no line containing {line_contains}"));
+        let line_text = lines[line];
+        let mut empty = Vec::new();
+        for character in 0..=line_text.chars().count() {
+            let reply = request(
+                server,
+                "textDocument/completion",
+                position_params(uri, Position::new(line as u32, character as u32)),
+            );
+            let items = reply
+                .as_array()
+                .unwrap_or_else(|| panic!("completion result is an array: {reply:?}"));
+            if items.is_empty() {
+                empty.push(character);
+            }
+        }
+        empty
+    }
+
+    #[test]
+    fn arrayed_port_connection_line_has_completion_at_every_column() {
+        let mut server = LspServer::with_db(DesignDb::load_files([fixture("arrayed.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "arrayed.sv");
+        let source = fixture_text("arrayed.sv");
+
+        // The verifier's repro line: arr_leaf u[1:0] (.d(a[7:4]), .q(q[7:4]));
+        let empty = empty_columns(&mut server, &uri, &source, "arr_leaf u[1:0]");
+        assert!(empty.is_empty(), "empty completion at columns {empty:?}");
+
+        // The specific reports (1-based columns 20/30/40 -> 0-based characters
+        // 19/29/39) must answer with the enclosing module scope.
+        let lines: Vec<&str> = source.split('\n').collect();
+        let line = lines
+            .iter()
+            .position(|line| line.contains("arr_leaf u[1:0]"))
+            .expect("arrayed instance line");
+        for character in [19u32, 29, 39] {
+            let reply = request(
+                &mut server,
+                "textDocument/completion",
+                position_params(&uri, Position::new(line as u32, character)),
+            );
+            let labels = completion_labels(&reply);
+            assert!(
+                labels.iter().any(|label| label == "arr_leaf")
+                    && labels.iter().any(|label| label == "arrayed_top"),
+                "column {character}: expected module scope, got {labels:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_arrayed_bit_select_connections_have_completion_at_every_column() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("completion_context.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "completion_context.sv");
+        let source = fixture_text("completion_context.sv");
+
+        // The same bug class appears without arrays: a bit-select expression in
+        // a non-arrayed instance's port connection.
+        for line_contains in [
+            "context_leaf plain(.d(bus[7:4])",
+            "context_leaf arr[1:0] (.d(data[3:0])",
+            "context_leaf single_bit(.d(bus[0])",
+        ] {
+            let empty = empty_columns(&mut server, &uri, &source, line_contains);
+            assert!(
+                empty.is_empty(),
+                "{line_contains}: empty completion at columns {empty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn port_connection_leading_dot_filters_by_the_port_prefix() {
+        let (mut server, top_uri, _cpu_uri) = fixture_server();
+        let top = fixture_text("top.sv");
+
+        // The QA position: top.sv line 14 is "        .clk(clk),", the caret is
+        // right after the typed prefix ".cl" (1-based column 12).
+        let position = advance(position_of(&top, ".clk("), 3);
+        assert_eq!(
+            (position.line, position.character),
+            (13, 11),
+            "expected line 14, column 12"
+        );
+        let reply = request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&top_uri, position),
+        );
+        assert_eq!(completion_labels(&reply), vec!["clk"], "{reply:?}");
+
+        // "." alone offers the full unfiltered module list (port list plus the
+        // module scope), exactly like an empty plain prefix.
+        let dot_position = advance(position_of(&top, ".clk("), 1);
+        let dot_labels = completion_labels(&request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&top_uri, dot_position),
+        ));
+        let baseline = completion_labels(&request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&top_uri, Position::new(13, 0)),
+        ));
+        assert_eq!(dot_labels, baseline, "{dot_labels:?}");
+        for expected in ["clk", "reset", "instr", "result", "u_cpu", "u_cpu16"] {
+            assert!(
+                dot_labels.iter().any(|label| label == expected),
+                "missing {expected} in {dot_labels:?}"
+            );
+        }
+
+        // ".reset" narrows to the one port label.
+        let reset = advance(position_of(&top, ".reset("), ".reset".len() as u32);
+        let labels = completion_labels(&request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&top_uri, reset),
+        ));
+        assert_eq!(labels, vec!["reset"], "{labels:?}");
     }
 
     // -- protocol and lifecycle --------------------------------------------

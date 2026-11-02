@@ -182,6 +182,13 @@ pub const SIDEBAR_MIN: f64 = 180.0;
 pub const EDITOR_RATIO_MIN: f32 = 0.15;
 pub const EDITOR_RATIO_MAX: f32 = 0.75;
 
+/// The side-by-side split divider may not leave this range of the wave frame
+/// (the left pane keeps at least a quarter of the width, and so does the right).
+pub const SPLIT_RATIO_MIN: f32 = 0.25;
+pub const SPLIT_RATIO_MAX: f32 = 0.75;
+/// The split divider when nothing else was chosen.
+pub const SPLIT_RATIO_DEFAULT: f32 = 0.5;
+
 /// The window layout, i.e. the two CSS variables the panes are sized from plus
 /// the sidebar drawer state.
 ///
@@ -192,6 +199,8 @@ pub struct Layout {
     pub sidebar_w: f64,
     pub editor_ratio: f32,
     pub drawer_open: bool,
+    /// Width share of the split view's left (interactive) pane, 0.25..=0.75.
+    pub split_ratio: f32,
 }
 
 impl Default for Layout {
@@ -204,6 +213,7 @@ impl Default for Layout {
             // as "the waveform is squashed" as soon as the sources were opened.
             editor_ratio: 0.42,
             drawer_open: true,
+            split_ratio: SPLIT_RATIO_DEFAULT,
         }
     }
 }
@@ -215,6 +225,7 @@ impl Layout {
             sidebar_w: clamp_sidebar(self.sidebar_w, f64::INFINITY),
             editor_ratio: clamp_ratio(self.editor_ratio),
             drawer_open: self.drawer_open,
+            split_ratio: clamp_split_ratio(self.split_ratio),
         }
     }
 }
@@ -242,6 +253,15 @@ pub fn clamp_ratio(ratio: f32) -> f32 {
         ratio.clamp(EDITOR_RATIO_MIN, EDITOR_RATIO_MAX)
     } else {
         0.5
+    }
+}
+
+/// Clamp the split divider to [`SPLIT_RATIO_MIN`]..=[`SPLIT_RATIO_MAX`].
+pub fn clamp_split_ratio(ratio: f32) -> f32 {
+    if ratio.is_finite() {
+        ratio.clamp(SPLIT_RATIO_MIN, SPLIT_RATIO_MAX)
+    } else {
+        SPLIT_RATIO_DEFAULT
     }
 }
 

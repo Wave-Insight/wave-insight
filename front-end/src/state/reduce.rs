@@ -476,6 +476,18 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 split.linked = !split.linked;
             }
         }
+        Action::SetSplitRatio(ratio) => {
+            state.layout.split_ratio = crate::state::types::clamp_split_ratio(ratio);
+        }
+        Action::ViewCommittedFor { dump, view } => {
+            // one dump's own committed viewport (the split's unlinked pane);
+            // no shell subscription reads it, so a gesture commit here cannot
+            // re-render the shell
+            if let Some(entry) = state.dumps.items_mut().get_mut(dump) {
+                entry.viewport.view = view;
+                state.dumps.touch();
+            }
+        }
         Action::ViewCommitted(view) => {
             let mut viewport = state.viewport_slice();
             viewport.view = view;
@@ -1308,11 +1320,17 @@ mod tests {
                 sidebar_w: 4000.0,
                 editor_ratio: 0.02,
                 drawer_open: false,
+                split_ratio: 0.9,
             }),
         );
         assert_eq!(state.layout.sidebar_w, 4000.0_f64.max(SIDEBAR_MIN));
         assert_eq!(state.layout.editor_ratio, EDITOR_RATIO_MIN);
         assert!(!state.layout.drawer_open);
+        // the split divider is clamped to its own documented range
+        assert_eq!(
+            state.layout.split_ratio,
+            crate::state::types::SPLIT_RATIO_MAX
+        );
     }
 
     #[test]
@@ -1975,6 +1993,65 @@ mod tests {
         assert!(state.split.is_some());
         reduce(&mut state, Action::DumpClosed { index: 1 });
         assert!(state.split.is_none());
+    }
+    #[test]
+    fn toggling_linked_keeps_each_side_s_own_viewport() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("a.vcd"), Some(size));
+        reduce(
+            &mut state,
+            Action::ViewCommitted(crate::state::types::View::new(50.0, 2.0)),
+        );
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("b.vcd"), Some(size));
+        reduce(&mut state, Action::SplitOpened { right: 0 });
+        reduce(
+            &mut state,
+            Action::ViewCommittedFor {
+                dump: 0,
+                view: crate::state::types::View::new(120.0, 4.0),
+            },
+        );
+        // linking is a display decision: neither side's committed window changes
+        reduce(&mut state, Action::SplitLinkedToggled);
+        reduce(&mut state, Action::SplitLinkedToggled);
+        assert_eq!(state.dumps.items[0].viewport.view.x_axis, 120.0);
+        assert_eq!(state.dumps.items[1].viewport.view.x_axis, 0.0);
+        assert_eq!(
+            state.layout.split_ratio,
+            crate::state::types::SPLIT_RATIO_DEFAULT
+        );
+    }
+    #[test]
+    fn a_viewport_commit_for_one_dump_leaves_the_active_one_alone() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("a.vcd"), Some(size));
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("b.vcd"), Some(size));
+        assert_eq!(state.dumps.active_index(), 1);
+        // the split pane commits its own dump's viewport by index
+        reduce(
+            &mut state,
+            Action::ViewCommittedFor {
+                dump: 0,
+                view: crate::state::types::View::new(120.0, 4.0),
+            },
+        );
+        assert_eq!(state.dumps.items[0].viewport.view.x_axis, 120.0);
+        // the active dump is untouched, and so is the selector the panes read
+        assert_eq!(state.dumps.items[1].viewport.view.x_axis, 0.0);
+        assert_eq!(crate::state::select::viewport(&state).view.x_axis, 0.0);
+        // an out-of-range dump index is a no-op
+        reduce(
+            &mut state,
+            Action::ViewCommittedFor {
+                dump: 9,
+                view: crate::state::types::View::new(1.0, 1.0),
+            },
+        );
+        assert_eq!(state.dumps.items[0].viewport.view.x_axis, 120.0);
     }
     #[test]
     fn the_viewport_and_focus_are_per_dump() {

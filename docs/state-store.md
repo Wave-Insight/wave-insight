@@ -5,8 +5,8 @@ props-and-`Rc<RefCell<_>>` plumbing with one store, and use the same move to fix
 the pane layout.
 
 Status: **steps 1-3 and step 3b implemented; step 4 is down to pane
-wiring.** The store lives in `front-end/src/state/` (twelve modules, about 5.7k
-lines of Rust with 83 native `#[test]`s): layout, status, wave rows, viewport/cursors, the
+wiring.** The store lives in `front-end/src/state/` (twelve modules, about 5.8k
+lines of Rust with 86 native `#[test]`s): layout, status, wave rows, viewport/cursors, the
 open sources, the design database, the derived module tree, focus (the inspector
 signal and the module-tree instance), jump requests, the path picker, the
 settings dialog, the per-signal preferences and the per-dump sessions are store
@@ -35,6 +35,10 @@ other than the active one) with `SplitOpened`/`SplitClosed`/`SplitRightChanged`/
 `SplitLinkedToggled`; the renderer reads a *specific* dump through per-dump
 selectors (`rows_of`, `dump_name_of`, the pane handle) instead of only the active
 entry, and the shell subscribes the split slice to render the toolbar and pane.
+Wave 11 added `Layout.split_ratio` (persisted, clamped 0.25-0.75) with
+`SetSplitRatio`, and `ViewCommittedFor { dump, view }`: the unlinked right pane
+commits its own viewport to that dump's entry, which its own `viewport_of`
+subscription reads, so the shell is never involved in a right-pane gesture.
 **Step 4 is down to pane wiring**: the panes could subscribe directly instead of
 receiving shell-mirrored props, the picker/dialog props could be pure store reads
 instead of `App`/`WaveShow` mirrors, `Effect::MonacoShow` is still a no-op seam,
@@ -151,7 +155,8 @@ pub struct Row {
 
 Notes that matter:
 
-- **`layout`, `row_prefs` and `sessions` are the persisted slices.**
+- **`layout` (including `split_ratio`), `row_prefs` and `sessions` are the
+  persisted slices.**
   `state/persist.rs` writes them to `wave-insight.layout.v1` /
   `wave-insight.rows.v1` / `wave-insight.sessions.v1` (schema 1, version repeated
   in the payload); a corrupt, future-version or denied store degrades to
@@ -254,7 +259,7 @@ propagation, so an unrelated dispatch simply never reaches it.
 
 | Component | Subscribes to | Re-renders on |
 |---|---|---|
-| `App` | `layout`, the tab-only `dump_tabs` and `split` (its own renders), plus mirrors of `sources`, `focus`, `nav.goto` and the cursor/row callbacks of the inlay hints | sidebar/editor ratio, drawer; the mirrors keep the shell's render-time copies and the hint context current |
+| `App` | `layout` (including the split ratio), the tab-only `dump_tabs` and `split` (its own renders), plus mirrors of `sources`, `focus`, `nav.goto` and the cursor/row callbacks of the inlay hints | sidebar/editor ratio, drawer, split ratio; the split divider previews with tier-A DOM writes and commits once on mouseup; the mirrors keep the shell's render-time copies and the hint context current |
 | `TopBar` | `nav.status`, `nav.problems` | status line, language-server problem chip |
 | `Sidebar` (`ModuleStruct`) | `tree`, `focus.instance` (via `App` props; store-owned since step 3b) | dump/design change, instance click |
 | `SignalList` (today `SignalStruct`) | `tree`, `sources` | module selection, filter list |
@@ -271,7 +276,8 @@ propagation, so an unrelated dispatch simply never reaches it.
 when they change (`sources`, `dump_tabs` for the dump tab strip, `focus`, `nav.goto`)
 plus the inlay-hint context.
 Everything else is a leaf subscription, so a zoom no longer walks the sidebar or
-the editor. The design, the module tree, the picker and the settings dialog are store state
+the editor, and an unlinked right-pane viewport commit (`ViewCommittedFor`) is
+read by that pane's own subscription only. The design, the module tree, the picker and the settings dialog are store state
 now, but their components are still prop-driven: `App` mirrors the slices and
 renders `Sidebar`/`SignalList`, `PathPicker` and (through `WaveShow`) `Ctrl` with
 props. Turning those into direct subscriptions and pure store reads is the
@@ -304,7 +310,7 @@ Stored (source of truth, survives everything):
 | `dumps` | one `DumpEntry` per open dump: handle, time range (+ range-from-body), `Rows`, `Viewport`, `Focus`, session-restore state; plus the active index - **in (Wave 8)** |
 | `dump_tabs` | tab-only snapshot of `dumps` for the shell: `DumpTab` (name, size), active index, total bytes; its version bumps only on tab-list/active changes, never on rows/viewport/focus |
 | `rows` / `viewport` / `focus` | **scratch** slices for a session with no dump open (the sources-only workflow); the selectors prefer the active dump entry |
-| `layout` | `sidebar_w`, `editor_ratio`, `drawer_open` |
+| `layout` | `sidebar_w`, `editor_ratio`, `drawer_open`, `split_ratio` (0.25-0.75, default 0.5) |
 | `row_prefs` / `sessions` | remembered per-signal settings / per-dump row lists (persisted, see below) |
 | `nav` | `goto`, `jump_token`, `top`, `status`, `problems`, `picker`, `dialog` - **in** |
 | `split` | `Option<Split { right, linked }>`: the read-only right pane's dump index (never the active one) and whether the time axis is linked - **in (Wave 10)** |
@@ -743,14 +749,13 @@ The task-10 wording, made checkable, with the status at the time of writing:
   asserted by the browser matrix's `layoutRules` scenario
 - `cargo test -p front-end --bins` covers `reduce` (row add/remove/reorder,
   document open/close, dump switch, jump, picker, dialog, design/focus); **done
-  so far** — 83 native tests cover layout, rows, sources, design, focus, jump,
+  so far** — 86 native tests cover layout, rows, sources, design, focus, jump,
   viewport/cursors, sessions, persistence, picker, dialog and the multi-dump
   set (add/activate/close/dedupe/budget)
 - the browser matrix passes, with the rewires listed above; **the gate** — it has
-  grown from the 140 assertions of the original task to 55 scenarios / 446
-  assertions (the latest are `completion`, `inspectorBits` and `splitView` after
-  `corruption`/`multiDump`), and the QA owner re-measures the baseline after each
-  wave.
+  grown from the 140 assertions of the original task to 55 scenarios / 458
+  assertions (the split-view scenario carries the pointer/keyboard/verifier
+  checks), and the QA owner re-measures the baseline after each wave.
 
 ---
 

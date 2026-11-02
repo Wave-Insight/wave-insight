@@ -1413,15 +1413,64 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
   min-height: 0;
   display: flex;
   flex-direction: row;
+  /* set by the app: the left (interactive) pane's share, 0.25..0.75 */
+  --split-ratio: 0.5;
 }
 
 .split-view > .wave-pane {
-  flex: 1 1 50%;
+  flex: 0 0 calc(var(--split-ratio) * 100%);
   min-width: 0;
 }
 
+/* the draggable divider between the two panes */
+.split-separator {
+  flex: 0 0 7px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: var(--line-soft);
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  position: relative;
+  touch-action: none;
+}
+
+.split-separator::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+  background: var(--text-2);
+  opacity: 0.5;
+}
+
+.split-separator:hover,
+.split-separator:focus-visible,
+.split-separator.dragging {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.split-separator:hover::after,
+.split-separator:focus-visible::after,
+.split-separator.dragging::after {
+  background: var(--accent);
+  opacity: 1;
+}
+
+/* full-window shield while the divider is dragged (tier A: no re-render) */
+.split-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  cursor: col-resize;
+}
+
 .split-pane {
-  flex: 1 1 50%;
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -1464,6 +1513,11 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
   position: relative;
   flex: 1;
   min-height: 0;
+  cursor: grab;
+}
+
+.split-canvas-wrap:active {
+  cursor: grabbing;
 }
 
 .split-canvas {

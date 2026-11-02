@@ -10,6 +10,11 @@
 //! The numbers are the before/after evidence for the span index: the same
 //! benchmarks were run once with the index disabled (brute-force scan) and once
 //! with it enabled.
+//!
+//! The `lsp` group also measures completion, the per-keystroke request path:
+//! plain module-scoped identifiers, a prefix filter and member access after an
+//! instance dot (`u0.`). Each leaf module and `top.sv` carry a `// complete:`
+//! marker line that the benchmark puts the caret at.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -42,6 +47,11 @@ fn module_source(index: usize) -> String {
         )
         .expect("write");
     }
+    //completion cursors: a plain module-scoped position (empty prefix) and a
+    //prefix-filtered one; the comment is valid SystemVerilog, so the design and
+    //the document text stay identical
+    source.push_str("    // complete:\n");
+    source.push_str("    // complete: s1\n");
     source.push_str("endmodule\n");
     source
 }
@@ -51,6 +61,8 @@ fn top_source(leaves: usize) -> String {
     for index in 0..leaves {
         writeln!(&mut source, "    leaf{index} u{index} (.clk(clk), .y());").expect("write");
     }
+    //completion cursor after an instance dot: u0. resolves to leaf0's members
+    source.push_str("    // complete: u0.\n");
     source.push_str("endmodule\n");
     source
 }
@@ -191,6 +203,39 @@ fn position_request(uri: &str, method: &str, line: u32, column: u32) -> String {
     .to_string()
 }
 
+/// The fixture source of the generated file whose path ends with `name`.
+fn fixture_source<'a>(fixture: &'a Fixture, name: &str) -> (&'a PathBuf, &'a str) {
+    fixture
+        .files
+        .iter()
+        .find(|(path, _)| path.ends_with(name))
+        .map(|(path, source)| (path, source.as_str()))
+        .unwrap_or_else(|| panic!("the fixture has a `{name}` file"))
+}
+
+/// The line whose trimmed text is exactly `text`, as a 1-based (line, column)
+/// caret at the end of that line - the shape [`position_request`] takes.
+fn caret_at_end_of(source: &str, text: &str) -> (u32, u32) {
+    let index = source
+        .lines()
+        .position(|line| line.trim() == text)
+        .unwrap_or_else(|| panic!("`{text}` is not a line of the fixture source"));
+    let line = source.lines().nth(index).expect("the line exists");
+    (index as u32 + 1, line.chars().count() as u32 + 1)
+}
+
+/// Fail the bench setup when a completion request does not answer items: a
+/// benchmark on an empty list would silently measure nothing.
+fn assert_completion_items(server: &mut LspServer, request: &str, mode: &str) {
+    let reply = server.handle_message(request);
+    assert!(
+        reply
+            .first()
+            .is_some_and(|reply| reply.contains("\"label\"")),
+        "{mode} completion should answer items: {reply:?}"
+    );
+}
+
 fn bench_design_queries(c: &mut Criterion) {
     let fixture = Fixture::new(100);
     let mut group = c.benchmark_group("design");
@@ -272,6 +317,58 @@ fn bench_lsp_requests(c: &mut Criterion) {
         .to_string();
         group.bench_function("document_symbol", move |b| {
             b.iter(|| black_box(server.handle_message(&message)))
+        });
+    }
+
+    {
+        // Completion: the request an editor sends on every keystroke. The
+        // generated fixture carries a `// complete:` marker line in each leaf
+        // module and a `// complete: u0.` marker in top.sv, so the three modes
+        // are: module-scoped with an empty prefix (ports, 32 signals,
+        // parameters, genvars, instances and all 101 module names), a prefix
+        // filter (`s1`) and member access after an instance dot (`u0.`).
+        let (leaf_path, leaf_source) = fixture_source(&fixture, "leaf000.sv");
+        let (top_path, top_source) = fixture_source(&fixture, "top.sv");
+        let leaf_uri = fixture.uris[leaf_path].clone();
+        let top_uri = fixture.uris[top_path].clone();
+        let (plain_line, plain_column) = caret_at_end_of(leaf_source, "// complete:");
+        let (prefix_line, prefix_column) = caret_at_end_of(leaf_source, "// complete: s1");
+        let (member_line, member_column) = caret_at_end_of(top_source, "// complete: u0.");
+
+        let mut server = fixture.server();
+        let plain = position_request(
+            &leaf_uri,
+            "textDocument/completion",
+            plain_line,
+            plain_column,
+        );
+        assert_completion_items(&mut server, &plain, "plain");
+        group.bench_function("completion_plain", move |b| {
+            b.iter(|| black_box(server.handle_message(&plain)))
+        });
+
+        let mut server = fixture.server();
+        let prefix = position_request(
+            &leaf_uri,
+            "textDocument/completion",
+            prefix_line,
+            prefix_column,
+        );
+        assert_completion_items(&mut server, &prefix, "prefix");
+        group.bench_function("completion_prefix", move |b| {
+            b.iter(|| black_box(server.handle_message(&prefix)))
+        });
+
+        let mut server = fixture.server();
+        let member = position_request(
+            &top_uri,
+            "textDocument/completion",
+            member_line,
+            member_column,
+        );
+        assert_completion_items(&mut server, &member, "member");
+        group.bench_function("completion_member", move |b| {
+            b.iter(|| black_box(server.handle_message(&member)))
         });
     }
 

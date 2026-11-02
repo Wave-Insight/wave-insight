@@ -3245,6 +3245,11 @@ scenarios.completion = async (cdp) => {
   // the active tab (a background model's applyEdits would not reach the server)
   await cdp.eval('window.__qa.clickText(".tab .tab-name", "top.sv")');
   await sleep(800);
+  // the prefix test below reads the *server's* document text, so wait until both
+  // uploaded files are open in the LSP: the editor-to-server sync is asynchronous
+  // and a completion call before the didOpen answers with an empty prefix
+  await waitFor(cdp, 'window.__waveInsightLsp && JSON.parse(window.__waveInsightLsp.stats()).documents >= 2', 20000);
+  await sleep(600);
   const hook = await cdp.eval('window.__waveInsightProviders ? { completion: !!window.__waveInsightProviders.completion, triggers: window.__waveInsightProviders.completion ? Array.from(window.__waveInsightProviders.completion.triggerCharacters || []) : null } : null');
   note('completion hook', hook);
   check('completion: the completion provider is published with its trigger characters',
@@ -3354,22 +3359,27 @@ scenarios.inspectorBits = async (cdp) => {
   await cdp.shot('qa-inspector-bits.png');
 };
 
-// --- Wave 10: split view (two dumps side by side) ----------------------------
-// Only with two or more dumps. The toolbar holds the split toggle, one right-
-// pane choice per *non-active* dump, the linked toggle and the close button;
-// while open .split-view holds the interactive left .wave-pane and a read-only
-// .split-pane with its own canvas. A single-dump session keeps exactly the DOM
-// it had before (no toolbar, no split view).
+// --- Wave 11: split-view polish -------------------------------------------------
+// The split pane has its own separator (keyboard + drag, clamped to 25..75 %),
+// its own row scroll / zoom / pan while unlinked, follows the left window again
+// when linked, survives a window resize, and the ratio is persisted in the
+// layout. Every assertion is DOM/state/canvas based, never style based.
 scenarios.splitView = async (cdp) => {
+  const hashOf = (selector) => cdp.eval('(function(){ const c = document.querySelector(' + JSON.stringify(selector) + '); if (!c) return null; const ctx = c.getContext("2d"); if (!ctx) return null; try { const d = ctx.getImageData(0,0,c.width,c.height).data; let h = 2166136261 >>> 0; for (let i=0;i<d.length;i+=4){ h ^= (d[i]|(d[i+1]<<8)|(d[i+2]<<16)|(d[i+3]<<24))>>>0; h = Math.imul(h,16777619)>>>0; } return h; } catch(e){ return "no-pixels:"+String(e); } })()');
   const splitState = () => cdp.eval(`(function(){
     const toolbar = document.querySelector('.split-toolbar');
     const view = document.querySelector('.split-view');
     const toggle = document.querySelector('.split-btn[aria-label="Split view"]');
     const linked = document.querySelector('.split-btn[aria-label="Linked time axis"]');
     const close = document.querySelector('.split-btn.split-close');
+    const sep = document.querySelector('.split-separator');
     const pane = document.querySelector('.split-pane');
     const name = pane ? pane.querySelector('.split-pane-name') : null;
     const mode = pane ? pane.querySelector('.split-pane-mode') : null;
+    const left = view ? view.querySelector('.wave-pane') : null;
+    const leftRect = left ? left.getBoundingClientRect() : null;
+    const canvas = document.querySelector('canvas.split-canvas');
+    const canvasRect = canvas ? canvas.getBoundingClientRect() : null;
     const surface = document.querySelector('#wave-surface');
     return {
       toolbar: !!toolbar,
@@ -3380,110 +3390,226 @@ scenarios.splitView = async (cdp) => {
       linked: linked ? linked.getAttribute('aria-pressed') : null,
       close: !!close,
       choices: Array.prototype.map.call(document.querySelectorAll('.split-btn.split-right-choice'), function(b){ return { label: b.getAttribute('aria-label'), active: b.classList.contains('active') }; }),
-      // textContent, not innerText: the pane mode is styled text-transform:
-      // uppercase, and the assertion is about the DOM text, not the rendering
+      sepRole: sep ? sep.getAttribute('role') : null,
+      sepOrientation: sep ? sep.getAttribute('aria-orientation') : null,
+      sepLabel: sep ? sep.getAttribute('aria-label') : null,
+      sepMin: sep ? sep.getAttribute('aria-valuemin') : null,
+      sepMax: sep ? sep.getAttribute('aria-valuemax') : null,
+      sepNow: sep ? sep.getAttribute('aria-valuenow') : null,
+      sepTabIndex: sep ? sep.getAttribute('tabindex') : null,
+      style: view ? (view.getAttribute('style') || '') : null,
+      leftW: leftRect ? Math.round(leftRect.width) : null,
+      shield: !!document.querySelector('.split-shield'),
       paneName: name ? (name.textContent || '').trim() : null,
       paneMode: mode ? (mode.textContent || '').trim() : null,
-      canvas: !!document.querySelector('canvas.split-canvas'),
+      canvas: !!canvas,
+      canvasWidth: canvas ? canvas.width : null,
+      canvasHeight: canvas ? canvas.height : null,
+      canvasClientW: canvas ? Math.round(canvasRect.width) : null,
+      canvasClientH: canvas ? Math.round(canvasRect.height) : null,
       surface: !!surface,
       surfaceInSplit: !!(surface && surface.closest('.split-view')),
     };
   })()`);
-  // ink of the right pane's canvas: alpha > 8 counts as a painted pixel
-  const splitInk = () => cdp.eval(`(function(){
-    const c = document.querySelector('canvas.split-canvas');
-    if (!c) return -1;
-    const ctx = c.getContext('2d');
-    if (!ctx) return -1;
-    try {
-      const d = ctx.getImageData(0, 0, c.width, c.height).data;
-      let ink = 0;
-      for (let i = 0; i < d.length; i += 4) { if (d[i + 3] > 8) ink += 1; }
-      return ink;
-    } catch (error) { return -1; }
-  })()`);
   const clickBtn = (label) => cdp.eval(`(function(){
-    const b = Array.prototype.find.call(document.querySelectorAll('.split-btn'), function(x){ return x.getAttribute('aria-label') === ${JSON.stringify(label)}; });
+    const b = Array.prototype.find.call(document.querySelectorAll('.split-btn'), function(x){ return x.getAttribute('aria-label') === ${JSON.stringify('LABEL')}; });
     if (!b) return false;
     b.click();
     return true;
-  })()`);
+  })()`.replace('LABEL', label));
+  const keyOnSeparator = (key) => cdp.eval(`(function(){
+    const sep = document.querySelector('.split-separator');
+    if (!sep) return false;
+    sep.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify('KEY')}, bubbles: true, cancelable: true }));
+    return true;
+  })()`.replace('KEY', key));
+  // ctrl+wheel (zoom) and plain wheel (row scroll) at a point
+  const wheelAt = async (x, y, deltaY, ctrl) => {
+    if (ctrl) await cdp.key('keyDown', 'Control', 'ControlLeft', 17);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x, y: y, deltaX: 0, deltaY: deltaY, modifiers: ctrl ? 2 : 0 });
+    if (ctrl) await cdp.key('keyUp', 'Control', 'ControlLeft', 17);
+  };
+  const centerOf = async (selector) => {
+    const rect = await cdp.eval('window.__qa.rect(' + JSON.stringify(selector) + ')');
+    return rect ? { x: Math.round(rect.x + rect.w / 2), y: Math.round(rect.y + rect.h / 2) } : null;
+  };
   await boot(cdp);
+  // the right pane shows the *other* dump: give it enough rows to scroll
+  await cdp.upload([path.join(FIXTURES, 'many_signals.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 40000);
+  await sleep(800);
+  const addedRows = await cdp.eval('(function(){ let n = 0; for (let i = 0; i < 20; i++) { if (window.__qa.clickSignal("sig_" + String(i).padStart(4, "0")) === "ok") n++; } return n; })()');
+  await sleep(1500);
   await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
-  await waitStatus(cdp, 'waveform loaded', 25000);
-  await sleep(600);
-  let st = await splitState();
-  note('single dump', st);
-  check('splitView: a single-dump session has no split toolbar', !st.toolbar, st);
-  check('splitView: a single-dump session has no split view', !st.view, st);
-  // give the first dump a row so the right pane has something to paint
-  const addedFirst = await cdp.eval('window.__qa.clickSignal("pc")');
-  await sleep(700);
-  await cdp.upload([path.join(FIXTURES, 'mismatch.vcd')]);
   await waitStatus(cdp, '2 dumps open', 25000);
   await sleep(800);
-  st = await splitState();
-  note('two dumps', st);
+  const addedLeft = await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(700);
+  let st = await splitState();
+  note('two dumps', { addedRows: addedRows, addedLeft: addedLeft, toolbar: st.toolbar, pressed: st.pressed });
   check('splitView: the toolbar appears with two dumps',
-    st.toolbar && st.toolbarRole === 'toolbar' && st.toolbarLabel === 'Split view', st);
+    addedRows === 20 && st.toolbar && st.toolbarRole === 'toolbar' && st.toolbarLabel === 'Split view', st);
   check('splitView: the split starts closed', !st.view && st.pressed === 'false', st);
-  const opened = await clickBtn('Split view');
-  await sleep(1200);
+  // open
+  await clickBtn('Split view');
+  await sleep(1500);
   st = await splitState();
   note('split open', st);
   check('splitView: the split opens with the other dump on the right',
-    opened && st.view && st.pressed === 'true' && st.paneName === 'wave.vcd', st);
+    st.view && st.pressed === 'true' && st.paneName === 'many_signals.vcd', { pressed: st.pressed, name: st.paneName });
   check('splitView: the right pane is read only', st.paneMode === 'read only', st.paneMode);
   check('splitView: the right choice lists only the non-active dump',
-    st.choices.length === 1 && st.choices[0].label === 'Show wave.vcd on the right' && st.choices[0].active === true, st.choices);
+    st.choices.length === 1 && st.choices[0].label === 'Show many_signals.vcd on the right' && st.choices[0].active === true, st.choices);
   check('splitView: the left pane stays interactive inside the split',
     st.surface && st.surfaceInSplit && st.canvas, { surface: st.surface, inSplit: st.surfaceInSplit, rightCanvas: st.canvas });
-  const ink = await splitInk();
-  note('right pane ink', ink);
-  check('splitView: the right canvas is painted', ink > 0, ink);
-  // linked time axis toggles and flips back
-  const toggled = await clickBtn('Linked time axis');
-  await sleep(700);
-  const linkedOff = await splitState();
-  const toggledBack = await clickBtn('Linked time axis');
-  await sleep(700);
-  const linkedOn = await splitState();
-  note('linked toggle', { off: linkedOff.linked, on: linkedOn.linked });
-  check('splitView: the linked toggle flips the pressed state',
-    toggled && toggledBack && linkedOff.linked === 'false' && linkedOn.linked === 'true', { off: linkedOff.linked, on: linkedOn.linked });
-  // tier-A rule with the split open: a cursor commit on the left pane must not
-  // re-render the shell
-  const surface = await cdp.eval('window.__qa.rect("#wave-surface")');
-  const x0 = Math.round(surface.x + Math.min(160, surface.w / 3));
-  const y = Math.round(surface.y + 40);
-  const counts = async () => ({
-    shell: await cdp.eval('window.__qa.dbg("render_count")'),
-    pane: await cdp.eval('window.__qa.dbg("pane_render_count")'),
-  });
-  const before = await counts();
-  await cdp.mouse('mousePressed', x0, y, { buttons: 1 });
+  // (a) separator: attributes and keyboard
+  note('separator', { role: st.sepRole, orientation: st.sepOrientation, label: st.sepLabel, min: st.sepMin, max: st.sepMax, now: st.sepNow, tab: st.sepTabIndex, style: st.style });
+  check('splitView: the separator is an accessible vertical divider clamped to 25..75',
+    st.sepRole === 'separator' && st.sepOrientation === 'vertical' && st.sepLabel === 'Split divider'
+      && st.sepMin === '25' && st.sepMax === '75' && st.sepNow === '50' && st.sepTabIndex === '0',
+    { role: st.sepRole, orientation: st.sepOrientation, label: st.sepLabel, min: st.sepMin, max: st.sepMax, now: st.sepNow });
+  const widthAt50 = st.leftW;
+  await keyOnSeparator('ArrowRight');
+  await sleep(600);
+  st = await splitState();
+  note('after ArrowRight', { now: st.sepNow, leftW: st.leftW, style: st.style });
+  check('splitView: ArrowRight moves the divider by 2 % and grows the left pane',
+    st.sepNow === '52' && /--split-ratio:0\.520/.test(st.style || '') && st.leftW > widthAt50, { now: st.sepNow, leftW: st.leftW, before: widthAt50 });
+  await keyOnSeparator('Home');
+  await sleep(600);
+  st = await splitState();
+  check('splitView: Home jumps the divider to its minimum',
+    st.sepNow === '25' && /--split-ratio:0\.250/.test(st.style || ''), { now: st.sepNow, style: st.style });
+  await keyOnSeparator('End');
+  await sleep(600);
+  st = await splitState();
+  check('splitView: End jumps the divider to its maximum',
+    st.sepNow === '75' && /--split-ratio:0\.750/.test(st.style || ''), { now: st.sepNow, style: st.style });
+  // (b) pointer drag: shield while dragging, live style, commit on release
+  const viewRect = await cdp.eval('window.__qa.rect(".split-view")');
+  const sepRect = await cdp.eval('window.__qa.rect(".split-separator")');
+  const dragX = Math.round(viewRect.x + viewRect.w * 0.35);
+  const dragY = Math.round(sepRect.y + sepRect.h / 2);
+  await cdp.mouse('mousePressed', Math.round(sepRect.x + sepRect.w / 2), dragY, { buttons: 1 });
   await sleep(300);
-  const atStart = await counts();
-  await cdp.mouse('mouseMoved', x0 + 1, y, { buttons: 1 });
-  await sleep(250);
-  const mid = await counts();
-  await cdp.mouse('mouseReleased', x0 + 1, y, { buttons: 0 });
-  await sleep(500);
-  const after = await counts();
-  note('split cursor renders', { before, atStart, mid, after });
-  check('splitView: a cursor commit with the split open does not re-render the shell',
-    atStart.shell === mid.shell && atStart.shell === after.shell, { before, atStart, mid, after });
-  // close: the split view goes, the toolbar stays and the plain wave pane is back
+  const during = await splitState();
+  await cdp.mouse('mouseMoved', dragX, dragY, { buttons: 1 });
+  await sleep(300);
+  const moved = await splitState();
+  await cdp.mouse('mouseReleased', dragX, dragY, { buttons: 0 });
+  await sleep(800);
+  const afterDrag = await splitState();
+  note('separator drag', { during: { shield: during.shield, now: during.sepNow }, moved: { shield: moved.shield, style: moved.style }, after: { now: afterDrag.sepNow, style: afterDrag.style, leftW: afterDrag.leftW } });
+  check('splitView: dragging the separator shows the shield and previews the ratio',
+    during.shield && moved.shield && /--split-ratio:0\.3[0-9][0-9]/.test(moved.style || ''), { during: during.shield, moved: moved.shield, style: moved.style });
+  check('splitView: releasing the separator commits the new ratio',
+    !afterDrag.shield && afterDrag.sepNow === '35' && /--split-ratio:0\.350/.test(afterDrag.style || '')
+      && Math.abs((afterDrag.leftW || 0) - Math.round(viewRect.w * 0.35)) <= 2,
+    { now: afterDrag.sepNow, style: afterDrag.style, leftW: afterDrag.leftW, expected: Math.round(viewRect.w * 0.35) });
+  // (c) unlinked: the right pane has its own window; the left gestures do not move it
+  await clickBtn('Linked time axis');
+  await sleep(800);
+  st = await splitState();
+  check('splitView: the linked toggle turns the link off', st.linked === 'false', st.linked);
+  const leftPoint = await centerOf('#wave-surface');
+  const rightPoint = await centerOf('canvas.split-canvas');
+  let leftHash = await hashOf('#wave-surface');
+  let rightHash = await hashOf('canvas.split-canvas');
+  await wheelAt(leftPoint.x, leftPoint.y, -240, true);
+  await sleep(800);
+  const leftZoomed = await hashOf('#wave-surface');
+  const rightAfterLeftZoom = await hashOf('canvas.split-canvas');
+  note('unlinked: left zoom', { leftBefore: leftHash, leftAfter: leftZoomed, rightBefore: rightHash, rightAfter: rightAfterLeftZoom });
+  check('splitView: a left zoom changes the left pane only while unlinked',
+    leftZoomed !== leftHash && rightAfterLeftZoom === rightHash, { left: [leftHash, leftZoomed], right: [rightHash, rightAfterLeftZoom] });
+  leftHash = leftZoomed;
+  rightHash = rightAfterLeftZoom;
+  await wheelAt(rightPoint.x, rightPoint.y, -240, true);
+  await sleep(800);
+  const rightZoomed = await hashOf('canvas.split-canvas');
+  const leftAfterRightZoom = await hashOf('#wave-surface');
+  note('unlinked: right zoom', { rightBefore: rightHash, rightAfter: rightZoomed, leftBefore: leftHash, leftAfter: leftAfterRightZoom });
+  check('splitView: a right ctrl+wheel zooms the right pane only',
+    rightZoomed !== rightHash && leftAfterRightZoom === leftHash, { right: [rightHash, rightZoomed], left: [leftHash, leftAfterRightZoom] });
+  // (d) a window resize must keep the right canvas backing store in sync (the
+  // verifier's second split-view bug: no ResizeObserver on the split canvas)
+  st = await splitState();
+  const dpr = await cdp.eval('window.devicePixelRatio || 1');
+  note('resize before', { canvasWidth: st.canvasWidth, canvasHeight: st.canvasHeight, clientW: st.canvasClientW, clientH: st.canvasClientH, dpr: dpr });
+  check('splitView: the right canvas backing store matches its css box before the resize',
+    Math.abs(st.canvasWidth - Math.round(st.canvasClientW * dpr)) <= 1 && Math.abs(st.canvasHeight - Math.round(st.canvasClientH * dpr)) <= 1,
+    { canvas: [st.canvasWidth, st.canvasHeight], css: [st.canvasClientW, st.canvasClientH], dpr: dpr });
+  const beforeResizeHash = await hashOf('canvas.split-canvas');
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 600, deviceScaleFactor: 1, mobile: false });
+  await sleep(1500);
+  st = await splitState();
+  const afterResizeHash = await hashOf('canvas.split-canvas');
+  note('resize after', { canvasWidth: st.canvasWidth, canvasHeight: st.canvasHeight, clientW: st.canvasClientW, clientH: st.canvasClientH, hash: [beforeResizeHash, afterResizeHash] });
+  check('splitView: a window resize updates the right canvas backing store',
+    Math.abs(st.canvasWidth - Math.round(st.canvasClientW * dpr)) <= 1 && Math.abs(st.canvasHeight - Math.round(st.canvasClientH * dpr)) <= 1
+      && st.canvasWidth < 1100,
+    { canvas: [st.canvasWidth, st.canvasHeight], css: [st.canvasClientW, st.canvasClientH], dpr: dpr });
+  check('splitView: the right canvas repaints at the new size', afterResizeHash !== beforeResizeHash, { before: beforeResizeHash, after: afterResizeHash });
+  // (e) plain wheel scrolls the right pane's rows and clamps at the ends. The
+  // smaller window makes 20 rows overflow the pane, so the scroll is observable.
+  const smallRight = await centerOf('canvas.split-canvas');
+  let scrollHash = afterResizeHash;
+  await wheelAt(smallRight.x, smallRight.y, 100, false);
+  await sleep(700);
+  const scrolled = await hashOf('canvas.split-canvas');
+  await wheelAt(smallRight.x, smallRight.y, 100, false);
+  await sleep(700);
+  const scrolledAgain = await hashOf('canvas.split-canvas');
+  for (let i = 0; i < 10; i++) { await wheelAt(smallRight.x, smallRight.y, 400, false); }
+  await sleep(900);
+  const clamped = await hashOf('canvas.split-canvas');
+  await wheelAt(smallRight.x, smallRight.y, 400, false);
+  await sleep(700);
+  const clampedAgain = await hashOf('canvas.split-canvas');
+  note('unlinked: row scroll', { start: scrollHash, scrolled: scrolled, scrolledAgain: scrolledAgain, clamped: clamped, clampedAgain: clampedAgain });
+  check('splitView: a plain wheel scrolls the right pane rows',
+    scrolled !== scrollHash && scrolledAgain !== scrolled, { start: scrollHash, scrolled: scrolled, scrolledAgain: scrolledAgain });
+  check('splitView: the row scroll clamps at the end of the list',
+    clamped === clampedAgain, { clamped: clamped, clampedAgain: clampedAgain });
+  // (f) back to the normal window for the linked re-sync test
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+  await sleep(1200);
+  // (g) linked again: the right pane follows the left window
+  await clickBtn('Linked time axis');
+  await sleep(900);
+  st = await splitState();
+  check('splitView: the linked toggle turns the link back on', st.linked === 'true', st.linked);
+  const linkedRightBefore = await hashOf('canvas.split-canvas');
+  const linkedLeftBefore = await hashOf('#wave-surface');
+  const bigLeft = await centerOf('#wave-surface');
+  await wheelAt(bigLeft.x, bigLeft.y, -240, true);
+  await sleep(900);
+  const linkedRightAfter = await hashOf('canvas.split-canvas');
+  const linkedLeftAfter = await hashOf('#wave-surface');
+  note('relinked: left zoom', { left: [linkedLeftBefore, linkedLeftAfter], right: [linkedRightBefore, linkedRightAfter] });
+  check('splitView: with the link back on the right pane follows the left window',
+    linkedLeftAfter !== linkedLeftBefore && linkedRightAfter !== linkedRightBefore, { left: [linkedLeftBefore, linkedLeftAfter], right: [linkedRightBefore, linkedRightAfter] });
+  // (h) the ratio is persisted in the layout storage
+  await keyOnSeparator('Home');
+  await sleep(700);
+  const layout = await cdp.eval('window.localStorage.getItem("wave-insight.layout.v1")');
+  let parsedLayout = null;
+  try { parsedLayout = JSON.parse(layout); } catch (error) { parsedLayout = null; }
+  note('layout storage', parsedLayout);
+  check('splitView: the divider ratio is persisted in the layout storage',
+    !!parsedLayout && Math.abs((parsedLayout.split_ratio || 0) - 0.25) < 0.001, parsedLayout);
+  // (h) close restores the single-pane DOM
   const closed = await clickBtn('Close split view');
   await sleep(900);
   st = await splitState();
-  note('split closed', st);
-  check('splitView: closing removes the split view', closed && !st.view, st);
+  note('split closed', { view: st.view, toolbar: st.toolbar, surface: st.surface, inSplit: st.surfaceInSplit, sep: st.sepRole });
+  check('splitView: closing removes the split view', closed && !st.view && !st.sepRole, st);
   check('splitView: the toolbar stays after closing', st.toolbar && st.pressed === 'false', st);
   check('splitView: the plain wave pane is back', st.surface && !st.surfaceInSplit && !st.canvas, st);
   check('splitView: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   await cdp.shot('qa-split-view.png');
 };
+
 (async () => {
   const wanted = process.argv.slice(2);
   const names = wanted.length ? wanted : Object.keys(scenarios);

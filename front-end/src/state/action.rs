@@ -124,6 +124,14 @@ pub enum Action {
     SplitRightChanged { right: usize },
     /// Linked time axis toggled.
     SplitLinkedToggled,
+    /// The split divider moved, as the left pane's share of the wave frame.
+    SetSplitRatio(f32),
+
+    /// The committed zoom/pan of **one specific dump** (the split view's
+    /// unlinked right pane). Unlike [`Action::ViewCommitted`], which targets the
+    /// active dump, this never re-renders the shell: only that dump's pane
+    /// subscribes to its viewport.
+    ViewCommittedFor { dump: usize, view: View },
 }
 
 /// Work the reducer may not do itself: I/O, the LSP, the editor.

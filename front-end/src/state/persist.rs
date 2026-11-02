@@ -294,6 +294,14 @@ struct LayoutFile {
     sidebar_w: f64,
     editor_ratio: f32,
     drawer_open: bool,
+    /// Added in wave 11: a payload written before it decodes with the default,
+    /// so the schema version did not have to change.
+    #[serde(default = "default_split_ratio")]
+    split_ratio: f32,
+}
+
+fn default_split_ratio() -> f32 {
+    crate::state::types::SPLIT_RATIO_DEFAULT
 }
 
 #[derive(Deserialize, Serialize)]
@@ -317,6 +325,7 @@ pub fn encode_layout(layout: &Layout) -> String {
         sidebar_w: layout.sidebar_w,
         editor_ratio: layout.editor_ratio,
         drawer_open: layout.drawer_open,
+        split_ratio: layout.split_ratio,
     })
     .unwrap_or_default()
 }
@@ -333,6 +342,7 @@ pub fn decode_layout(raw: &str) -> Option<Layout> {
             sidebar_w: file.sidebar_w,
             editor_ratio: file.editor_ratio,
             drawer_open: file.drawer_open,
+            split_ratio: file.split_ratio,
         }
         .clamped(),
     )
@@ -617,7 +627,7 @@ impl Storage for MemoryStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::types::{EDITOR_RATIO_MAX, SIDEBAR_MIN};
+    use crate::state::types::{EDITOR_RATIO_MAX, SIDEBAR_MIN, SPLIT_RATIO_DEFAULT};
     use wave_insight_lib::waveform::ShowType;
 
     /// One remembered row; the load/drive lists make the round-trip meaningful.
@@ -653,6 +663,7 @@ mod tests {
             sidebar_w: 321.0,
             editor_ratio: 0.6,
             drawer_open: false,
+            split_ratio: 0.66,
         };
         assert_eq!(decode_layout(&encode_layout(&layout)), Some(layout));
 
@@ -664,6 +675,9 @@ mod tests {
                 sidebar_w: SIDEBAR_MIN,
                 editor_ratio: EDITOR_RATIO_MAX,
                 drawer_open: true,
+                // a payload written before the split existed decodes with the
+                // default divider
+                split_ratio: SPLIT_RATIO_DEFAULT,
             })
         );
     }
@@ -700,6 +714,7 @@ mod tests {
                 sidebar_w: 300.0,
                 editor_ratio: 0.5,
                 drawer_open: true,
+                split_ratio: SPLIT_RATIO_DEFAULT,
             })
         );
     }
@@ -800,6 +815,7 @@ mod tests {
                 sidebar_w: 333.0,
                 editor_ratio: 0.55,
                 drawer_open: false,
+                split_ratio: 0.4,
             },
             ..State::default()
         };

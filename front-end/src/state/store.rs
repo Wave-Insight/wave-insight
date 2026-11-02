@@ -438,6 +438,7 @@ mod tests {
                 sidebar_w: 360.0,
                 editor_ratio: Layout::default().editor_ratio,
                 drawer_open: false,
+                split_ratio: Layout::default().split_ratio,
             }
         );
         // reading the stored values back is not a change: nothing is rewritten

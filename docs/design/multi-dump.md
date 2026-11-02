@@ -6,12 +6,13 @@ note was written, exactly one dump was open and the wave rows, the viewport and
 the derived tree belonged to it implicitly. This note makes that relationship
 explicit so a second dump can be added without forking the whole UI.
 
-Status: **steps 1-2 shipped in Wave 8; step 3 (split view) shipped as an MVP in
-Wave 10.** The per-dump model, the dump tab strip and the side-by-side split
-landed. The split's remaining limits are deliberately listed here: the right
-pane is read-only (no independent pan/zoom in unlinked mode and no row
-scrolling/selection), the split is a fixed 50/50 with no draggable ratio yet, and
-the split state is not persisted across reloads.
+Status: **steps 1-2 shipped in Wave 8; step 3 shipped as an MVP in Wave 10 and
+polished in Wave 11.** The per-dump model, the dump tab strip and the side-by-side
+split landed; the right pane now scrolls/zooms/pans on its own in unlinked mode,
+linked mode freezes when the toggle turns unlinked, and the divider is draggable
+and persisted. The remaining limits are listed here: unlinked-mode cursor
+independence, a visible row scrollbar, drag-pan captured by the window (it stops
+at the pane edge), and whether the split is open is not persisted across reloads.
 
 Implementation result (Wave 8), where reality differed from the design below:
 `State.dumps` (in `front-end/src/state/dumps.rs`) owns one `DumpEntry` per tab -
@@ -41,6 +42,17 @@ clamped, with the cursors drawn at the mapped times. The toolbar renders only
 with two or more dumps (a single dump has no split DOM), switching tabs swaps the
 panes, and closing a dump remaps the right pane or closes the split when fewer
 than two remain.
+
+Implementation result (Wave 11), split polish: the unlinked pane owns its view and
+commits it through `ViewCommittedFor { dump, view }` to that dump's entry (the
+shell never subscribes that change); it zooms at the pointer with Ctrl+wheel,
+scrolls the virtualized row window (clamped by `state::split::max_row_scroll`) and
+drag-pans, while the linked pane ignores gestures and stops following the left
+viewport when it is unlinked. A `ResizeObserver` repaints at the new css box so
+the canvas backing store tracks window resizes and divider moves.
+`.split-separator` is a `role=separator` with aria values, 2% arrow steps and
+Home/End; `SetSplitRatio` clamps to 0.25-0.75 and persists `Layout.split_ratio`
+(default 0.5, serde-defaulted so an old saved layout loads).
 
 ## 1. Why
 

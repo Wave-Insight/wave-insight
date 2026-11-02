@@ -152,18 +152,29 @@ whole-signal driver (`y`) adds no range label.
 two dumps the toolbar (role=toolbar, aria-label "Split view") appears; its
 toggle (`aria-pressed`) opens a `.split-view` that keeps the interactive left
 `.wave-pane` (`#wave-surface`) and adds a read-only `.split-pane` (name,
-"read only" mode, `canvas.split-canvas`). The scenario asserts the right pane
-shows the non-active dump's name and a painted canvas (pixel ink), that the
-right-pane choices list only the non-active dumps, that the Linked toggle
-flips `aria-pressed`, that a cursor commit on the left pane with the split
-open does not re-render the shell (the same `__waveDebug.render_count` tier-A
-rule), and that closing removes `.split-view`, keeps the toolbar and leaves
-`#wave-surface` as the only wave pane.
+"read only" mode, `canvas.split-canvas`). While open, the divider is a
+`.split-separator` (role=separator, aria-orientation=vertical, aria-label
+"Split divider", aria-valuemin 25 / aria-valuemax 75, aria-valuenow, tabindex
+0); ArrowLeft/ArrowRight move it by 2 %, Home/End jump to 25/75, and dragging
+it shows a `.split-shield` overlay, previews `--split-ratio` live and commits
+on release. The ratio is persisted in `wave-insight.layout.v1` as
+`split_ratio`. Unlinked, the right pane has its own row scroll (plain wheel),
+zoom (Ctrl+wheel) and pan (drag) and the left gestures do not touch it; linked
+again it follows the left window. A window resize keeps the right canvas
+backing store in step with its css box, and closing removes `.split-view`,
+keeps the toolbar and leaves `#wave-surface` as the only wave pane.
 
-Baseline on the Wave 10 build (2026-11-02, 55 scenarios):
+For the linked/unlinked checks the right pane publishes its last paint on
+`.split-pane`: `data-frame="view=<axis>:<size> cursors=<c1>/<c2> scroll=<px>
+dpr=<ratio> rows=<n> first=<i> end=<t> w=<px>"` and
+`title="window <axis> @ <size>"` (plus `aria-label="Split pane: <name>"`), so
+a freeze/re-sync assertion can compare the right pane's window directly
+instead of relying only on the canvas pixels.
+
+Baseline on the Wave 11 build (2026-11-02, 55 scenarios):
 
 ```
-=== summary: 446 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
+=== summary: 458 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
 ```
 
 The summary has five counters: **passed**, **failed**, **pending** (an R2 rule

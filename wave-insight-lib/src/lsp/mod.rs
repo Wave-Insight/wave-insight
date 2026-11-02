@@ -30,8 +30,10 @@
 //! answers the identifiers visible in the enclosing module (ports, signals,
 //! parameters, genvars, instances and module names) from the indexed design
 //! without elaborating it; the partial word before the caret filters the list
-//! case-insensitively and a dotted prefix (u_cpu., u_mid.u_leaf.) completes the
-//! members of that instance's module.  Unknown requests are answered with JSON-RPC
+//! case-insensitively and a dotted prefix completes members: u_cpu./u_mid.u_leaf.
+//! through instances, u[1]. through an arrayed element, g[0]. for the names of a
+//! generate scope (a select on a signal has no members).  Unknown requests are
+//! answered with JSON-RPC
 //! `-32601`, unknown notifications are ignored.
 //!
 //! # Coordinates

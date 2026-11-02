@@ -10,6 +10,69 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.15.0] - 2026-11-02
+
+### Added
+
+- Split-view polish: the read-only right pane is now a real comparison surface.
+  In unlinked mode it scrolls its rows with the wheel (virtualized row window,
+  clamped to the surface), zooms with Ctrl+wheel anchored at the pointer and pans
+  with a left-drag; these gestures commit through
+  `ViewCommittedFor { dump, view }` to that dump's own entry and never re-render
+  the shell. Linked mode keeps following the left pane, and toggling to unlinked
+  now freezes the window the pane is showing instead of jumping back to a default
+  (it also no longer remounts on the toggle); a `ResizeObserver` repaints at the
+  new css box so the canvas backing store tracks window resizes and divider moves.
+  A draggable `.split-separator` (`role=separator`, `aria-valuemin/max/now`
+  25/75, vertical) can be dragged with a shield, moved with ArrowLeft/ArrowRight
+  in 2% steps and jumped with Home/End; the ratio persists with the layout as
+  `split_ratio` (serde-defaulted, so an old saved layout loads at 50/50).
+- Completion v3: member completion now resolves arrayed-instance selectors
+  (`u[1].`, `u[i].` - a bare arrayed instance yields an empty list instead of
+  guessing an element), generate-scope qualifiers (`g[0].`, `g[i].`, nested
+  `g[0].u_leaf.`; a literal selector must name an unrolled element, so `g[9].`
+  is empty), and the prefix extraction is select-aware: `q[3:0].` returns an
+  empty list honestly while the plain `q[3:0]` text still filters. The
+  port-connection leading-dot filter now works inside arrayed port lists
+  (`.cl` -> `clk`, `.` -> the full list, `.reset` -> `reset`); new fixtures
+  cover arrayed/scoped contexts.
+- A completion benchmark group in `benches/lsp.rs` on the synthetic 100-module
+  design: `lsp/completion_plain` 101.04 us, `completion_prefix` 29.83 us,
+  `completion_member` 36.45 us; the bench workflow's `lsp|design` filter already
+  covers them.
+- Browser QA: the split-view scenario grew its pointer/keyboard/verifier checks;
+  the matrix is now 55 scenarios / 458 assertions (was 446), green with the R2
+  layout rules required.
+
+### Changed
+
+- The right pane's viewport commits through the new
+  `ViewCommittedFor { dump, view }` action (stored on that dump's entry, not the
+  active slice), and the divider commits through `SetSplitRatio`; the layout's
+  persisted slice gained `split_ratio` (clamped to 0.25-0.75, default 0.5).
+- The split separator is real DOM (`role=separator` with aria value attributes),
+  so it is keyboard reachable and testable; the tier-A drag preview keeps the
+  shell out of the pointer path.
+- Benchmark numbers were refreshed against the current tree (no documented
+  benchmark drifted by more than ~20%): `design/item_at` 19.6 us,
+  `design/signals_at` 19.1 us, `lsp/definition` 12.2 us, `lsp/references`
+  56.8 us, `document_symbol` ~100 us; waveform `open/vcd_synthetic_large`
+  1.82 ms, first `time_range_hint` 0.59-0.66 ms, `decode/single` 11.0 ms,
+  large streamed window 41.5 ms, `render/row_hex_8bit` 244 us.
+
+### Fixed
+
+- Toggling the split to unlinked mode did not freeze the right pane - it kept
+  following the left pane's pans (and remounted on the toggle, losing its row
+  window); both are fixed and covered by the split-view verifier checks.
+- The split right canvas ignored window resizes: its backing store kept the old
+  size and the trace looked stretched until an unrelated store event repainted
+  it; it now tracks its box through a `ResizeObserver`.
+- Completion returned an empty list at bit-select columns inside instance port
+  lists (for example a caret in `u[3:0]` of a port list); the context
+  classification now returns the module scope for bit-select/number positions,
+  and the leading-dot filter works there again.
+
 ## [0.14.0] - 2026-11-02
 
 ### Added

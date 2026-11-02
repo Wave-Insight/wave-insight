@@ -56,41 +56,37 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 The waveform and language-server hot paths have criterion benchmarks under
 `wave-insight-lib/benches/`: `waveform.rs` (six groups - `open`,
 `time_range_hint`, `decode`, `value_at`, `window`, `render` - twenty
-benchmarks) and `lsp.rs` (two groups - `design`, `lsp` - position queries
-against a synthetic 100-module / ~3.5k-signal design). Large dumps are generated
-in memory (a ~1.7 MB / 100k-change and an ~8.3 MB / 500k-change VCD), so no
-multi-megabyte dump is committed:
+benchmarks) and `lsp.rs` (two groups - `design` and `lsp` - position queries
+**and completion** against a synthetic 100-module / ~3.5k-signal design). Large
+dumps are generated in memory (a ~1.7 MB / 100k-change and an ~8.3 MB /
+500k-change VCD), so no multi-megabyte dump is committed:
 
 ```bash
 cargo bench -p wave-insight-lib -- --quick               # both suites, quick
 cargo bench -p wave-insight-lib -- decode                # one waveform group
-cargo bench -p wave-insight-lib --bench lsp -- --quick   # LSP/design queries
+cargo bench -p wave-insight-lib --bench lsp -- --quick   # design/LSP/completion
 ```
 
 The HTML report lands in `target/criterion/report/index.html`. CI never gates on
 the numbers: `.github/workflows/bench.yml` compiles the suite on a weekly
 schedule and, on manual dispatch, runs the hot-path groups (`open`, `decode`,
-`time_range_hint`, `value_at`) plus the `lsp`/`design` queries and uploads the
-criterion report as an artifact, so a broken benchmark is noticed without
-letting a noisy runner block a merge.
+`time_range_hint`, `value_at`) plus the `lsp`/`design` groups - which now
+include the completion benchmarks - and uploads the criterion report as an
+artifact, so a broken benchmark is noticed without letting a noisy runner block a
+merge.
 
-Indicative `--quick` numbers from one developer machine (measurements, not
-budgets): opening a small inline VCD 7.3 us / 1.7 MB 410 us / 8.3 MB 1.75 ms;
-the first trace-range scan 0.68 ms and 6.4 ns when cached (the VCD range is now
-read from the header plus a bounded tail scan, O(header + tail) instead of the
-whole body, which took it down from 13.5 ms on the 8.3 MB synthetic dump);
-decoding 11.6 ms for one signal / 11.8 ms sequentially / 12.1 ms batched / 38 ns
-when cached (the sequential decode got ~10% faster by reserving its allocation
-up front); `value_at` 306 ns packed and 147 ns decoded; a streamed window 9.1 /
-13.2 / 46.2 ms; formatting 148 ns for a 32-bit hex value and 271 us for a
-2500-change row. The language-server queries used to scan the whole elaboration
-on every request; the span index built with each elaboration makes them cheap:
-`design/item_at` 174.51 ms -> 20.13 us, `design/signals_at` 52.52 ms ->
-19.44 us, `lsp/definition` 2.048 ms -> 12.42 us, `lsp/references` 2.095 ms ->
-58.28 us, and `documentSymbol` -11.6% (its module index is per file now). The
-answers are byte-identical to the old scan (checked by a differential test at
-every fixture position). The old `nightly-bench` feature gate still enables
-nothing and is not used by these benchmarks.
+Latest `--quick` numbers from one developer machine (measurements, not budgets;
+no benchmark moved more than ~20% against the numbers recorded in earlier waves):
+`design/item_at` 19.6 us, `design/signals_at` 19.1 us, `lsp/definition`
+12.2 us, `lsp/references` 56.8 us, `document_symbol` ~100 us, and the new
+completion group - `lsp/completion_plain` 101.04 us, `completion_prefix`
+29.83 us, `completion_member` 36.45 us. On the waveform side: opening the
+8.3 MB synthetic VCD 1.82 ms, the first `time_range_hint` call 0.59-0.66 ms,
+`decode/single` 11.0 ms, the large streamed window 41.5 ms and
+`render/row_hex_8bit` 244 us; the remaining documented ranges are unchanged.
+The span index built with each elaboration is why the position queries are in
+the microsecond range; their answers are byte-identical to the old scans
+(differential test at every fixture position).
 
 ### supply chain
 
@@ -115,7 +111,7 @@ a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
 and asserts the user-visible behaviour (the current matrix has **55 scenarios /
-446 assertions**; `--list` prints them). The full matrix is green with the R2
+458 assertions**; `--list` prints them). The full matrix is green with the R2
 layout rules required. The newest scenarios cover the generated/arrayed design
 tree in the sidebar, elaboration diagnostics reaching the editor and the top-bar
 chip, the TXT export matching the CSV for the same row, multi-dump tabs and the
@@ -250,14 +246,22 @@ placed.
   toolbar: **Split view** opens a right pane, every *other* dump gets a **Show
   <name> on the right** choice, **Linked** toggles a shared time axis and **Close
   split** closes the second pane. The left pane stays interactive; the right pane
-  is read-only (its dump's name plus a `read only` label, painted with the same
-  canvas machinery and decoding only visible rows). Linked mode maps the left
-  pane's visible window onto the right dump by fraction of trace (clamped) and
-  draws the cursors at the mapped times. Limits: the right pane is read-only (no
-  independent pan/zoom, no row scrolling or selection), the split is a fixed
-  50/50 (no draggable ratio yet), and the split state is not persisted across
-  reloads. A single-dump session renders no split DOM at all. See
-  [`docs/design/multi-dump.md`](docs/design/multi-dump.md).
+  is a comparison surface for its dump (its name plus a `read only` label, the
+  same canvas machinery, decoding only visible rows). In **unlinked** mode the
+  right pane scrolls its rows with the wheel (virtualized and clamped), zooms with
+  Ctrl+wheel anchored at the pointer and pans with a left-drag; those gestures
+  commit to that dump only and never re-render the shell. **Linked** mode follows
+  the left pane's window by fraction of trace (clamped) and draws the cursors at
+  the mapped times; switching back to unlinked freezes the window the pane is
+  showing instead of jumping to a default, and a resize observer keeps the canvas
+  backing store in step with its box. A `role=separator` divider between the
+  panes can be dragged or moved with ArrowLeft/ArrowRight (2% steps) and
+  Home/End; the 25-75% ratio is saved with the layout (`split_ratio`; an old
+  saved layout loads at the 50/50 default). A single-dump session renders no split
+  DOM at all. Remaining limits: unlinked mode does not show its own cursors yet,
+  there is no visible row scrollbar, a drag-pan ends at the pane edge (the pointer
+  is not captured by the window), and whether the split is open is not persisted.
+  See [`docs/design/multi-dump.md`](docs/design/multi-dump.md).
 - **Large dumps**: a browser dump is read in 8 MB chunks with a progress row in
   the sidebar and a reading line in the top bar, then a `parsing ...` line while
   the parser runs. Esc or the cancel button stops the read and reports that the
@@ -276,7 +280,13 @@ placed.
   completes: typing (or Ctrl+Space) suggests the enclosing module's
   ports/signals/parameters/genvars/instances plus the database's module names,
   and after `instance.` it lists that instance's module members, filtered by a
-  case-insensitive prefix.
+  case-insensitive prefix. Member completion understands arrayed-instance
+  selectors (`u[1].`, `u[i].` - a bare `u.` on an arrayed instance lists nothing
+  rather than guessing the element) and generate scopes (`g[0].`, `g[i].`,
+  nested `g[0].u_leaf.`; a literal selector must name an unrolled element). A
+  select on a signal (`q[3:0].`) returns nothing on purpose while the plain
+  selector stays a filter, and a leading dot inside a port list filters
+  connection names (`.cl` -> `clk`).
 - **Find a value**: the ruler box (`time / value`) accepts either kind of query.
   Type an integer and press Enter to move cursor 1 to that time (the old goto
   behaviour); type anything else and press Enter to jump to the *next* change of
@@ -343,11 +353,11 @@ closer is a real button, and the wave list and candidate picker expose
   skipped construct may still be reported as a warning even though the source is
   valid SystemVerilog. Completion now works in the editor through the Monaco
   provider (trigger `.`, case-insensitive prefix filtering, cancellation
-  honoured). Its limits: member completion resolves the instance chains the
-  design models, but arrayed-instance selectors (`u[1].`) and generate scopes or
-  packages cannot be used as qualifiers, and the prefix extraction is not
-  select-aware (only identifiers and dots before the caret are read). One
-  documented gap:
+  honoured). It resolves the instance chains, arrayed-instance selectors
+  (`u[1].`) and generate scopes (`g[0].`) the design models; an arrayed instance
+  without a selector, an unknown qualifier, or a select on a signal (`q[3:0].`)
+  deliberately returns an empty list instead of guessing, and packages are not
+  used as qualifiers. One documented gap:
   only the picked top module is elaborated, so an elaboration diagnostic that
   depends on another top (for example the width-mismatch fixture) is not
   surfaced in the editor yet.
@@ -370,14 +380,13 @@ closer is a real button, and the wave list and candidate picker expose
   size. That is why the loader refuses dumps over 512 MB up front (and warns from
   100 MB) instead of letting the tab run out of wasm memory; a dump that large is
   still better opened in the desktop build, which reads the file from disk.
-* **Split-view limits.** The side-by-side view is an MVP: with two or more
-  dumps the left pane is interactive and the right pane is **read-only** - it
-  cannot pan or zoom on its own, and its rows cannot be scrolled or selected -
-  the split is a fixed 50/50 with no draggable ratio yet, and the split state is
-  not persisted across reloads (see
-  [`docs/design/multi-dump.md`](docs/design/multi-dump.md)). The open dumps share
-  a 1.5 GiB file-bytes budget; past it a new open is refused with an actionable
-  message.
+* **Split-view limits.** The right pane is a comparison surface, not a second
+  editor: in unlinked mode it scrolls, zooms and pans on its own but shows no
+  cursors of its own yet, has no visible row scrollbar and stops a drag-pan at the
+  pane edge (the pointer is not captured by the window); whether the split is
+  open is not persisted across reloads (the divider ratio is). The open dumps
+  share a 1.5 GiB file-bytes budget; past it a new open is refused with an
+  actionable message (see [`docs/design/multi-dump.md`](docs/design/multi-dump.md)).
 * **Bit-range hover is textual.** The source hover lists the bit ranges a
   signal is driven/read through, but only the final identifier's select is
   recorded: `+:`-style and width-star ranges are not interpreted, a
@@ -403,7 +412,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 55 scenarios / 446 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
+- [x] browser QA suite moved into the repository (`qa/`, 55 scenarios / 458 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
@@ -419,7 +428,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] fast dump open: the VCD time range is found from the header plus a bounded tail scan instead of the whole body (~20x cheaper on the 8.3 MB benchmark)
 - [x] migration plans for yew 0.21 and Tauri 2 added under `docs/migrations/` (breaker lists, steps, verification)
 - [x] LSP/design position queries indexed: `textDocument/definition` answers in ~12 us on the synthetic 100-module design (byte-identical to the old scan, differential-tested) with a new `bench lsp` suite
-- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs and the split view, driver/load bit ranges in the hover and the inspector, editor completion, and corruption recovery (truncated/flipped FST, header-truncated VCD) - 55 scenarios / 446 assertions
+- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs and the split view, driver/load bit ranges in the hover and the inspector, editor completion, and corruption recovery (truncated/flipped FST, header-truncated VCD) - 55 scenarios / 458 assertions
 - [x] multi-dump + split-view design note under `docs/design/multi-dump.md` (planned Wave 8)
 - [x] Tauri 2 migration: v2 config + capabilities, `__TAURI__.core` IPC and `onDragDropEvent` drag-and-drop, Linux webkit2gtk-4.1 prerequisites, CI on Ubuntu 24.04 (compile-verified; runtime and bundles are validated by the tag workflow)
 - [x] waveform hardening: a corrupt/truncated FST is rejected by a structural pre-parse validator instead of aborting the viewer; aliased signals stream under the requested variable index; deterministic VCD/FST fuzz and query-tier differential tests cover the entry points
@@ -427,16 +436,20 @@ Done in the next release (unreleased at the time of writing):
 - [x] open several dumps at once: a dump tab strip (one tab per open dump; closing the last one returns to the empty state), per-tab rows/viewport/focus/session restore, dedupe by file identity, close-activates-a-neighbour, a 1.5 GiB open-dumps budget and the status line's "N dumps open, M MB"
 - [x] driver/load bit ranges recorded from selects and shown in the source hover ("driven here: q[3:0], q[7:4]"; limits in Known limitations)
 - [x] Yew 0.21 migration: `features = ["csr"]`, `yew::Renderer` instead of `start_app`, the 5 `changed(old_props)` impls, the old crate-wide clippy allow removed, 179 front-end tests green; the CI-profile wasm is 9.49 MiB (inside the 10 MiB budget)
-- [x] LSP completion server-side: `textDocument/completion` answers ports/signals, parameters/localparams/genvars, instances and module names with details/sortText (no elaboration needed); the Monaco wiring is still to come
+- [x] LSP completion: `textDocument/completion` answers ports/signals, parameters/localparams/genvars, instances and module names with details/sortText (no elaboration needed), and the Monaco provider is wired so the editor shows a completion popup (Wave 10)
 - [x] side-by-side split view (MVP): split toolbar, read-only right pane, linked time axis by fraction of trace, mapped cursors; per-dump selectors; tab switches swap panes and closing a dump remaps or closes the split
 - [x] editor completion popup: Monaco provider (trigger `.`, kind mapping, insertText/detail/sortText, cancellation) plus the v2 server-side member completions after `instance.`
 - [x] inspector shows the sliced reference for drivers/loads (`.inspector-bits`, whole-signal references show nothing)
 - [x] QA harness runs stage their build in a per-run directory (parallel-safe) and `.github/workflows/qa.yml` runs the full matrix weekly + on dispatch (advisory)
+- [x] split-view polish: unlinked right pane scroll/zoom/pan committed to its dump only, linked freeze on unlink, resize observer, draggable 25-75% divider (drag/keyboard) with a persisted `split_ratio`
+- [x] completion v3: arrayed-instance selectors, generate-scope qualifiers (literal must name an unrolled element), nested scope/instance chains, select-aware prefix handling and the port-connection leading-dot filter
+- [x] completion benchmarks in `benches/lsp.rs` (`completion_plain`/`completion_prefix`/`completion_member`), covered by the bench workflow's `lsp|design` filter
+- [x] three verifier-found bugs fixed before release: split unlinked toggle not freezing the right pane, the right canvas ignoring window resizes, and completion returning nothing at bit-select columns in instance port lists
 
 Still open:
 
-- [ ] split-view polish: right-pane interaction (pan/zoom, row scrolling/selection), a draggable split ratio, and persisted split state
-- [ ] completion qualifiers for arrayed instances/generate scopes, and select-aware prefix extraction
+- [ ] split-view remaining limits: unlinked cursor independence, a visible row scrollbar, window-captured drag-pan, and persisting whether the split is open
+- [ ] completion: packages as qualifiers (optional; everything else the design models resolves)
 - [ ] inline python for writing your own process on signal values
 - [ ] signal bundles (AXI, Avalon and so on)
 - [ ] SpinalHDL support

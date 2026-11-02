@@ -81,9 +81,10 @@ impl Document {
     ///
     /// Completion needs the text already typed before the caret: for
     /// `u_cpu.pc` it returns the whole chain, for `clk` just the identifier.
-    /// Only identifier characters (`A-Za-z0-9_$`) and `.` count, so leading
-    /// whitespace/operators are dropped and the caller can split on the last
-    /// dot to tell a member prefix from a plain name prefix.
+    /// Identifier characters (`A-Za-z0-9_$`), `.` and balanced `[...]`
+    /// selectors count (`u[1].`, `q[3:0].`, `g[i].`), so the caller can tell
+    /// a member prefix from a plain name prefix, and a select on a signal is
+    /// kept instead of being silently dropped.
     pub(crate) fn dotted_prefix_before(&self, position: Position) -> String {
         let Some(line) = self.line_text(position.line) else {
             return String::new();
@@ -108,11 +109,55 @@ impl Document {
                 || character == '.'
             {
                 start -= 1;
-            } else {
-                break;
+                continue;
             }
+            if character == ']' {
+                // Walk back to the matching '[' and include the whole selector
+                // (u[1], q[3:0], g[i + 1]); an unbalanced selector stops here.
+                let mut depth = 1usize;
+                let mut index = start - 1; // index of the ']'
+                let mut found = None;
+                while index > 0 {
+                    index -= 1;
+                    match before[index] {
+                        ']' => depth += 1,
+                        '[' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                found = Some(index);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                match found {
+                    Some(open) => {
+                        start = open;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            break;
         }
         before[start..].iter().collect()
+    }
+
+    /// The character at an LSP position, if the position is inside the buffer.
+    ///
+    /// Completion uses this to look one character past the caret (for example a
+    /// `q[3:0].` member intent where the dot has not been typed yet).
+    pub(crate) fn character_at(&self, position: Position) -> Option<char> {
+        let line = self.line_text(position.line)?;
+        let mut utf16 = 0u32;
+        for character in line.chars() {
+            if utf16 >= position.character {
+                return Some(character);
+            }
+            utf16 += character.len_utf16() as u32;
+        }
+        None
     }
 
     /// A `(line, column)` pair as the design database counts them → an LSP
