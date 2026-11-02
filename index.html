@@ -15,12 +15,12 @@
       therefore never talks to a CDN and works offline / behind a firewall.
     -->
     
-  <link rel="modulepreload" href="/wave-insight/front-end-bd7963bcdae686.js" crossorigin="anonymous" integrity="sha384-8foBZGmRTFTuMHMKqvf6khWmRLtsuKJoI65QC0FS1uR36gvBpf7xEiCkRTAGbYNc"><link rel="preload" href="/wave-insight/front-end-7dcb7bd190d53a66_bg.wasm" crossorigin="anonymous" integrity="sha384-xeMOWj6EwC5diJA1/ffdIj80wkGQMp630+bP6n4CtliFKmjLZ2fGpnKZku4yQ3nJ" as="fetch" type="application/wasm"></head>
+  <link rel="modulepreload" href="/wave-insight/front-end-bd7963bcdae686.js" crossorigin="anonymous" integrity="sha384-8foBZGmRTFTuMHMKqvf6khWmRLtsuKJoI65QC0FS1uR36gvBpf7xEiCkRTAGbYNc"><link rel="preload" href="/wave-insight/front-end-725993dfbc58a254_bg.wasm" crossorigin="anonymous" integrity="sha384-bPZLBoA7JUqkBf+hsNu3ee6M5699FTNr0BzCqBEofGSvrDHrgdiywg9PFjbga6vo" as="fetch" type="application/wasm"></head>
 
   <body>
 <script type="module">
 import init, * as bindings from '/wave-insight/front-end-bd7963bcdae686.js';
-const wasm = await init({ module_or_path: '/wave-insight/front-end-7dcb7bd190d53a66_bg.wasm' });
+const wasm = await init({ module_or_path: '/wave-insight/front-end-725993dfbc58a254_bg.wasm' });
 
 
 window.wasmBindings = bindings;
