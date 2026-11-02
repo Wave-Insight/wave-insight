@@ -6,6 +6,10 @@ mod file_load;
 mod lsp;
 mod module_struct;
 mod nav;
+// the desktop-only native dump path: the IPC half is tauri gated, the types are
+// always compiled so the wave pane can carry an optional native session
+#[allow(dead_code)]
+mod remote;
 mod state;
 mod top_bar;
 mod wave_show;

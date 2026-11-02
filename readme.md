@@ -12,7 +12,7 @@ There are two builds, and both parse everything in the application itself — no
 server and no second copy of the reader:
 
 * `wasm version`: you can click [here](https://wave-insight.github.io/wave-insight/) to have a try. It's only a website so you don't need to download anything or install anything. A browser normally gives wasm 4GB of memory, so a very large dump can still exhaust it; a dump is opened lazily (only the header and a cheap scan of the time stamps, values are decoded per signal as you look at them), so the size that fits is much larger than it used to be.
-* `tauri version`: a local app for Windows, Linux and macOS. You can download it at the [release page](https://github.com/Wave-Insight/wave-insight/releases). For Windows users there is `wave_insight_tauri.exe`; Linux users download `wave_insight_tauri_ubuntu`, then run `chmod a+x wave_insight_tauri_ubuntu` and `./wave_insight_tauri_ubuntu`. The macOS asset is `wave_insight_tauri_mac_arm64` (Apple Silicon only; it is not signed, so Gatekeeper needs the usual "Open anyway" confirmation). You can drag `.vcd`, `.fst`, `.ghw` or `.v`/`.sv` files on the app to load. The shell is **Tauri 2**: the backend only opens the file dialog and returns the bytes (plus drag-and-drop paths); the dump is parsed by the webview with the same code the browser build uses.
+* `tauri version`: a local app for Windows, Linux and macOS. You can download it at the [release page](https://github.com/Wave-Insight/wave-insight/releases). For Windows users there is `wave_insight_tauri.exe`; Linux users download `wave_insight_tauri_ubuntu`, then run `chmod a+x wave_insight_tauri_ubuntu` and `./wave_insight_tauri_ubuntu`. The macOS asset is `wave_insight_tauri_mac_arm64` (Apple Silicon only; it is not signed, so Gatekeeper needs the usual "Open anyway" confirmation). You can drag `.vcd`, `.fst`, `.ghw` or `.v`/`.sv` files on the app to load. The shell is **Tauri 2**: the backend opens the file dialog and returns the bytes (plus drag-and-drop paths); the dump is parsed by the webview with the same code the browser build uses. The desktop large-file mode is available: dumps over 64 MiB open natively over a read-only mmap and are drawn read-only from windowed IPC queries - see the Tauri section below.
 
 The old `server version` (a websocket that streamed a serialised waveform model
 to a web page) has been removed: the browser reads files itself, so it had no
@@ -61,9 +61,12 @@ run `trunk build` once in `front-end/` or create the same placeholder:
 mkdir -p front-end/dist && printf '<!doctype html><title>placeholder</title>\n' > front-end/dist/index.html
 ```
 
-With that placeholder all eight CI jobs (Rust test / test-front-end /
-test-release / fmt / clippy / build / deploy / qa, plus the audit workflow) are
-green on `main` again. The QA job uses a second, root-relative `dist-qa` bundle
+With that placeholder all nine CI jobs (Rust test / test-front-end /
+test-release / **test-app** / fmt / clippy / build / deploy / qa, plus the audit
+workflow) are green on `main` again. `test-app` is the native-backend job: it runs
+on `ubuntu-24.04` with the GTK/webkit prerequisites and the same `dist`
+placeholder, and tests the desktop shell's memory-mapped dump registry and IPC
+queries (the host `test` job excludes the `app` crate for those prerequisites). The QA job uses a second, root-relative `dist-qa` bundle
 (the Pages bundle uses `--public-url /wave-insight/`, so serving it at `/` 404s
 every asset) and Node 22, and the release-profile test job caught a corrupt-FST
 length that made the FST reader allocate 5e16 bytes - the FST validator now
@@ -220,8 +223,48 @@ the tag workflow on the real runners, not by a desktop runtime test here. The du
 body) instead of `Vec<u8>`, so a 100 MB dump crosses the IPC boundary as one
 `ArrayBuffer` and one copy into wasm - it used to be serialised as a JSON array
 of numbers (hundreds of MB of JSON, a 100M-element JS array and another wasm
-copy). This path only runs in the desktop build, so it is verified by compilation
-here and belongs to the next release's desktop test.
+copy). This path only runs in the desktop build, so it is compile-verified here
+and still needs a runtime check on a desktop machine.
+
+The **native large-file foundation**: the host library opens a dump through a
+read-only `memmap2` mapping (`Waveform::open_path_mmap`; the mapping retains 0
+heap bytes, and on the real 97.5 MiB FST it opens in 9.27 ms versus 10.18 ms
+through the file reader and 30.31 ms reading the file into memory), and the
+desktop shell keeps a registry of natively opened dumps answering five IPC
+queries - `open_dump`, `dump_hierarchy` (pages of at most 4096 rows),
+`dump_window` (rendered values for a time window), `dump_value_at` and
+`close_dump` - with monotonic ids and a 32-dump cap; the file bytes never cross
+IPC. The backend is covered by the new `test-app` CI job.
+
+The **desktop large-file mode (MVP)** draws that backend. Opening a dump larger
+than 64 MiB in the desktop build goes through `open_dump` and is rendered
+read-only from bounded `dump_window` queries; smaller files, and every native
+error, keep the wasm path, so normal dumps behave exactly as before. The mode
+announces itself: a `.dock-tab.native-badge` chip reading **native (read-only,
+mmap)** (tooltip: path, size, signal/scope counts and mapped MB) and a status
+line of the form
+
+```
+waveform loaded (native read-only, mmap) — <FMT> <N> MB, range <start>..<end> in <ms> ms, mapped <M> MB, <signals> signals in <scopes> scopes
+```
+
+The sidebar tree, the rows and the wave canvas reuse the normal components and
+classes, and both single add and bulk add work against the native hierarchy. MVP
+limits: one native dump at a time (opening another closes the previous), no split
+view or multi-dump tabs in native mode, the hierarchy is fetched eagerly at open
+(paged, with a 400,000-row safety cap) and the backend sends hex values (the row
+display settings still work on the parsed bits). Find-value and export are **not
+available** in native mode and are refused with an actionable message that points
+at reopening through the wasm path (files up to 64 MB).
+
+**How to try it.** Build or run the desktop app (`cargo tauri build`, or
+`cargo tauri dev`), open a dump larger than 64 MiB (an FST is the intended case;
+VCD works too), and check for the badge and the status line, add signals one at a
+time and with the bulk add, then zoom and scroll. This repository's environment
+has no desktop GUI, so the runtime path is **compile-verified only**: the real IPC
+round trips, drag-and-drop of a large file, the file dialog's relative-path
+resolution, the mmap open/lock/close lifecycle, `dump_window` latency and zoom
+smoothness on huge dumps still need a run on a desktop machine.
 
 ### dependency migrations
 
@@ -419,12 +462,15 @@ file. What that means in practice:
   browser tab usually dies well before that). Prefer FST over VCD for very large
   dumps, keep one or two dumps open in the browser, and use the desktop build for
   multi-GB sessions.
-- **Direction.** The desktop build can run the engine natively over a read-only
-  memory map (`memmap2`) and send only rendered slices to the webview; the
-  browser's analogue is a dedicated worker plus an OPFS lazy byte source. The
-  `ByteSource` trait (file or in-memory) is the Wave 12 groundwork for both. The
-  current model and both plans are in
-  [`docs/design/large-files.md`](docs/design/large-files.md).
+- **Direction (the desktop foundation has landed).** The desktop build now has
+  the native half: a host-only `memmap2` source (`Waveform::open_path_mmap`, 0
+  retained heap bytes) and a Tauri dump registry that answers windowed queries
+  over IPC, so the file never enters the webview's wasm memory. The shipped
+  desktop build still draws through the wasm path; the desktop renderer that
+  draws the native queries is the next wave (see the Tauri section). The browser's
+  analogue is a dedicated worker plus an OPFS lazy byte source; the `ByteSource`
+  trait (file, memory or mapping) is the groundwork for both. The current model
+  and both plans are in [`docs/design/large-files.md`](docs/design/large-files.md).
 
 ## Known limitations
 
@@ -558,13 +604,14 @@ Done in the next release (unreleased at the time of writing):
 - [x] design note `docs/design/large-files.md`: current memory model, why the browser has no mmap, the desktop native memory-mapped backend plan and the browser worker/OPFS option
 - [x] bounded windowed rendering (the 3+ GB dense-row crash fix): `window_changes_many` + `WindowedSignal` (one stream pass, fair per-pixel cap, O(rows*cap) memory) with a per-row window cache inside the global 64 MiB budget, plus the `window_many` benchmark (2.33 ms vs 99.6 ms full history for 8 rows) and the `denseDump` QA scenario
 - [x] FST validation hardening: internal counts (geometry max handle, blackouts, time-table items, frame/value-change handle counts, alias chains) are checked against the bytes present, so a corrupt alias-chain length is a `Corrupt` error instead of a 5e16-byte allocation
+- [x] native mmap backend foundation: host-only `memmap2` byte source (`Waveform::open_path_mmap`/`WaveformSource::Mmap`, `mapped_bytes`, `MemoryStats.source_mapped_bytes`, 0 retained heap bytes; 9.27 ms vs 10.18/30.31 ms on the 97.5 MiB FST; equivalence/corrupt/drop tests + `mmap` bench group) and the Tauri native dump registry + five windowed IPC queries (`open_dump`/`dump_hierarchy`/`dump_window`/`dump_value_at`/`close_dump`; monotonic ids, 32-dump cap, files never cross IPC; 4096-row hierarchy page 1.82 ms, 10 dense signals 139 ms debug, value_at 690/175 ms; five native tests) with the `test-app` CI job
 - [x] desktop raw IPC: `choose_vcd`/`choose_vcd_absolute` return `tauri::ipc::Response` (one ArrayBuffer + one wasm copy) instead of `Vec<u8>` serialised as a JSON number array
 - [x] bulk-add discoverability: always-visible per-row add button, right-click/Shift+F10 row menu, Select all in the Modules head, sticky bulk bar (count/Add selected/Clear/Ctrl-Shift hint) that does not move the rows, and a visible over-cap state
 - [x] CI green again: the clippy job creates a `front-end/dist` placeholder on a clean checkout, the QA job builds a root-relative `dist-qa` bundle and uses Node 22, and the release test run exposed the corrupt-FST allocation path above
 
 Still open:
 
-- [ ] desktop native backend with memory-mapped files (`docs/design/large-files.md`, the next architectural wave)
+- [ ] desktop native renderer over the shipped mmap backend (the desktop large-file mode; the backend foundation is in, see the Tauri section)
 - [ ] browser worker + OPFS lazy byte source for large web sessions (the browser's mmap analogue)
 - [ ] split-view remaining limits: unlinked cursor independence, a visible row scrollbar, window-captured drag-pan, and persisting whether the split is open
 - [ ] completion: packages as qualifiers (optional; everything else the design models resolves)

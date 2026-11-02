@@ -1,6 +1,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[cfg(feature = "tauri")]
+use wasm_bindgen_futures::spawn_local;
+
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wave_insight_lib::waveform::{Change, DecodedSignal, TimeRange};
@@ -75,6 +78,11 @@ pub struct WaveShowProps {
     /// and the decoded rows survive the switch.
     #[prop_or_default]
     pub hidden: bool,
+
+    /// Native (desktop) dump: when set, the rows are drawn from bounded IPC
+    /// windows instead of a wasm waveform (read-only MVP, tauri build only).
+    #[prop_or_default]
+    pub remote: Option<crate::remote::RemoteSession>,
 }
 
 pub enum Msg {
@@ -118,6 +126,18 @@ pub enum Msg {
     ValuesReady,
     /// The settings dialog asked for a download: one row, or every row.
     Export((ExportFormat, ExportScope)),
+
+    /// Native windows arrived: (epoch, request, row/slot/width, answers).
+    #[cfg(feature = "tauri")]
+    RemoteWindows(
+        u32,
+        WindowRequest,
+        Vec<(usize, usize, usize)>,
+        Vec<crate::remote::WindowDto>,
+    ),
+    /// The native backend refused a query.
+    #[cfg(feature = "tauri")]
+    RemoteFailed(u32, String),
 }
 
 /// Geometry of the wave area, measured from the dom.
@@ -248,6 +268,20 @@ pub struct WaveShow {
     resize_callback: Option<Closure<dyn FnMut()>>,
     /// Last `hidden` prop, so `changed` knows whether the *view* has to re-run.
     hidden: bool,
+
+    /// The native dump being drawn read-only, when the app opened one.
+    #[cfg(feature = "tauri")]
+    remote: Option<crate::remote::RemoteSession>,
+    /// Bumped per native window request; an answer from an older request is
+    /// dropped (the view moved on while it was in flight).
+    #[cfg(feature = "tauri")]
+    remote_epoch: u32,
+    /// One error line per native backend failure, not one per redraw.
+    #[cfg(feature = "tauri")]
+    remote_error: bool,
+    /// The component's link: async IPC answers arrive after the update.
+    #[cfg(feature = "tauri")]
+    link: Option<yew::html::Scope<Self>>,
 }
 
 impl Component for WaveShow {
@@ -320,6 +354,14 @@ impl Component for WaveShow {
             resize_observer: None,
             resize_callback: None,
             hidden: ctx.props().hidden,
+            #[cfg(feature = "tauri")]
+            remote: ctx.props().remote.clone(),
+            #[cfg(feature = "tauri")]
+            remote_epoch: 0,
+            #[cfg(feature = "tauri")]
+            remote_error: false,
+            #[cfg(feature = "tauri")]
+            link: Some(ctx.link().clone()),
         };
         this.sync_rows();
         this.attach_listeners(ctx);
@@ -352,6 +394,17 @@ impl Component for WaveShow {
         let hidden = ctx.props().hidden;
         let rerender = hidden != self.hidden;
         self.hidden = hidden;
+        #[cfg(feature = "tauri")]
+        if self.remote != ctx.props().remote {
+            // a new native dump: drop the previous rows' windows and fit again
+            self.remote = ctx.props().remote.clone();
+            self.remote_epoch = self.remote_epoch.wrapping_add(1);
+            self.remote_error = false;
+            self.signal_things.refresh(None);
+            self.fitted = false;
+            self.fit_committed = false;
+            self.scroll_top = 0.0;
+        }
         rerender
     }
 
@@ -746,7 +799,7 @@ impl WaveShow {
                 } else if idx == 70 {
                     //f
                     let metrics = self.measure();
-                    let end = self.trace_end(self.time_range);
+                    let end = self.trace_end(self.effective_time_range());
                     view = View::new(0.0, View::fit_size(end, metrics.surface_w));
                     self.fitted = true;
                 } else if idx == 78 {
@@ -1023,6 +1076,21 @@ impl WaveShow {
             // rows were decoded after the last render: the value column now has
             // the values to show
             Msg::ValuesReady => true,
+            #[cfg(feature = "tauri")]
+            Msg::RemoteWindows(epoch, req, rows, windows) => {
+                self.apply_remote_windows(epoch, req, &rows, windows);
+                false
+            }
+            #[cfg(feature = "tauri")]
+            Msg::RemoteFailed(epoch, error) => {
+                if epoch == self.remote_epoch && !self.remote_error {
+                    self.remote_error = true;
+                    self.dispatch(state::Action::Status(Status::error(format!(
+                        "native dump: {error}"
+                    ))));
+                }
+                false
+            }
         }
     }
 
@@ -1269,6 +1337,13 @@ impl WaveShow {
     /// error (no dump, no decoded values, too large, browser refused). Never
     /// panics on a user action.
     fn export(&self, format: ExportFormat, scope: ExportScope) -> Result<String, String> {
+        #[cfg(feature = "tauri")]
+        if self.remote.is_some() {
+            return Err(
+                "native (read-only, mmap) mode: export is not available yet — reopen the dump through the wasm path (files up to 64 MB) to export"
+                    .to_string(),
+            );
+        }
         let Some(waveform) = self.waveform.as_ref() else {
             return Err("no dump open — load a waveform before exporting".to_string());
         };
@@ -1504,6 +1579,13 @@ impl WaveShow {
     /// proportional to the pixels and not to the dump. A row whose cached window
     /// still covers the view (a small pan) is not fetched again.
     fn decode_pending(&mut self, fetch: std::ops::Range<usize>, width: f64) {
+        // the desktop build can draw a dump opened by the native backend: the
+        // rows come from bounded IPC windows, not from a wasm waveform
+        #[cfg(feature = "tauri")]
+        if self.remote.is_some() {
+            self.decode_remote(fetch, width);
+            return;
+        }
         // clone the handle so the backend borrow does not block the cache writes
         let Some(handle) = self.waveform.clone() else {
             self.last_decoded = 0;
@@ -1557,6 +1639,118 @@ impl WaveShow {
         self.last_decoded = decoded;
     }
 
+    /// Fetch the bounded windows for the visible rows from the native backend.
+    ///
+    /// Same window model as the wasm path ([`windowed::WindowRequest`]: visible
+    /// range + margin, cap from the surface width), but the values are rendered
+    /// to text in Rust and come back over IPC; [`apply_remote_windows`] stores
+    /// them when they arrive and the pane keeps drawing the previous windows in
+    /// the meantime. Answers from an older request are dropped by the epoch.
+    #[cfg(feature = "tauri")]
+    fn decode_remote(&mut self, fetch: std::ops::Range<usize>, width: f64) {
+        let Some(session) = self.remote.clone() else {
+            return;
+        };
+        let Some(link) = self.link.clone() else {
+            return;
+        };
+        let req = WindowRequest::for_view(self.view, width);
+        let mut rows: Vec<(usize, usize, usize)> = Vec::new();
+        let mut signals: Vec<usize> = Vec::new();
+        let mut slot_of: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for row in fetch {
+            let Some(item) = self.signal_things.iter().nth(row) else {
+                break;
+            };
+            let Some(signal) = session.signal_of_path(&item.path) else {
+                continue;
+            };
+            if !windowed::needs_fetch(item.values.cached(), req) {
+                continue;
+            }
+            let slot = *slot_of.entry(signal.index).or_insert_with(|| {
+                signals.push(signal.index);
+                signals.len() - 1
+            });
+            rows.push((row, slot, signal.width));
+        }
+        if rows.is_empty() {
+            self.last_decoded = 0;
+            return;
+        }
+        self.remote_epoch = self.remote_epoch.wrapping_add(1);
+        let epoch = self.remote_epoch;
+        let id = session.id();
+        let start = req.start;
+        let end = req.end;
+        let cap = req.cap;
+        spawn_local(async move {
+            match crate::remote::window(
+                id,
+                &signals,
+                start,
+                Some(end),
+                cap,
+                crate::remote::VALUE_FORMAT,
+            )
+            .await
+            {
+                Ok(windows) => link.send_message(Msg::RemoteWindows(epoch, req, rows, windows)),
+                Err(error) => link.send_message(Msg::RemoteFailed(epoch, error)),
+            }
+        });
+    }
+
+    #[cfg(feature = "tauri")]
+    fn apply_remote_windows(
+        &mut self,
+        epoch: u32,
+        req: WindowRequest,
+        rows: &[(usize, usize, usize)],
+        windows: Vec<crate::remote::WindowDto>,
+    ) {
+        if epoch != self.remote_epoch {
+            return;
+        }
+        let mut decoded = 0usize;
+        for &(row, slot, width) in rows {
+            let Some(dto) = windows.get(slot) else {
+                continue;
+            };
+            let window = crate::remote::row_window_with_width(dto, req, width);
+            // an expanded bit is derived from the parent bus window, exactly like
+            // the wasm path
+            let bit = self.signal_things.iter().nth(row).and_then(|item| item.bit);
+            match bit {
+                Some(bit) => self
+                    .signal_things
+                    .set_window(row, windowed::derive_bit_window(&window, bit as usize)),
+                None => self.signal_things.set_window(row, window),
+            }
+            decoded += 1;
+        }
+        self.last_decoded = decoded;
+        if decoded > 0 && (self.cursors.one.is_some() || self.cursors.two.is_some()) {
+            self.values_need_render = true;
+        }
+        // the answers are for the current view: repaint with them
+        self.redraw();
+    }
+
+    /// The time range the ruler and the fit zoom use.
+    ///
+    /// The wasm dump owns one when it is open; a native dump only has the
+    /// summary's range, which is enough for the ruler and the fit zoom.
+    fn effective_time_range(&self) -> Option<TimeRange> {
+        #[cfg(feature = "tauri")]
+        if let Some(session) = &self.remote {
+            if let Some((start, end)) = session.range() {
+                return Some(TimeRange { start, end });
+            }
+        }
+        self.time_range
+    }
+
     /// Keep the row window cache inside the budget.
     ///
     /// Drawing no longer fills the backend's decode cache: a row holds one
@@ -1600,7 +1794,7 @@ impl WaveShow {
             //first real measurement (and the first decoded rows): show the whole
             //trace. GHW has no cheap time range, so fall back to the span of the
             //histories we have.
-            let end = self.trace_end(self.time_range);
+            let end = self.trace_end(self.effective_time_range());
             self.view = View::new(0.0, View::fit_size(end, metrics.surface_w));
             self.fitted = true;
         }
@@ -1627,7 +1821,7 @@ impl WaveShow {
             },
             // rows stop at the end of the dump instead of holding their last
             // value over the empty surface right of it
-            trace_end: self.time_range.map(|range| range.end as i64),
+            trace_end: self.effective_time_range().map(|range| range.end as i64),
             dpr: metrics.dpr,
         };
         let stats = canvas::paint(&canvas, &frame);
@@ -1657,7 +1851,7 @@ impl WaveShow {
             cursor1: cursors.one,
             cursor2: cursors.two,
             view: self.view,
-            trace_end: self.time_range.map(|range| range.end as i64),
+            trace_end: self.effective_time_range().map(|range| range.end as i64),
             memory,
         });
     }

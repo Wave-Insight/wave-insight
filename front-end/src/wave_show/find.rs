@@ -89,6 +89,14 @@ pub fn find_value(store: &Store, query: &str, direction: Direction, width: f64) 
     if query.is_empty() {
         return;
     }
+    // the desktop build may be drawing a native dump: the whole-history search
+    // is not wired to the IPC backend in this MVP, so say so instead of "no dump"
+    if crate::remote::native_active() {
+        store.dispatch(Action::Status(Status::error(
+            "native (read-only, mmap) mode: value search is not available yet — reopen the dump through the wasm path (files up to 64 MB) to search it",
+        )));
+        return;
+    }
     let rows = store.select(select::rows);
     let Some(row) = rows.items.iter().find(|row| row.chosen).cloned() else {
         store.dispatch(Action::Status(Status::error(

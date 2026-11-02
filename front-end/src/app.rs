@@ -125,6 +125,13 @@ pub enum Msg {
     Note(String),
     /// What the last successful parse cost; the success line carries it.
     LoadReport(LoadReport),
+    /// A native (desktop) dump was opened; the wave pane draws it read-only.
+    #[cfg(feature = "tauri")]
+    RemoteReady(Box<crate::remote::RemoteSession>),
+    /// The native backend declined the file (small dump or an error): read it
+    /// through the wasm path instead.
+    #[cfg(feature = "tauri")]
+    RemoteFallback(String),
     /// A plain click on an identifier in the source editor.
     SourceClick(SourceClick),
     /// The wave view selected (or cleared) a signal.
@@ -291,6 +298,9 @@ pub struct App {
     /// The report the file loader emitted for the load that is about to arrive
     /// in Msg::GetWaveform; consumed there to extend the success line.
     pending_load: Option<LoadReport>,
+    /// The native dump the desktop build is drawing read-only, when one is open.
+    #[cfg(feature = "tauri")]
+    remote: Option<crate::remote::RemoteSession>,
 }
 
 impl Component for App {
@@ -465,7 +475,17 @@ impl Component for App {
             editor_preview: None,
             wave_tab: WaveFrameTab::Waveform,
             pending_load: None,
+            #[cfg(feature = "tauri")]
+            remote: None,
         };
+        // a native dump opened through the desktop file dialog arrives here
+        #[cfg(feature = "tauri")]
+        {
+            let link = ctx.link().clone();
+            crate::remote::set_open_listener(Some(std::rc::Rc::new(move |session| {
+                link.send_message(Msg::RemoteReady(Box::new(session)));
+            })));
+        }
         this.attach_window_listeners(ctx);
         this
     }
@@ -494,6 +514,11 @@ impl Component for App {
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
+        #[cfg(feature = "tauri")]
+        {
+            crate::remote::set_open_listener(None);
+            self.close_remote();
+        }
         if let (Some(window), Some(listener)) = (web_sys::window(), self.resize_listener.take()) {
             let _ = window
                 .remove_event_listener_with_callback("resize", listener.as_ref().unchecked_ref());
@@ -527,7 +552,7 @@ impl Component for App {
                         html!{
                         <aside class="sidebar">
                             {self.file_button(ctx)}
-                            <ModuleStruct tree={self.tree.clone()}
+                            <ModuleStruct tree={self.sidebar_tree()}
                                 focus={self.focus.clone()}
                                 oninstance={link.callback(Msg::InstanceSelected)}
                                 selection={self.tree_selection.paths.clone()}
@@ -654,6 +679,7 @@ impl Component for App {
                                     onclick={link.callback(|_| Msg::WaveFrameTab(WaveFrameTab::LoadDrive))}>
                                     {"Drivers / loads"}
                                 </button>
+                                {self.remote_badge()}
                             </div>
                             {if self.dump_tabs.len() >= 2 {
                                 let split_open = self.split.is_some();
@@ -994,61 +1020,21 @@ impl App {
                     let lower = p.to_ascii_lowercase();
                     if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw")
                     {
-                        let args = to_value(&GetFileListArgs { path: p.clone() }).unwrap();
-                        let onwaveform = ctx.link().callback(Msg::GetWaveform);
-                        let onreport = ctx.link().callback(Msg::LoadReport);
-                        let onnote = ctx.link().callback(Msg::Note);
-                        let onerror = ctx.link().callback(Msg::Error);
                         let file = p.clone();
+                        let onready =
+                            ctx.link()
+                                .callback(|session: Box<crate::remote::RemoteSession>| {
+                                    Msg::RemoteReady(session)
+                                });
+                        let onfallback = ctx.link().callback(Msg::RemoteFallback);
                         spawn_local(async move {
-                            // the command returns the whole file, so this path
-                            // has no slices to report: it gets the size guard,
-                            // the parse line and the load report (the browser
-                            // reader is the one with per-chunk progress)
-                            // the command answers with a raw IPC body: an
-                            // ArrayBuffer, not a JSON number array (see
-                            // file_load::dump_bytes)
-                            let raw = invoke("choose_vcd_absolute", args).await;
-                            let bytes = match crate::file_load::dump_bytes(&raw) {
-                                Some(bytes) => bytes,
-                                None => {
-                                    onerror.emit(format!("{file}: the dump could not be read"));
-                                    return;
-                                }
-                            };
-                            if bytes.is_empty() {
-                                onerror.emit(format!("{file}: the dump could not be read"));
-                                return;
-                            }
-                            let size = bytes.len() as u64;
-                            if let Some(message) =
-                                crate::file_load::progress::guard_message(&file, size)
-                            {
-                                match crate::file_load::progress::size_verdict(size) {
-                                    // too large: refuse instead of feeding it
-                                    // to the parser and freezing the webview
-                                    crate::file_load::progress::SizeVerdict::TooLarge => {
-                                        onerror.emit(message);
-                                        return;
-                                    }
-                                    crate::file_load::progress::SizeVerdict::Large => {
-                                        onnote.emit(message)
-                                    }
-                                    crate::file_load::progress::SizeVerdict::Ok => {}
-                                }
-                            }
-                            onnote.emit(crate::file_load::progress::parsing_status(
-                                &file, size, None,
-                            ));
-                            // one frame so the status line paints before the
-                            // synchronous parse blocks the webview
-                            crate::file_load::file::next_tick().await;
-                            match crate::file_load::parse_dump(&file, bytes) {
-                                Ok((handle, report)) => {
-                                    onreport.emit(report);
-                                    onwaveform.emit(handle);
-                                }
-                                Err(message) => onerror.emit(message),
+                            // Wave 15: the desktop backend maps the file instead
+                            // of copying it into wasm memory. Big dumps stay
+                            // native (read-only); small ones, and every native
+                            // error, take the wasm path so nothing regresses.
+                            match crate::remote::try_open(&file).await {
+                                Ok(Some(session)) => onready.emit(Box::new(session)),
+                                Ok(None) | Err(_) => onfallback.emit(file),
                             }
                         });
                     } else if lower.ends_with(".v") || lower.ends_with(".sv") {
@@ -1454,6 +1440,9 @@ impl App {
                 true
             }
             Msg::GetWaveform(waveform) => {
+                // a wasm dump replaces the native one (two modes at once would
+                // draw nothing consistently)
+                self.close_remote();
                 // the loader adds a tab: the name and the size are the identity
                 // the remembered row list is keyed by (the report is emitted
                 // before the handle, so it is already here). A dump that arrived
@@ -1557,6 +1546,63 @@ impl App {
             Msg::LoadReport(report) => {
                 self.pending_load = Some(report);
                 false
+            }
+            #[cfg(feature = "tauri")]
+            Msg::RemoteFallback(file) => {
+                #[derive(Serialize, Deserialize)]
+                struct GetFileListArgs {
+                    path: String,
+                }
+                let args = to_value(&GetFileListArgs { path: file.clone() }).unwrap();
+                let onwaveform = ctx.link().callback(Msg::GetWaveform);
+                let onreport = ctx.link().callback(Msg::LoadReport);
+                let onnote = ctx.link().callback(Msg::Note);
+                let onerror = ctx.link().callback(Msg::Error);
+                spawn_local(async move {
+                    // the wasm path: the command returns the whole file, so there
+                    // are no slices to report; it gets the size guard, the parse
+                    // line and the load report
+                    let raw = invoke("choose_vcd_absolute", args).await;
+                    let bytes = match crate::file_load::dump_bytes(&raw) {
+                        Some(bytes) => bytes,
+                        None => {
+                            onerror.emit(format!("{file}: the dump could not be read"));
+                            return;
+                        }
+                    };
+                    if bytes.is_empty() {
+                        onerror.emit(format!("{file}: the dump could not be read"));
+                        return;
+                    }
+                    let size = bytes.len() as u64;
+                    if let Some(message) = crate::file_load::progress::guard_message(&file, size) {
+                        match crate::file_load::progress::size_verdict(size) {
+                            crate::file_load::progress::SizeVerdict::TooLarge => {
+                                onerror.emit(message);
+                                return;
+                            }
+                            crate::file_load::progress::SizeVerdict::Large => onnote.emit(message),
+                            crate::file_load::progress::SizeVerdict::Ok => {}
+                        }
+                    }
+                    onnote.emit(crate::file_load::progress::parsing_status(
+                        &file, size, None,
+                    ));
+                    crate::file_load::file::next_tick().await;
+                    match crate::file_load::parse_dump(&file, bytes) {
+                        Ok((handle, report)) => {
+                            onreport.emit(report);
+                            onwaveform.emit(handle);
+                        }
+                        Err(message) => onerror.emit(message),
+                    }
+                });
+                true
+            }
+            #[cfg(feature = "tauri")]
+            Msg::RemoteReady(session) => {
+                self.adopt_remote(*session);
+                true
             }
             Msg::SourceClick(click) => {
                 let candidates = self.candidates_at(&click);
@@ -1734,6 +1780,7 @@ impl App {
             <WaveShow
                 hidden={self.wave_tab != WaveFrameTab::Waveform}
                 store={self.store.clone()}
+                remote={self.remote_session()}
                 onselect={link.callback(Msg::WaveSelect)}
                 onjump={link.callback(Msg::WaveJump)}
                 onlocate={link.callback(Msg::Locate)} />
@@ -1754,7 +1801,8 @@ impl App {
     /// dump path exactly like a single add, then handed to the reducer as one
     /// `RowsAdded` (dedupe, row_prefs, one rows-version bump, one session write).
     fn bulk_add_scopes(&self, scopes: &[String]) {
-        let Some(tree) = self.tree.clone() else {
+        // the sidebar may be showing the native hierarchy (desktop build)
+        let Some(tree) = self.sidebar_tree() else {
             self.note(Status::error(
                 "load sources or a dump before adding signals".to_string(),
             ));
@@ -1773,6 +1821,50 @@ impl App {
                 paths.len(),
                 crate::state::bulk::BULK_ADD_CAP
             )));
+            return;
+        }
+        // the desktop build draws native dumps without a wasm handle: resolve the
+        // batch against the native hierarchy instead
+        #[cfg(feature = "tauri")]
+        if let Some(session) = &self.remote {
+            let mut rows: Vec<Row> = Vec::with_capacity(paths.len());
+            let mut unresolved = 0usize;
+            for path in paths {
+                match session.signal_of_path(&path) {
+                    Some(native) => rows.push(Row {
+                        path: path.clone(),
+                        name: path,
+                        width: native.width.max(1),
+                        setting: state::Settings::new(),
+                        chosen: false,
+                        load: Vec::new(),
+                        drive: Vec::new(),
+                        bit: None,
+                    }),
+                    None => unresolved += 1,
+                }
+            }
+            if rows.is_empty() {
+                self.note(Status::error(format!(
+                    "none of the {unresolved} selected signals are in the native dump"
+                )));
+                return;
+            }
+            let first_added = rows.first().map(|row| row.path.clone());
+            self.apply(Action::RowsAdded { rows });
+            if let Some(first) = first_added {
+                self.apply(Action::FocusChanged {
+                    focus: Focus {
+                        signal: Some(first),
+                        instance: self.focus.instance.clone(),
+                    },
+                });
+            }
+            if unresolved > 0 {
+                self.note(Status::info(format!(
+                    "added the selected signals from the native dump ({unresolved} not resolvable)"
+                )));
+            }
             return;
         }
         let dump = self.dump();
@@ -1901,6 +1993,15 @@ impl App {
             signal.drive = drive;
             signal.load = load;
         }
+        // A native dump knows its own widths and has no wasm handle: resolve
+        // against it first.
+        #[cfg(feature = "tauri")]
+        if let Some(session) = &self.remote {
+            if let Some(native) = session.signal_of_path(path) {
+                signal.size = native.width.max(1);
+                return signal;
+            }
+        }
         // The dump is what gets drawn, so its width wins when the two disagree
         // (a truncated vector would otherwise be formatted at the declared
         // width, which the formatters cannot do).
@@ -1928,6 +2029,32 @@ impl App {
     /// gestures (the sidebar). A click in the source adds the row and leaves the
     /// editor where it is, which is the Verdi behaviour the user asked for.
     fn add_path(&mut self, path: &str, show_declaration: bool) {
+        // the desktop build may be drawing a native dump: it has no wasm handle
+        // to match against, only the hierarchy's path -> signal table
+        #[cfg(feature = "tauri")]
+        if let Some(session) = &self.remote {
+            match session.signal_of_path(path) {
+                Some(native) => {
+                    self.store.dispatch(Action::RowAdded {
+                        path: path.to_string(),
+                        name: path.to_string(),
+                        width: native.width.max(1),
+                        load: Vec::new(),
+                        drive: Vec::new(),
+                        bit: None,
+                    });
+                    self.apply(Action::FocusChanged {
+                        focus: Focus {
+                            signal: Some(path.to_string()),
+                            instance: self.focus.instance.clone(),
+                        },
+                    });
+                    self.note(Status::info(format!("added {path} to the waveform")));
+                }
+                None => self.note(Status::error(format!("`{path}` is not in the native dump"))),
+            }
+            return;
+        }
         let mut dump_candidates = Vec::new();
         if let Some(waveform) = self.dump() {
             dump_candidates = match_dump_candidates(waveform.waveform(), path);
@@ -2129,6 +2256,83 @@ impl App {
             }
         }
         found
+    }
+
+    /// Adopt a native dump: close the previous one, clear the rows the wasm dump
+    /// had, install the hierarchy and say which mode the window is in.
+    #[cfg(feature = "tauri")]
+    fn adopt_remote(&mut self, session: crate::remote::RemoteSession) {
+        self.close_remote();
+        // the rows of the dump that was open would resolve to signal indices of
+        // the native dump: start empty, like a fresh session
+        let rows = self.store.select(state::select::rows).items.len();
+        if rows > 0 {
+            self.apply(Action::RowsRemoved {
+                indices: (0..rows).collect(),
+            });
+        }
+        let status = session.status_text();
+        self.remote = Some(session);
+        crate::remote::set_native_active(true);
+        // the selection held paths of the previous tree
+        self.apply(Action::TreeSelectionCleared);
+        self.note(Status::info(status));
+    }
+
+    /// Release the native dump: close_dump frees the mapping on the Rust side.
+    /// (A no-op in the browser build: there is nothing native to close.)
+    fn close_remote(&mut self) {
+        #[cfg(feature = "tauri")]
+        crate::remote::set_native_active(false);
+        #[cfg(feature = "tauri")]
+        if let Some(session) = self.remote.take() {
+            let id = session.id();
+            spawn_local(async move {
+                let _ = crate::remote::close(id).await;
+            });
+        }
+    }
+
+    /// The native session handed to the wave pane (none in the browser build).
+    fn remote_session(&self) -> Option<crate::remote::RemoteSession> {
+        #[cfg(feature = "tauri")]
+        if let Some(session) = &self.remote {
+            return Some(session.clone());
+        }
+        None
+    }
+
+    /// The sidebar tree: the native hierarchy when a native dump is open, else
+    /// the store's dump/design tree.
+    fn sidebar_tree(&self) -> Option<SidebarTree> {
+        #[cfg(feature = "tauri")]
+        if let Some(session) = &self.remote {
+            return Some(session.tree());
+        }
+        self.tree.clone()
+    }
+
+    /// A readable marker of the mode: the desktop build draws native dumps
+    /// read-only over IPC, and knowing that is half of trusting the window.
+    fn remote_badge(&self) -> Html {
+        #[cfg(feature = "tauri")]
+        if let Some(session) = &self.remote {
+            let dump = session.dump();
+            let title = format!(
+                "{} — {} MB, {} signals in {} scopes, mapped {} MB (native backend, read-only)",
+                dump.path,
+                dump.size_mb(),
+                dump.signal_count,
+                dump.scope_count,
+                dump.mapped_bytes / (1024 * 1024)
+            );
+            return html! {
+                <span class="dock-tab native-badge" title={title}>
+                    {"native (read-only, mmap)"}
+                </span>
+            };
+        }
+        html! {}
     }
 
     fn file_button(&self, ctx: &Context<Self>) -> Html {

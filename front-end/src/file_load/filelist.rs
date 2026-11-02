@@ -145,6 +145,9 @@ impl Component for FileList {
             Msg::Open(name) => {
                 let mut choose = self.path.clone();
                 choose.push(name.clone());
+                // the native backend takes one path string; the dialog's listing is
+                // relative to the backend's working directory
+                let native_path = choose.join("/");
                 let args = match to_value(&GetFileListArgs { name: choose }) {
                     Ok(args) => args,
                     Err(_) => {
@@ -161,6 +164,19 @@ impl Component for FileList {
                         let exit = ctx.props().onexit.clone();
                         let file = name.clone();
                         spawn_local(async move {
+                            // Wave 15: try the native backend first (mmap, windowed
+                            // IPC). Large dumps stay native and read-only; small
+                            // ones, and every native error, take the wasm path so
+                            // the dialog keeps working everywhere.
+                            match crate::remote::try_open(&native_path).await {
+                                Ok(Some(session)) => {
+                                    if crate::remote::deliver_open(session) {
+                                        exit.emit(());
+                                        return;
+                                    }
+                                }
+                                Ok(None) | Err(_) => {}
+                            }
                             // The command returns the whole file as a *raw* IPC
                             // body (tauri::ipc::Response): invoke resolves to an
                             // ArrayBuffer and dump_bytes copies it into a Vec<u8>

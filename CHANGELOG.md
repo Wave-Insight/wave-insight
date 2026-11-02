@@ -10,6 +10,71 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.18.0] - 2026-11-03
+
+### Added
+
+- Desktop native renderer MVP: a dump larger than 64 MiB opened in the desktop
+  build now goes through the native backend (`open_dump`) and is drawn read-only
+  from bounded `dump_window` IPC queries, while smaller files (and every native
+  error) keep the wasm path. The mode is visible - a `.dock-tab.native-badge`
+  chip reads **native (read-only, mmap)** and the status line reports
+  `waveform loaded (native read-only, mmap) — <FMT> <N> MB, range <start>..<end>
+  in <ms> ms, mapped <M> MB, <signals> signals in <scopes> scopes` - and the
+  sidebar tree, rows and wave canvas reuse the normal components. Single add and
+  bulk add work against the native hierarchy; the hierarchy is fetched eagerly
+  (paged, 400,000-row safety cap) and the MVP asks the backend for hex values
+  (row display settings still work on the parsed bits). One native dump at a time,
+  no split/multi-dump in native mode, and find/export are refused with an
+  actionable message pointing at the wasm path (files up to 64 MB).
+- Native memory-mapped byte source (desktop/host groundwork): the library can
+  open a file through a read-only `memmap2` mapping with
+  `Waveform::open_path_mmap` / `WaveformSource::Mmap`; readers serve pages
+  straight from the mapping, so the source retains **0 heap bytes** (the OS page
+  cache owns the resident cost). `Waveform::mapped_bytes` and
+  `MemoryStats::source_mapped_bytes` report the mapping size, the mmap module is
+  compiled only for non-wasm targets (the browser keeps its in-memory source), and
+  tests cover byte-identical answers versus the file/memory sources, `Corrupt`
+  errors through the mapping and mapping release on drop. Measured on the real
+  97.5 MiB / 58M-change FST: mmap open 9.27 ms, file reader 10.18 ms, read into
+  memory 30.31 ms; the new `mmap` benchmark group records the comparison.
+- Desktop native dump backend: `src-tauri/src/dumps.rs` keeps a registry of
+  natively opened dumps (monotonic ids, 32-dump cap) and answers five IPC
+  commands - `open_dump`, `dump_hierarchy` (paged pre-order rows, 4096-row
+  pages), `dump_window` (rendered values per signal for a time window, with a
+  per-signal change cap and `before` context), `dump_value_at` and
+  `close_dump`. File bytes never cross IPC; the webview receives rendered
+  windows only, and `close_dump` drops the mapping. Measured: a 4096-row
+  hierarchy page 1.82 ms, ten dense signals over the full trace 139 ms (debug),
+  first `dump_value_at` 690 ms / warm 175 ms; five native tests cover the
+  registry and query round-trip.
+- A `test-app` CI job runs the native backend tests on `ubuntu-24.04` with the
+  GTK/webkit prerequisites and the clean-checkout `front-end/dist` placeholder
+  (the host `test` job excludes the `app` crate because of those prerequisites).
+
+### Changed
+
+- In the desktop build, dumps over 64 MiB now open through the native backend and
+  are drawn read-only from mmap-backed windows over IPC, instead of being copied
+  into the webview's wasm memory; dumps up to 64 MiB keep the wasm path, and a
+  native error falls back to it as well. The web build is unchanged. Runtime
+  verification of the desktop path (real IPC, drag-and-drop, mmap/lock/close
+  lifecycle, window latency/zoom smoothness on huge dumps) still needs a desktop
+  run - this environment has no GUI.
+- The desktop architecture now has both halves in place: the native foundation
+  (mmap source, registry, IPC queries) and the renderer MVP that draws it. Native
+  parity (find, export, split/multi-dump, lazy hierarchy, `dump_value_at`
+  wiring) is the follow-up wave.
+
+### Notes
+
+- The desktop large-file mode is an **MVP**: one native dump at a time, read-only
+  windows, eager paged hierarchy and hex values. Runtime verification on a real
+  desktop (IPC round trips, drag-and-drop, mmap/lock/close lifecycle, window
+  latency and zoom smoothness on huge dumps) is still pending; native parity
+  (find, export, split/multi-dump, lazy hierarchy, `dump_value_at` wiring) is the
+  follow-up wave.
+
 ## [0.17.0] - 2026-11-03
 
 ### Added

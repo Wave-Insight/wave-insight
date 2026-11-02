@@ -8,24 +8,25 @@ does not duplicate them.
 
 ## Where we are
 
-The last tagged release is **0.16.0** (2026-11-02): one-canvas waveform
+The last tagged release is **0.17.0** (2026-11-03): one-canvas waveform
 renderer, R2 state store, Verdi-style navigation, CI gate, fixed-point display,
 search options, CSV/TXT/MAT export, chunked large-dump loading, LSP diagnostics
 and completion, the browser QA suite in `qa/`, generate/arrayed elaboration,
 sidebar virtualization, persistence, the accessibility/keyboard pass, the Verdi
 find-value flow, indexed LSP/design queries, the R3 legacy deletion, the Tauri 2
 desktop shell, the waveform hardening, multi-dump tabs, the Yew 0.21 front end,
-the split view (polished), inspector bit ranges, bulk add from the module tree and
-the memory-first large-dump work (global decode budget, pre-flight refusals,
-`__waveDebug.memory`, interning and the `ByteSource` groundwork). **Wave 13** is
-landing in this wave on `main` (commit follows 0.16.0): the CI green fix (commit
-5fa59d1: clippy placeholder on a clean checkout, root-relative `dist-qa` bundle
-and Node 22 for the QA job, hardened FST validation), bounded windowed rendering
-(the real fix for the 3+ GB dense-row crash), the desktop raw-IPC fix, bulk-add
-discoverability (row menu, Select all, sticky bulk bar, over-cap state) and the
-`denseDump`/`bulkAdd` QA scenarios; the matrix grows to 58 scenarios / 524
-assertions. The `Unreleased` section of [`CHANGELOG.md`](../CHANGELOG.md) is the
-authoritative list of what is on `main` beyond 0.16.0.
+the split view (polished), inspector bit ranges, bulk add, the memory-first
+large-dump work and the bounded windowed renderer (dense-dump crash fix). **Wave
+14** shipped the native mmap backend foundation (commit c4e27ec) and **Wave 15**
+lands in this wave: the desktop native renderer MVP that draws the backend -
+dumps over 64 MiB open natively over a read-only mmap and are rendered
+read-only from windowed `dump_window` IPC queries (badge/status line, single and
+bulk add, eager paged hierarchy with a 400k cap, hex values, find/export refused
+with an actionable message; one native dump, no split/multi-dump in the mode),
+with smaller files and native errors keeping the wasm path. The browser matrix
+must be green before the version bump. The `Unreleased` section of
+[`CHANGELOG.md`](../CHANGELOG.md) is the authoritative list of what is on
+`main` beyond 0.17.0.
 
 ## How a wave works
 
@@ -59,21 +60,24 @@ cut when the accumulated waves are coherent for users; no wave promises a date.
 | **9** | released in 0.13.0 | Yew 0.21 migration; language-server completion (server side); browser `bitRanges` QA scenario -> 52 scenarios / 414 assertions |
 | **10** | released in 0.14.0 | split-view MVP; Monaco completion provider + member completion; inspector bit ranges; per-run QA staging; weekly full-matrix `qa.yml` -> 55 scenarios / 446 assertions |
 | **11** | released in 0.15.0 | split-view polish (per-dump unlinked scroll/zoom/pan, linked freeze, resize observer, draggable persisted ratio); completion v3; completion benchmarks + refreshed baseline; three verifier fixes; QA 55 scenarios / 458 assertions |
-| **12** | released in 0.16.0 | bulk add from the module tree (multi-select, Add selected, one `RowsAdded` batch, cap); memory-first large dumps (global 64 MiB decode budget + free plan, fallible read buffer, pre-flight estimate/refusals, `__waveDebug.memory`, release on close, load peaks -31..-44%); library interning/lazy paths/`memory_stats`/`ByteSource`; structural VCD validation fixing the conflicting-width crash; `docs/design/large-files.md`; QA 57 scenarios / 503 assertions |
-| **13** | shipped in this wave | CI green again (clippy `front-end/dist` placeholder on a clean checkout, root-relative `dist-qa` bundle + Node 22 for the QA job, FST internal-count validation so a corrupt alias chain is a `Corrupt` error instead of a 5e16-byte allocation); bounded windowed rendering (`window_changes_many`/`WindowedSignal`, per-row window cache in the 64 MiB budget, the 3+ GB dense-row crash fixed; `window_many` 2.33 ms vs 99.6 ms full history for 8 rows); desktop raw IPC (`tauri::ipc::Response` -> one ArrayBuffer copy); bulk-add discoverability (row menu, Select all, sticky bulk bar, over-cap state); `denseDump`/`bulkAdd` QA -> 58 scenarios / 524 assertions |
-| **14** | chosen for the next wave, not started | desktop native backend with memory-mapped files (the `ByteSource`/memmap2 plan in [`docs/design/large-files.md`](design/large-files.md)); browser worker + OPFS lazy byte source; completion packages as qualifiers; the remaining split-view limits (unlinked cursors, row scrollbar, window-captured pan, persisted split) |
-| **15** | later candidates | signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
+| **12** | released in 0.16.0 | bulk add from the module tree; memory-first large dumps (global 64 MiB decode budget + free plan, fallible read buffer, pre-flight estimate/refusals, `__waveDebug.memory`, release on close, load peaks -31..-44%); library interning/lazy paths/`memory_stats`/`ByteSource`; structural VCD validation fixing the conflicting-width crash; `docs/design/large-files.md`; QA 57 scenarios / 503 assertions |
+| **13** | released in 0.17.0 | CI green again (clippy placeholder, root-relative `dist-qa` bundle + Node 22 for QA, FST internal-count validation); bounded windowed rendering (`window_changes_many`/`WindowedSignal`, the 3+ GB dense-row crash fixed); desktop raw IPC; bulk-add discoverability; `denseDump`/`bulkAdd` QA -> 58 scenarios / 524 assertions |
+| **14** | shipped in this wave | native mmap backend foundation: host-only `memmap2` byte source (`Waveform::open_path_mmap`/`WaveformSource::Mmap`, `mapped_bytes`, `MemoryStats::source_mapped_bytes`, 0 retained heap bytes; 9.27 ms vs 10.18/30.31 ms on the 97.5 MiB FST; equivalence/corrupt/drop tests + `mmap` bench group) and the Tauri native dump registry + five windowed IPC queries (`open_dump`/`dump_hierarchy`/`dump_window`/`dump_value_at`/`close_dump`; monotonic ids, 32-dump cap, files never cross IPC; hierarchy page 4096 rows 1.82 ms, 10 dense signals 139 ms debug, value_at 690/175 ms; five native tests) plus the `test-app` CI job |
+| **15** | shipped in this wave | desktop native renderer MVP: dumps over 64 MiB in the desktop build open through `open_dump` and are drawn read-only from bounded `dump_window` IPC queries (wasm fallback for smaller files and native errors); `.dock-tab.native-badge` + native status line, sidebar/rows/canvas reuse existing components, single and bulk add work, eager paged hierarchy (400k cap), hex values with the row display settings on the parsed bits; one native dump at a time, no split/multi-dump in the mode, find/export refused with an actionable message; runtime checks (real IPC, drag-drop, mmap/lock/close, latency/zoom) still need a desktop run |
+| **16** | chosen for the next wave, not started | native mode parity: `dump_value_at` (ruler values), native find/export, split and multi-dump on the native path, lazy hierarchy loading; then the browser worker + OPFS lazy byte source (the browser's mmap analogue); completion packages as qualifiers |
+| **17** | later candidates | signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
 
 Statuses are honest: *released* means a tagged release, *shipped in this wave*
 means committed on `main` and waiting for the next release, *chosen* means the
 next wave's agreed top items (not started), and *later candidates* are unordered.
 Items can move between waves when the tree says a wave should be smaller.
 
-Wave 14's top items are the two large-file architectures (desktop native
-memory-mapped backend first, then the browser worker/OPFS lazy byte source), then
-the completion and split-view leftovers. The design note
-[`docs/design/large-files.md`](design/large-files.md) records the current model and
-both plans; the multi-dump note covers the split-view remainder.
+Wave 16 completes the desktop native mode (find/export, split/multi-dump,
+lazy hierarchy and the `dump_value_at` ruler wiring) and then takes the browser
+worker/OPFS lazy byte source plus completion packages. The design note
+[`docs/design/large-files.md`](design/large-files.md) records the native protocol,
+the MVP limits and both memory-mapped plans; the multi-dump note covers the
+split-view remainder.
 
 ## Invariants every wave keeps
 

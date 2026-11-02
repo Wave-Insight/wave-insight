@@ -8,9 +8,11 @@ and the bounded windowed renderer), and the two honest paths to true
 memory-mapped access (desktop native backend, browser worker with a lazy byte
 source).
 
-Status: **current model documented; footprint work (Wave 12) and bounded windowed
-rendering (Wave 13) are in; the native mmap backend is the next architectural
-step.**
+Status: **current model documented; footprint work (Wave 12), bounded windowed
+rendering (Wave 13), the native mmap backend foundation (Wave 14) and the desktop
+native renderer MVP (Wave 15) are in. Next: native parity (find/export,
+split/multi-dump, lazy hierarchy, `dump_value_at` wiring) and the browser
+worker/OPFS lazy byte source.**
 
 ## 1. Why it is hard in this architecture
 
@@ -88,7 +90,7 @@ rendered data crosses into the webview.
 ```
 FE (wasm)                     tauri backend (native)
 canvas  <-- windows  <-- IPC commands
-                                  Waveform::open_mmap(path)
+                                  Waveform::open_path_mmap(path)
                                   memmap2::Mmap  (read-only, no copy)
                                   hierarchy/header parsed natively
 ```
@@ -100,12 +102,82 @@ Key points:
 - The backend answers the queries the renderer needs: open (summary), hierarchy
   pages, decoded changes in a time window (bounded by pixels, not by file size),
   value at time, and the design/LSP work can stay wasm or move too.
-- The existing `Waveform` API is the contract; a `ByteSource` trait (Wave 12
+- The existing `Waveform` API is the contract; the `ByteSource` trait (Wave 12
   groundwork) lets the same code read from `Vec<u8>` (browser) or `Mmap`
   (desktop) without duplication.
-- This is a real architectural step (IPC protocol, remote dump handle in the
-  store, error/timeout handling), planned as its own wave. The web build keeps
-  the in-memory path and stays the low-install option.
+- This is a real architectural step. The IPC protocol, the registry and the
+  mmap source shipped in Wave 14; a remote dump handle in the store plus
+  error/timeout/timeout handling is the renderer work that follows. The web build
+  keeps the in-memory path and stays the low-install option.
+
+Implementation result (Wave 14), the foundation:
+
+- **Library: host-only mmap source.** `Waveform::open_path_mmap` opens a file
+  through `WaveformSource::Mmap` (a `memmap2::Mmap` behind an `Arc`); readers
+  serve pages straight from the mapping, so no file bytes are retained as heap
+  memory. `Waveform::mapped_bytes` and
+  `MemoryStats::source_mapped_bytes` report the mapping length (the OS page
+  cache's resident cost, not the process heap). The mmap module is
+  `#[cfg(not(target_arch = "wasm32"))]` - the wasm build does not compile it and
+  keeps the in-memory `Arc<[u8]>` source. On the real 97.5 MiB / 3,025-signal /
+  58M-change FST: `open_path_mmap` 9.27 ms, the existing file reader 10.18 ms,
+  reading the file into memory 30.31 ms, with **0 heap bytes retained** by the
+  mmap source. Tests cover byte-for-byte answer equivalence with the file and
+  memory sources, `Corrupt` errors through the mapping, and releasing the
+  mapping when the waveform drops; the `mmap` benchmark group keeps the numbers
+  honest.
+- **Desktop: native dump registry + IPC queries.** `src-tauri/src/dumps.rs`
+  keeps a registry of natively opened dumps (monotonic ids, 32-dump cap) and
+  answers five commands over Tauri IPC:
+  `open_dump(path) -> DumpSummary` (format/time range/signal+scope counts,
+  retained/mapped bytes, open time), `dump_hierarchy(id, offset, limit) ->
+  HierarchyPage` (pre-order flattened scope/signal rows, pages of at most 4096),
+  `dump_window(id, signals, start, end, maxChangesPerSignal?, show?) ->
+  [WindowDto]` (values already rendered to text, per-signal cap, `before`
+  context), `dump_value_at(id, signal, time, show?) -> String | null` and
+  `close_dump(id)`. The file bytes never cross IPC; the webview receives only
+  rendered windows. `close_dump` drops the mapping, and `open_dump` falls back
+  to the read path when a map cannot be created. Measured: a 4096-row hierarchy
+  page 1.82 ms; 10 dense signals over the full trace 139 ms (debug build); first
+  `dump_value_at` 690 ms, warm 175 ms. Five native tests cover the registry and
+  query round-trip. On Windows the mapping keeps the file handle alive for the
+  life of the open dump, so deleting/renaming/replacing it while open can fail
+  until `close_dump`.
+- **CI: the native backend is tested.** A new `test-app` job runs the backend
+  tests on `ubuntu-24.04` with the GTK/webkit prerequisites and the
+  `front-end/dist` placeholder (the host test job excludes `app` because of
+  those prerequisites).
+- **Renderer MVP (Wave 15): the desktop large-file mode.** The front-end half
+  lives in `front-end/src/remote/`: a `RemoteSession` keeps the dump summary and
+  turns the paged hierarchy into the same `SidebarTree` the sidebar always draws,
+  plus a path -> signal index so rows resolve without the wasm waveform. In the
+  desktop build a dump **larger than 64 MiB** (`NATIVE_THRESHOLD_BYTES`) opens
+  through `open_dump` and is drawn read-only from bounded `dump_window` queries
+  over IPC (`dump_value_at` is wired in the protocol; the MVP does not yet use
+  it for the ruler); smaller files and every native error fall back to the wasm
+  path, so normal dumps behave exactly as before. The mode is visible: a
+  `.dock-tab.native-badge` chip ("native (read-only, mmap)", with a
+  path/size/signals/scopes/mapped tooltip) and the status line
+  `waveform loaded (native read-only, mmap) — <FMT> <N> MB, range <start>..<end>
+  in <ms> ms, mapped <M> MB, <signals> signals in <scopes> scopes`. The sidebar,
+  rows and canvas reuse the existing components/classes, and single add and bulk
+  add work against the native hierarchy. MVP limits, recorded deliberately: one
+  native dump at a time (adopting another closes the previous), no split or
+  multi-dump tabs in native mode, the hierarchy is fetched eagerly (paged in
+  4096-row requests, capped at 400,000 rows), the backend sends hex values (the
+  renderer parses them back to bits, so row display settings still work), and
+  find-value/export are refused with an actionable message pointing at the wasm
+  path (files up to 64 MB).
+- **Next: native parity and the browser path.** The follow-up wave wires
+  `dump_value_at` (the ruler's cursor values), native find/export, split and
+  multi-dump support, and lazy hierarchy loading instead of the eager paged
+  fetch. The browser still has no mmap, so its analogue is the worker + OPFS lazy
+  byte source described in section 4.
+- **Runtime status.** The desktop path is compile-verified in this repository
+  (there is no desktop GUI here): real IPC round trips, drag-and-drop of a large
+  file, the file dialog's relative-path resolution, the mmap open/lock/close
+  lifecycle, `dump_window` latency and zoom smoothness on huge dumps must be
+  validated on a desktop machine (the release checklist for the desktop build).
 
 ## 4. Browser: worker + lazy byte source (mmap-like)
 
@@ -148,5 +220,10 @@ first.
   (`QA_LARGE_FST=<path>`), asserting that a visible dense row decodes only a
   bounded window, that zoom cycles do not grow the decoded history/wasm and that
   a second dense row does not double the history.
-- A native test for the future mmap backend (open a temp file with memmap2,
-  answer a window query, drop it) before any UI wiring.
+- The native renderer is compile-verified and host-tested where possible
+  (`front-end/src/remote/` and the wave-pane window path); the runtime checks are
+  listed in the section 3 "Runtime status" note.
+- The native backend tests: mmap/file/memory answer equivalence, corrupt input
+  through the mapping, mapping release on drop (library) and the Tauri registry
+  round-trip/arguments/ids/cap/close (src-tauri), run by the new `test-app` CI job
+  on ubuntu-24.04 with the GTK prerequisites.
