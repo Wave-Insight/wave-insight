@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     # The action ships a pinned cargo-deny and refreshes the RustSec advisory
     # database; the checks and the ignore list live in deny.toml, not here.
