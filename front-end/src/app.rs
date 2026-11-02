@@ -5,7 +5,7 @@ use yew::prelude::*;
 use crate::code_reader::CodeReader;
 use crate::lsp::LspBridge;
 use crate::module_struct::ModuleStruct;
-use crate::module_struct::TreeSelect;
+use crate::module_struct::{RowContext, RowKind, TreeSelect};
 use crate::nav::{match_dump_candidates, PathPicker, SidebarTree, SignalInspector, SourceClick};
 use crate::state::{
     self, Action, Cursors, DumpHandle, DumpId, DumpsTabsSlice, Effect, Focus, Goto, Layout, Picker,
@@ -84,6 +84,22 @@ pub enum Msg {
     AddScope(String),
     /// "Add selected (N)" / Ctrl+Enter: bulk-add the tree selection.
     AddSelected,
+    /// A sidebar row asked for its context menu.
+    RowMenuOpened(RowContext),
+    /// The context menu closed (Escape / outside click / an item ran).
+    RowMenuClosed,
+    /// Context menu: add one signal.
+    MenuAddSignal(String),
+    /// Context menu: add every signal of a scope subtree.
+    MenuAddScope(String),
+    /// Context menu: toggle one scope in the bulk selection.
+    MenuToggleSelect(String),
+    /// Context menu: the selection becomes these visible scopes.
+    MenuSelectAll(Vec<String>),
+    /// Context menu: clear the bulk selection.
+    MenuClearSelection,
+    /// A key press while the context menu is open (Escape / arrows).
+    RowMenuKey(KeyboardEvent),
     /// The editor buffer changed; the store re-syncs the document and the LSP.
     SourceEdited((String, String)),
     /// A source tab was clicked.
@@ -252,6 +268,8 @@ pub struct App {
     /// The module-tree multi-selection (bulk add), mirrored from the store.
     tree_selection: TreeSelection,
     _tree_selection_sub: Subscription,
+    /// The sidebar row context menu, when it is open.
+    row_menu: Option<RowContext>,
     /// The path picker, mirrored from the store (the store owns whether it is
     /// open; the app still performs the choice, which needs the dump/design).
     picker: Option<Picker>,
@@ -426,6 +444,7 @@ impl Component for App {
             _split_sub: split_sub,
             tree_selection,
             _tree_selection_sub: tree_selection_sub,
+            row_menu: None,
             split_view: NodeRef::default(),
             split_drag: None,
             split_preview: None,
@@ -516,6 +535,8 @@ impl Component for App {
                                 onselection={link.callback(Msg::TreeSelected)}
                                 onaddscope={link.callback(Msg::AddScope)}
                                 onaddselected={link.callback(|_| Msg::AddSelected)}
+                                onclear={link.callback(|_| Msg::MenuClearSelection)}
+                                onrowcontext={link.callback(Msg::RowMenuOpened)}
                                 signaladd={link.callback(|(_name, path): (String, String)| Msg::SidebarAdd(path))}/>
                         </aside>
                         }
@@ -778,6 +799,90 @@ impl Component for App {
                 }else {
                     html!{}
                 }}
+                {if let Some(menu) = &self.row_menu {
+                    let style = format!("left:{}px; top:{}px", menu.x, menu.y);
+                    let is_module = menu.kind == RowKind::Module;
+                    let scope_path = if is_module {
+                        Some(menu.path.clone())
+                    } else {
+                        state::bulk::parent_scope(&menu.path)
+                    };
+                    let scope_selected = scope_path
+                        .as_ref()
+                        .is_some_and(|scope| self.tree_selection.paths.contains(scope));
+                    html!{ <>
+                        <div class="row-menu-shield"
+                            onclick={link.callback(|_| Msg::RowMenuClosed)}
+                            oncontextmenu={link.callback(|event: MouseEvent| {
+                                event.prevent_default();
+                                Msg::RowMenuClosed
+                            })} />
+                        <div class="row-menu" role="menu" aria-label="Row actions" style={style}
+                            onkeydown={link.callback(Msg::RowMenuKey)}>
+                            {if is_module {
+                                html!{
+                                    <button type="button" class="row-menu-item" role="menuitem"
+                                        disabled={menu.scope_signals == 0}
+                                        onclick={link.callback({ let path = menu.path.clone(); move |_| Msg::MenuAddScope(path.clone()) })}>
+                                        {format!("Add all signals in this scope ({})", menu.scope_signals)}
+                                    </button>
+                                }
+                            } else {
+                                html!{
+                                    <button type="button" class="row-menu-item" role="menuitem"
+                                        onclick={link.callback({ let path = menu.path.clone(); move |_| Msg::MenuAddSignal(path.clone()) })}>
+                                        {"Add signal"}
+                                    </button>
+                                }
+                            }}
+                            {if !is_module {
+                                match scope_path.clone() {
+                                    Some(scope) => html!{
+                                        <button type="button" class="row-menu-item" role="menuitem"
+                                            onclick={link.callback(move |_| Msg::MenuAddScope(scope.clone()))}>
+                                            {"Add all signals in this scope"}
+                                        </button>
+                                    },
+                                    None => html!{},
+                                }
+                            } else {
+                                html!{}
+                            }}
+                            <div class="row-menu-sep" role="separator"></div>
+                            {match scope_path.clone() {
+                                Some(scope) => html!{
+                                    <button type="button" class="row-menu-item" role="menuitem"
+                                        onclick={link.callback(move |_| Msg::MenuToggleSelect(scope.clone()))}>
+                                        {if scope_selected { "Remove scope from bulk selection" } else { "Select for bulk add" }}
+                                    </button>
+                                },
+                                None => html!{},
+                            }}
+                            {if is_module && !menu.visible.is_empty() {
+                                html!{
+                                    <button type="button" class="row-menu-item" role="menuitem"
+                                        onclick={link.callback({ let paths = menu.visible.clone(); move |_| Msg::MenuSelectAll(paths.clone()) })}>
+                                        {format!("Select all visible ({})", menu.visible.len())}
+                                    </button>
+                                }
+                            } else {
+                                html!{}
+                            }}
+                            {if !self.tree_selection.is_empty() {
+                                html!{
+                                    <button type="button" class="row-menu-item" role="menuitem"
+                                        onclick={link.callback(|_| Msg::MenuClearSelection)}>
+                                        {"Clear bulk selection"}
+                                    </button>
+                                }
+                            } else {
+                                html!{}
+                            }}
+                        </div>
+                    </> }
+                } else {
+                    html!{}
+                }}
             </div>
         }
     }
@@ -843,6 +948,11 @@ impl App {
         let link = ctx.link().clone();
         let keys = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
             move |event: web_sys::KeyboardEvent| {
+                if event.key() == "Escape" {
+                    // the row context menu is the only global Escape consumer
+                    link.send_message(Msg::RowMenuClosed);
+                    return;
+                }
                 if !(event.ctrl_key() || event.meta_key()) || event.key() != "Enter" {
                     return;
                 }
@@ -895,9 +1005,17 @@ impl App {
                             // has no slices to report: it gets the size guard,
                             // the parse line and the load report (the browser
                             // reader is the one with per-chunk progress)
-                            let bytes: Vec<u8> =
-                                from_value(invoke("choose_vcd_absolute", args).await)
-                                    .unwrap_or_default();
+                            // the command answers with a raw IPC body: an
+                            // ArrayBuffer, not a JSON number array (see
+                            // file_load::dump_bytes)
+                            let raw = invoke("choose_vcd_absolute", args).await;
+                            let bytes = match crate::file_load::dump_bytes(&raw) {
+                                Some(bytes) => bytes,
+                                None => {
+                                    onerror.emit(format!("{file}: the dump could not be read"));
+                                    return;
+                                }
+                            };
                             if bytes.is_empty() {
                                 onerror.emit(format!("{file}: the dump could not be read"));
                                 return;
@@ -1112,6 +1230,87 @@ impl App {
                 self.bulk_add_selected();
                 false
             }
+            Msg::RowMenuOpened(context) => {
+                self.row_menu = Some(context);
+                true
+            }
+            Msg::RowMenuClosed => self.row_menu.take().is_some(),
+            Msg::MenuAddSignal(path) => {
+                self.row_menu = None;
+                self.add_path(&path, false);
+                false
+            }
+            Msg::MenuAddScope(path) => {
+                self.row_menu = None;
+                self.bulk_add_scopes(std::slice::from_ref(&path));
+                false
+            }
+            Msg::MenuToggleSelect(path) => {
+                self.row_menu = None;
+                self.apply(Action::TreeSelectionToggled { path });
+                false
+            }
+            Msg::MenuSelectAll(paths) => {
+                self.row_menu = None;
+                self.apply(Action::TreeSelectionRanged { paths });
+                false
+            }
+            Msg::MenuClearSelection => {
+                self.row_menu = None;
+                self.apply(Action::TreeSelectionCleared);
+                false
+            }
+            Msg::RowMenuKey(event) => match event.key().as_str() {
+                "Escape" => {
+                    event.prevent_default();
+                    self.row_menu = None;
+                    true
+                }
+                "ArrowDown" | "ArrowUp" => {
+                    event.prevent_default();
+                    // move the focus between the menu items (they are buttons)
+                    let Some(menu) = event
+                        .current_target()
+                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                    else {
+                        return false;
+                    };
+                    let Ok(items) = menu.query_selector_all(".row-menu-item") else {
+                        return false;
+                    };
+                    let count = items.length();
+                    if count == 0 {
+                        return false;
+                    }
+                    let focused = web_sys::window()
+                        .and_then(|window| window.document())
+                        .and_then(|document| document.active_element());
+                    let current = focused
+                        .as_ref()
+                        .and_then(|element| element.closest(".row-menu-item").ok().flatten())
+                        .and_then(|element| {
+                            (0..count).find(|index| {
+                                items
+                                    .get(*index)
+                                    .map(|node| element.is_same_node(Some(node.as_ref())))
+                                    .unwrap_or(false)
+                            })
+                        });
+                    let next = match (event.key().as_str(), current) {
+                        ("ArrowDown", Some(index)) => (index + 1) % count,
+                        ("ArrowDown", None) => 0,
+                        (_, Some(index)) => (index + count - 1) % count,
+                        (_, None) => count - 1,
+                    };
+                    if let Some(item) = items.get(next) {
+                        if let Ok(element) = item.dyn_into::<web_sys::HtmlElement>() {
+                            let _ = element.focus();
+                        }
+                    }
+                    false
+                }
+                _ => false,
+            },
             Msg::SourceEdited((file, text)) => {
                 // the editor owns its buffer; the store is the document of record
                 // and re-syncs the LSP through the effect the reducer returns
@@ -1611,7 +1810,19 @@ impl App {
             )));
             return;
         }
+        // the first added row becomes the inspector's signal: the batch gives
+        // the same feedback a single add did (the status line keeps reporting
+        // the batch itself)
+        let first_added = rows.first().map(|row| row.path.clone());
         self.apply(Action::RowsAdded { rows });
+        if let Some(first) = first_added {
+            self.apply(Action::FocusChanged {
+                focus: Focus {
+                    signal: Some(first),
+                    instance: self.focus.instance.clone(),
+                },
+            });
+        }
         if unresolved > 0 {
             // keep the reducer's summary and say how many paths the dump could
             // not resolve, instead of silently dropping them

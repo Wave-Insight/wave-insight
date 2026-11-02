@@ -10,6 +10,78 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.17.0] - 2026-11-03
+
+### Added
+
+- Bounded windowed rendering, the real fix for the 3+ GB dense-dump crash: the
+  renderer no longer materialises the full history of every visible row. It
+  requests capped windows through the new `Waveform::window_changes_many` /
+  `WindowedSignal { changes, before, capped }` API (one stream pass for all rows,
+  a fair per-row cap of roughly one change per pixel, early exit, O(rows * cap)
+  memory) and keeps a per-row window cache inside the existing global 64 MiB
+  decode budget. Dense *visible* rows were the trigger, not the file size: a real
+  97.5 MiB / 3,025-signal / 58M-change FST loaded and scrolled fine, while one
+  visible 10M-change row used to decode 229 MB and grow the wasm by ~0.5 GB per
+  row. New `window_many` benchmark group: `full_trace_capped` 2.33 ms for eight
+  rows versus 99.6 ms for the full-history decode of the same rows.
+- FST validation hardening at open: the validator now checks the internal FST
+  counts (geometry `max_handle`, blackout entries, time-table items, frame and
+  value-change handle counts, alias chains) against the bytes actually present,
+  so a corrupt file cannot make the reader allocate an absurd buffer.
+- Desktop raw IPC: `choose_vcd` / `choose_vcd_absolute` return
+  `tauri::ipc::Response` (the raw body) instead of `Vec<u8>`. Tauri 2 serialised
+  a byte vector as a JSON number array, so a 100 MB dump became hundreds of MB of
+  JSON plus a 100M-element JS array and another wasm copy; the raw response is one
+  `ArrayBuffer` and one copy into wasm.
+- Bulk-add discoverability: every module/signal row has an always-visible add
+  button, a right-click (or Shift+F10) row menu offers **Add all signals in this
+  scope (N)**, **Add signal**, **Select for bulk add**, **Select all visible (M)**
+  and **Clear bulk selection**, the Modules header has **Select all**, and a
+  sticky **bulk bar** footer (`role=status`, "N signals selected", Add selected,
+  Clear, the Ctrl/Cmd-click / Shift-click hint) appears without moving the tree
+  rows. Above the 2000-row cap `.tree-add-selected` visibly gains `.over-cap` +
+  `aria-disabled="true"` while the bulk-bar action stays clickable so the
+  actionable refusal can be shown.
+- Browser QA: the new `denseDump` scenario (16 assertions - a dense VCD proxy
+  with 200k+ steps plus an opt-in real FST via `QA_LARGE_FST=<path>`: bounded
+  decoded window, no wasm growth over zoom cycles, a second dense row not doubling
+  the history, and the same policy on the real 97.5 MiB FST) and the `bulkAdd`
+  scenario (20 assertions - discoverability, context menu, select-all, sticky bar
+  without row movement, over-cap state); the matrix is 58 scenarios / 524
+  assertions. The `fst-gen` recipe (libfst clone + `gen.c`) is committed under
+  `qa/fixtures/generators/`; the 97 MB fixtures stay in `%TEMP%`.
+- CI is green again (all eight jobs on `main`): the clippy job creates a
+  `front-end/dist` placeholder on a clean checkout, the build job also produces a
+  root-relative `dist-qa` bundle for the QA job, and the QA job uses Node 22 (the
+  CDP client needs the global `WebSocket`; Node 20 does not have it).
+
+### Changed
+
+- The drawing path is windowed: a visible row decodes a capped time window into a
+  per-row cache (shared 64 MiB budget) instead of its full history, and
+  `__waveDebug.memory.decodedBytes` now reflects the window caches. The readme's
+  memory section documents the windowed model and its soft-budget limit.
+- FST validation is part of opening a dump, not a best-effort extra: the
+  structural walk now covers the data-block internals (frame values, value-change
+  handles, alias chains) in addition to the top-level block list.
+- The QA harness requires Node >= 22 and the CI QA job consumes the new
+  `dist-qa` artifact instead of the Pages bundle.
+
+### Fixed
+
+- CI red: `cargo clippy` failed on a clean checkout because
+  `tauri::generate_context!` validates `front-end/dist` at compile time; the QA
+  advisory job 404ed every asset because it served the `--public-url
+  /wave-insight/` Pages bundle at `/`; and it pinned Node 20, which lacks the
+  global `WebSocket` the CDP client uses.
+- `test-release` aborted on a corrupt FST whose alias-chain length made
+  `fst-reader` try to allocate 5e16 bytes; the hardened validator now rejects it
+  as `Corrupt` with a readable message before the reader runs.
+- The user-reported 3+ GB crash on dense dumps (a clock changing on every time
+  step): the full-history decode per visible row is gone in favour of the bounded
+  windowed path.
+
 ## [0.16.0] - 2026-11-02
 
 ### Added

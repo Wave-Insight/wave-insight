@@ -3881,7 +3881,7 @@ scenarios.largeDump = async (cdp) => {
   await cdp.shot('qa-large-dump.png');
 };
 
-// --- Wave 12: bulk add from the module tree ------------------------------------
+// --- Wave 12/13: bulk add from the module tree ----------------------------------
 // The Modules panel is a multi-select: plain click focuses a row and resets the
 // selection to it, Ctrl/Cmd+click toggles, Shift+click selects the visible range.
 // "Add selected (N)" (and Ctrl/Cmd+Enter) adds the deduped signals of the
@@ -3889,11 +3889,20 @@ scenarios.largeDump = async (cdp) => {
 // that adds its whole scope. The batch dedupes by path+bit and reports
 // 'added N signals (M already in the wave)' / 'no new signals: M already in the
 // wave'; above 2000 signals it refuses with 'too many signals to add at once'.
+// Wave 13 adds the discoverability layer: the add button is always visible, a
+// right-click / Shift+F10 row menu offers the same actions, a "Select all"
+// button and a sticky bulk bar (a footer, so the rows never move) make the
+// multi-select findable, and the Add-selected button goes 'over-cap' above 2000.
 scenarios.bulkAdd = async (cdp) => {
   const treeState = () => cdp.eval(`(function(){
-    const rows = Array.prototype.map.call(document.querySelectorAll('.tree-row'), function(row){ const rect = row.getBoundingClientRect(); const name = row.querySelector('.tree-name'); return { text: name ? (name.innerText || '').trim() : (row.innerText || '').trim(), title: row.getAttribute('title'), selected: row.getAttribute('aria-selected'), classes: row.className, add: !!row.querySelector('.tree-add'), addLabel: row.querySelector('.tree-add') ? row.querySelector('.tree-add').getAttribute('aria-label') : null, x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }; });
-    const button = document.querySelector('.tree-add-selected');
-    return { rows: rows, button: button ? { text: (button.innerText || '').trim(), label: button.getAttribute('aria-label'), title: button.getAttribute('title'), disabled: button.disabled } : null };
+    const rows = Array.prototype.map.call(document.querySelectorAll('.tree-row'), function(row){ const rect = row.getBoundingClientRect(); const add = row.querySelector('.tree-add'); return { text: (row.querySelector('.tree-name') ? row.querySelector('.tree-name').innerText : row.innerText || '').trim(), title: row.getAttribute('title'), selected: row.getAttribute('aria-selected'), classes: row.className, add: !!add, addOpacity: add ? getComputedStyle(add).opacity : null, addLabel: add ? add.getAttribute('aria-label') : null, x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2), top: Math.round(rect.top) }; });
+    const menu = document.querySelector('.row-menu');
+    const items = Array.prototype.map.call(document.querySelectorAll('.row-menu-item'), function(item){ return { text: (item.innerText || '').trim(), role: item.getAttribute('role') }; });
+    const bar = document.querySelector('.bulk-bar');
+    const count = bar ? bar.querySelector('.bulk-count') : null;
+    const selectAll = document.querySelector('.tree-select-all');
+    const addSelected = document.querySelector('.tree-add-selected');
+    return { rows: rows, menu: menu ? { role: menu.getAttribute('role'), label: menu.getAttribute('aria-label'), items: items } : null, bar: bar ? { role: bar.getAttribute('role'), label: bar.getAttribute('aria-label'), count: count ? (count.innerText || '').trim() : null, add: !!(bar.querySelector('.bulk-add')), clear: !!(bar.querySelector('.bulk-clear')), hint: (bar.querySelector('.bulk-hint') || {}).innerText || null } : null, selectAll: selectAll ? { text: (selectAll.innerText || '').trim(), label: selectAll.getAttribute('aria-label') } : null, addSelected: addSelected ? { text: (addSelected.innerText || '').trim(), label: addSelected.getAttribute('aria-label'), title: addSelected.getAttribute('title'), classes: addSelected.className, ariaDisabled: addSelected.getAttribute('aria-disabled'), disabled: addSelected.disabled } : null };
   })()`);
   const counts = async () => {
     const current = await state(cdp);
@@ -3912,6 +3921,11 @@ scenarios.bulkAdd = async (cdp) => {
   };
   const clickAddSelected = async () => { await cdp.eval('(function(){ const b = document.querySelector(".tree-add-selected"); if (b) b.click(); })()'); await sleep(1200); };
   const clickTreeAdd = async (path) => cdp.eval('(function(){ const row = Array.prototype.find.call(document.querySelectorAll(".tree-row"), function(r){ return (r.getAttribute("title") || "") === ' + JSON.stringify(path) + '; }); if (!row) return null; const b = row.querySelector(".tree-add"); if (!b) return null; b.click(); return true; })()');
+  const byTitle = (state, title) => state.rows.find((row) => row.title === title);
+  const rowContextMenu = (title) => cdp.eval('(function(){ const row = Array.prototype.find.call(document.querySelectorAll(".tree-row"), function(r){ return (r.getAttribute("title") || "") === ' + JSON.stringify(title) + '; }); if (!row) return null; row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })); return true; })()');
+  const menuEscape = () => cdp.eval('(function(){ const menu = document.querySelector(".row-menu"); if (!menu) return false; menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); return true; })()');
+  const rowShiftF10 = (title) => cdp.eval('(function(){ const row = Array.prototype.find.call(document.querySelectorAll(".tree-row"), function(r){ return (r.getAttribute("title") || "") === ' + JSON.stringify(title) + '; }); if (!row) return null; row.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true })); return true; })()');
+  const menuItem = (needle) => cdp.eval('(function(){ const items = Array.prototype.slice.call(document.querySelectorAll(".row-menu-item")); const item = items.find(function(i){ return (i.innerText || "").trim().indexOf(' + JSON.stringify(needle) + ') === 0; }); if (!item) return null; item.click(); return true; })()');
   await boot(cdp);
   await cdp.upload([path.join(FIXTURES, 'top.sv'), path.join(FIXTURES, 'cpu.sv')]);
   await waitTabs(cdp, 2);
@@ -3919,94 +3933,316 @@ scenarios.bulkAdd = async (cdp) => {
   let tree = await treeState();
   note('bulkAdd tree', tree);
   const rows = tree.rows;
-  const rowFor = (path) => rows.find((row) => row.title === path);
-  const first = rowFor('top.u_cpu');
-  const second = rowFor('top.u_cpu16');
-  check('bulkAdd: every tree row exposes its selection state and an add-scope button',
+  const firstRow = rows.find((row) => row.title === 'top.u_cpu');
+  const secondRow = rows.find((row) => row.title === 'top.u_cpu16');
+  check('bulkAdd: every tree row exposes its selection state and an always-visible add-scope button',
     rows.length >= 2 && rows.every((row) => (row.selected === 'true' || row.selected === 'false') && row.add === true
-      && (row.addLabel || '').startsWith('Add all signals in ')), tree.rows);
+      && (row.addLabel || '').startsWith('Add all signals in ') && row.addOpacity === '1'), rows.map((row) => ({ title: row.title, add: row.add, opacity: row.addOpacity })));
   check('bulkAdd: the add-selected button starts empty and disabled',
-    !!tree.button && tree.button.text === 'Add selected (0)' && tree.button.label === 'Add selected signals'
-      && tree.button.title === 'Add 0 signals from the selected scopes' && tree.button.disabled === true, tree.button);
-  // a scope add: the whole subtree in one batch
-  const beforeScope = await counts();
-  const scopeClicked = await clickTreeAdd('top.u_cpu');
-  await sleep(1200);
-  const afterScope = await counts();
-  note('scope add', { clicked: scopeClicked, before: beforeScope, after: afterScope });
-  check('bulkAdd: a .tree-add adds the whole scope in one batch',
-    scopeClicked === true && afterScope.rows === beforeScope.rows + 8
-      && afterScope.status === 'added 8 signals (0 already in the wave)',
-    { before: beforeScope, after: afterScope });
-  // plain click resets the selection to that row; ctrl-click toggles the second
-  await plainClick(first);
+    !!tree.addSelected && tree.addSelected.text === 'Add selected (0)' && tree.addSelected.label === 'Add selected signals'
+      && tree.addSelected.title === 'Add 0 signals from the selected scopes' && tree.addSelected.disabled === true
+      && tree.addSelected.ariaDisabled === 'false', tree.addSelected);
+  check('bulkAdd: the Modules head offers Select all',
+    !!tree.selectAll && tree.selectAll.text === 'Select all' && tree.selectAll.label === 'Select all visible modules', tree.selectAll);
+  // the discoverability row menu: right-click, Shift+F10, Escape
+  const opened = await rowContextMenu('top.u_cpu');
+  await sleep(600);
   tree = await treeState();
-  note('after plain click', tree);
+  note('row menu', { opened: opened, menu: tree.menu });
+  check('bulkAdd: right-click opens the row actions menu with the add and select entries',
+    opened === true && !!tree.menu && tree.menu.role === 'menu' && tree.menu.label === 'Row actions'
+      && tree.menu.items.some((item) => item.role === 'menuitem' && /^Add all signals in this scope \(\d+\)$/.test(item.text))
+      && tree.menu.items.some((item) => item.text === 'Select for bulk add')
+      && tree.menu.items.some((item) => /^Select all visible \(\d+\)$/.test(item.text)), tree.menu);
+  const escaped = await menuEscape();
+  await sleep(500);
+  tree = await treeState();
+  check('bulkAdd: Escape closes the row menu', escaped === true && !tree.menu, tree.menu);
+  const shiftF10 = await rowShiftF10('top.u_cpu');
+  await sleep(500);
+  tree = await treeState();
+  check('bulkAdd: Shift+F10 opens the row menu too', shiftF10 === true && !!tree.menu && tree.menu.role === 'menu', tree.menu);
+  const beforeMenuAdd = await counts();
+  const menuAdd = await menuItem('Add all signals in this scope');
+  await sleep(1500);
+  const afterMenuAdd = await counts();
+  note('menu add all', { clicked: menuAdd, before: beforeMenuAdd, after: afterMenuAdd });
+  check('bulkAdd: the menu add-all adds the whole scope in one batch',
+    menuAdd === true && afterMenuAdd.rows === beforeMenuAdd.rows + 8
+      && afterMenuAdd.status === 'added 8 signals (0 already in the wave)',
+    { before: beforeMenuAdd, after: afterMenuAdd });
+  // Select all fills the sticky bulk bar; the rows must not move (footer, not header)
+  const rowTopBefore = (await treeState()).rows[0].top;
+  const selectAll = await cdp.eval('(function(){ const b = document.querySelector(".tree-select-all"); if (b) b.click(); return !!b; })()');
+  await sleep(800);
+  tree = await treeState();
+  const rowTopAfter = tree.rows[0].top;
+  note('select all', { clicked: selectAll, bar: tree.bar, selected: tree.rows.filter((row) => row.selected === 'true').length, rowTopBefore: rowTopBefore, rowTopAfter: rowTopAfter });
+  check('bulkAdd: Select all selects every visible row and opens the bulk bar',
+    selectAll === true && tree.rows.filter((row) => row.selected === 'true').length === tree.rows.length
+      && !!tree.bar && tree.bar.role === 'status' && tree.bar.label === 'Bulk selection'
+      && tree.bar.count === '16 signals selected' && tree.bar.add === true && tree.bar.clear === true
+      && /Ctrl\/Cmd-click/.test(tree.bar.hint || ''), tree.bar);
+  check('bulkAdd: the bulk bar is a footer and does not move the rows',
+    rowTopBefore === rowTopAfter, { before: rowTopBefore, after: rowTopAfter });
+  // the bulk bar's own Add selected runs the batch (the first scope is already in)
+  const beforeBarAdd = await counts();
+  const barAdd = await cdp.eval('(function(){ const b = document.querySelector(".bulk-add"); if (b) b.click(); return !!b; })()');
+  await sleep(1500);
+  const afterBarAdd = await counts();
+  note('bulk bar add', { clicked: barAdd, before: beforeBarAdd, after: afterBarAdd });
+  check('bulkAdd: the bulk bar Add selected adds the missing scope and reports the rest',
+    barAdd === true && afterBarAdd.rows === beforeBarAdd.rows + 8
+      && afterBarAdd.status === 'added 8 signals (8 already in the wave)'
+      && afterBarAdd.render - beforeBarAdd.render <= 2,
+    { before: beforeBarAdd, after: afterBarAdd });
+  const barClear = await cdp.eval('(function(){ const b = document.querySelector(".bulk-clear"); if (b) b.click(); return !!b; })()');
+  await sleep(600);
+  tree = await treeState();
+  check('bulkAdd: Clear hides the bulk bar and empties the selection',
+    barClear === true && !tree.bar && tree.rows.every((row) => row.selected === 'false'), { bar: tree.bar, rows: tree.rows.map((row) => row.selected) });
+  // the rest of the interaction contract: click, ctrl+click, Ctrl+Enter, shift range
+  await plainClick(firstRow);
+  tree = await treeState();
   check('bulkAdd: a plain click focuses one row and resets the selection',
     tree.rows.filter((row) => row.selected === 'true').length === 1
-      && (tree.rows.find((row) => row.title === 'top.u_cpu') || {}).selected === 'true'
-      && tree.button.text === 'Add selected (8)' && tree.button.disabled === false,
-    { rows: tree.rows.map((row) => row.selected), button: tree.button });
-  await ctrlClick(second);
+      && (byTitle(tree, 'top.u_cpu') || {}).selected === 'true'
+      && tree.addSelected.text === 'Add selected (8)' && tree.addSelected.disabled === false,
+    { rows: tree.rows.map((row) => row.selected), button: tree.addSelected });
+  await ctrlClick(secondRow);
   tree = await treeState();
-  note('after ctrl click', tree);
   check('bulkAdd: ctrl+click toggles a second row into the selection',
-    tree.rows.filter((row) => row.selected === 'true').length === 2 && tree.button.text === 'Add selected (16)',
-    { rows: tree.rows.map((row) => row.selected), button: tree.button });
-  // the batch adds the missing scope and reports the already-added signals
-  const beforeBatch = await counts();
-  await clickAddSelected();
-  const afterBatch = await counts();
-  note('partial duplicate batch', { before: beforeBatch, after: afterBatch });
-  check('bulkAdd: a batch reports the signals that were already in the wave',
-    afterBatch.rows === beforeBatch.rows + 8 && afterBatch.status === 'added 8 signals (8 already in the wave)',
-    { before: beforeBatch, after: afterBatch });
-  // adding the whole selection again is deduped into one 'no new signals' note
-  await clickAddSelected();
-  const afterBatchAgain = await counts();
-  note('add selected again', afterBatchAgain);
-  check('bulkAdd: adding the selection again is deduped',
-    afterBatchAgain.rows === afterBatch.rows && afterBatchAgain.status === 'no new signals: 16 already in the wave',
-    afterBatchAgain);
-  check('bulkAdd: the batch adds in one render, not one render per row',
-    afterBatch.render - beforeBatch.render <= 2, { before: beforeBatch.render, after: afterBatch.render });
-  // Ctrl+Enter is the keyboard path for the same batch
+    tree.rows.filter((row) => row.selected === 'true').length === 2 && tree.addSelected.text === 'Add selected (16)',
+    { rows: tree.rows.map((row) => row.selected), button: tree.addSelected });
   const ctrlEnter = await cdp.eval('(function(){ window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })); return true; })()');
   await sleep(1200);
   const afterKey = await counts();
-  note('ctrl+enter', { dispatched: ctrlEnter, after: afterKey });
   check('bulkAdd: Ctrl+Enter runs the same batch as the button',
-    ctrlEnter === true && afterKey.rows === afterBatch.rows && /already in the wave/.test(afterKey.status || ''), afterKey);
-  // shift+click selects the visible range from the anchor
-  await plainClick(first);
-  await shiftClick(second);
+    ctrlEnter === true && afterKey.status === 'no new signals: 16 already in the wave', afterKey);
+  await plainClick(firstRow);
+  await shiftClick(secondRow);
   tree = await treeState();
-  note('after shift click', tree);
   check('bulkAdd: shift+click selects the range from the anchor',
-    tree.rows.filter((row) => row.selected === 'true').length === 2 && tree.button.text === 'Add selected (16)', tree.rows.map((row) => row.selected));
-
-  // the cap: 3000 signals selected -> actionable refusal, no rows, no crash
+    tree.rows.filter((row) => row.selected === 'true').length === 2 && tree.addSelected.text === 'Add selected (16)', tree.rows.map((row) => row.selected));
+  const treeAddAgain = await clickTreeAdd('top.u_cpu16');
+  await sleep(1200);
+  const afterTreeAdd = await counts();
+  check('bulkAdd: a scope add of signals already in the wave is deduped',
+    treeAddAgain === true && afterTreeAdd.rows === 16 && afterTreeAdd.status === 'no new signals: 8 already in the wave', afterTreeAdd);
+  // the cap: 3000 signals selected -> over-cap button + actionable refusal, no rows
   await boot(cdp);
   await cdp.upload([path.join(FIXTURES, 'wide_scope.sv')]);
   await waitTabs(cdp, 1);
   await sleep(2000);
-  tree = await treeState();
-  note('cap tree', tree);
-  const capRows = tree.rows.filter((row) => (row.title || '').indexOf('wide_top.u_') >= 0);
-  for (const row of capRows) { await ctrlClick(row); }
+  await cdp.eval('(function(){ const b = document.querySelector(".tree-select-all"); if (b) b.click(); })()');
+  await sleep(800);
   tree = await treeState();
   note('cap selected', tree);
+  check('bulkAdd: a selection above the 2000-signal cap shows it on the button and the bar',
+    !!tree.bar && tree.bar.count === '3000 signals selected'
+      && !!tree.addSelected && (tree.addSelected.classes || '').includes('over-cap')
+      && tree.addSelected.ariaDisabled === 'true'
+      && /Too many signals \(3000\)/.test(tree.addSelected.title || ''),
+    { bar: tree.bar, button: tree.addSelected });
   const beforeCap = await counts();
-  await clickAddSelected();
+  const capClicked = await cdp.eval('(function(){ const b = document.querySelector(".tree-add-selected"); if (!b) return false; b.click(); return true; })()');
+  await sleep(1200);
   const afterCap = await counts();
-  note('cap result', { rows: capRows.length, before: beforeCap, after: afterCap });
-  check('bulkAdd: a selection above the 2000-signal cap is refused with the limit and the way out',
-    capRows.length === 3 && beforeCap.status !== afterCap.status
-      && /^too many signals to add at once: \d+ \(limit 2000\) — select fewer modules$/.test(afterCap.status || '')
+  note('cap result', { clicked: capClicked, before: beforeCap, after: afterCap });
+  check('bulkAdd: an over-cap Add selected is refused with the limit and the way out',
+    capClicked === true && /^too many signals to add at once: \d+ \(limit 2000\) — select fewer modules$/.test(afterCap.status || '')
       && /3000/.test(afterCap.status || ''), afterCap.status);
   check('bulkAdd: the refused batch adds no rows', afterCap.rows === 0, afterCap.rows);
   check('bulkAdd: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   await cdp.shot('qa-bulk-add.png');
+};
+
+// --- Wave 13: dense dumps decode in a bounded window ----------------------------
+// The dense shape is what blew the desktop app up: a clock that changes on every
+// time step, so the full history is huge while the file is moderate. The
+// generator makes a deterministic dense dump at run time (a few MB default;
+// QA_DENSE_STEPS=2000000 opts into a bigger one). The FST reports cannot be
+// reproduced in this image (no vcd2fst/gtkwave, iverilog/vvp are broken here,
+// verilator 4.024 predates --trace-fst), so this VCD is an explicit proxy for the
+// full-history decode path - see qa/README. QA_LARGE_FST=<path> adds the same
+// contract for a real FST once one is available.
+// Pre-fix numbers on the v0.16.0 build: a 10M-change clock row decoded to
+// decodedBytes 240 MB with overBudget true and grew the wasm by ~0.5 GB per dense
+// row; the bounded-window decode must keep a visible dense row to its window,
+// keep the overBudget flag quiet at rest and not accumulate on zoom cycles.
+scenarios.denseDump = async (cdp) => {
+  const gen = require('./fixtures/generators/gen-dense.js');
+  const dir = path.join(QA, 'artifacts', 'dense');
+  fs.mkdirSync(dir, { recursive: true });
+  const steps = Number(process.env.QA_DENSE_STEPS || '') > 0 ? Number(process.env.QA_DENSE_STEPS) : 200000;
+  const file = path.join(dir, 'dense-' + steps + '.vcd');
+  if (!fs.existsSync(file) || fs.statSync(file).size < steps * 6) {
+    await gen.generateDense(file, { steps: steps, signals: 1 });
+  }
+  const size = fs.statSync(file).size;
+  // A visible dense row should decode only its window. The global decode budget
+  // is 64 MB and the documented soft bound is budget + 8 MB, but a windowed
+  // decode is far tighter: the ~200k-change history that used to be decoded
+  // whole is several MB, while the window is a few hundred changes. 2 MB is the
+  // regression bound that a full-history decode cannot meet.
+  const WINDOWED_BOUND = 2 * 1024 * 1024;
+  const POLICY_CAP = 1280 * 1024 * 1024;
+  const mem = () => cdp.eval('(function(){ const memory = window.__waveDebug ? window.__waveDebug.memory : null; if (!memory) return null; return { wasmBytes: memory.wasmBytes, fileBytes: memory.fileBytes, decodedBytes: memory.decodedBytes, budget: memory.budget, dumps: memory.dumps, overBudget: memory.overBudget }; })()');
+  // wait until the decode settles: three identical memory samples in a row
+  const settle = async (maxMs) => {
+    const started = Date.now();
+    let previous = null;
+    let stable = 0;
+    let samples = 0;
+    while (Date.now() - started < maxMs) {
+      await sleep(300);
+      const current = await mem();
+      samples += 1;
+      if (current && previous && current.wasmBytes === previous.wasmBytes && current.decodedBytes === previous.decodedBytes) {
+        stable += 1;
+        if (stable >= 3) return current;
+      } else {
+        stable = 0;
+      }
+      previous = current;
+    }
+    return previous;
+  };
+  await boot(cdp);
+  const started = Date.now();
+  await cdp.upload([file]);
+  let status = '';
+  for (let i = 0; i < 120; i++) {
+    await sleep(1000);
+    status = (await state(cdp)).status || '';
+    if (/waveform loaded|cannot open|too large|trim the dump|more than the \d+ MB/i.test(status)) break;
+  }
+  const loadMs = Date.now() - started;
+  const loaded = /waveform loaded/.test(status);
+  note('dense dump load', { steps: steps, bytes: size, ms: loadMs, status: status });
+  check('denseDump: a dense dump loads (or is refused with the actionable message)',
+    loaded || /cannot open|too large|trim the dump|more than the \d+ MB/i.test(status), status);
+  check('denseDump: the load never leaves the app blank',
+    await cdp.eval('!!document.querySelector(".app")') === true && (await exceptions(cdp)).length === 0,
+    { status: status, exceptions: await exceptions(cdp) });
+  if (loaded) {
+    const atLoad = await mem();
+    note('dense load memory', atLoad);
+    check('denseDump: the memory hook is published with numeric accounting',
+      !!atLoad && typeof atLoad.wasmBytes === 'number' && typeof atLoad.decodedBytes === 'number'
+        && typeof atLoad.budget === 'number' && typeof atLoad.overBudget === 'boolean', atLoad);
+    check('denseDump: loading a dense dump stays inside the wasm policy cap',
+      !!atLoad && atLoad.wasmBytes <= POLICY_CAP, atLoad && atLoad.wasmBytes);
+    const added = await cdp.eval('window.__qa.clickSignal("clk")');
+    const rest = await settle(6000);
+    const afterRows = await state(cdp);
+    note('dense row at rest', { added: added, rows: (afterRows.waveNames || []).length, status: afterRows.status, memory: rest });
+    // a transient overBudget during the decode pass is allowed: only the settled
+    // state is asserted
+    check('denseDump: the dense row paints',
+      added === 'ok' && (afterRows.waveNames || []).length > 0, { added: added, rows: afterRows.waveNames });
+    check('denseDump: at rest the decoded history stays inside the documented budget',
+      !!rest && rest.decodedBytes <= rest.budget + 8 * 1024 * 1024, rest);
+    check('denseDump: at rest the decode does not flag overBudget',
+      !!rest && rest.overBudget === false, rest && rest.overBudget);
+    check('denseDump: a visible dense row decodes only a bounded window',
+      !!rest && rest.decodedBytes <= WINDOWED_BOUND, { ...rest, bound: WINDOWED_BOUND });
+    check('denseDump: the wasm memory stays inside the policy cap after the decode',
+      !!rest && rest.wasmBytes <= POLICY_CAP, rest && rest.wasmBytes);
+    // zoom in and out three times: the window is re-decoded, never accumulated
+    const surface = await cdp.eval('window.__qa.rect("#wave-surface")');
+    const cycles = [];
+    if (surface) {
+      const x = Math.round(surface.x + surface.w / 2);
+      const y = Math.round(surface.y + surface.h / 2);
+      for (let cycle = 0; cycle < 3; cycle++) {
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x, y: y, deltaX: 0, deltaY: -240, modifiers: 2 });
+        await sleep(500);
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x, y: y, deltaX: 0, deltaY: 240, modifiers: 2 });
+        await sleep(500);
+        cycles.push(await settle(3000));
+      }
+    }
+    const cycleSamples = cycles.filter((sample) => !!sample);
+    const peakDecoded = cycleSamples.reduce((best, sample) => (sample.decodedBytes > best.decodedBytes ? sample : best), { decodedBytes: 0, wasmBytes: 0 });
+    const monotone = cycleSamples.every((sample, index) => index === 0 || sample.wasmBytes <= cycleSamples[index - 1].wasmBytes + 8 * 1024 * 1024);
+    note('dense zoom cycles', { samples: cycleSamples.length, peakDecoded: peakDecoded, monotone: monotone, cycles: cycleSamples.map((sample) => ({ wasm: sample.wasmBytes, decoded: sample.decodedBytes })) });
+    check('denseDump: zooming keeps the decoded history inside the windowed bound',
+      cycleSamples.length === 3 && peakDecoded.decodedBytes <= WINDOWED_BOUND, peakDecoded);
+    check('denseDump: zooming does not grow the wasm memory monotonically',
+      cycleSamples.length === 3 && monotone, cycleSamples.map((sample) => sample.wasmBytes));
+    // a second dense row must not double the decoded history
+    const secondAdded = await cdp.eval('window.__qa.clickSignal("data_000")');
+    const secondRest = await settle(6000);
+    const secondRows = await state(cdp);
+    note('dense second row at rest', { added: secondAdded, rows: (secondRows.waveNames || []).length, memory: secondRest });
+    check('denseDump: a second dense row does not double the decoded history',
+      secondAdded === 'ok' && !!secondRest && secondRest.decodedBytes <= WINDOWED_BOUND
+        && secondRest.wasmBytes <= POLICY_CAP, secondRest);
+    check('denseDump: the dense decode raises no exceptions',
+      (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  }
+  // opt-in real FST (the subagent may hand one over): same contract, QA_LARGE_FST=<path>
+  const largeFst = String(process.env.QA_LARGE_FST || '').trim();
+  if (largeFst && fs.existsSync(largeFst)) {
+    const fstSize = fs.statSync(largeFst).size;
+    await boot(cdp);
+    await cdp.upload([largeFst]);
+    let fstStatus = '';
+    for (let i = 0; i < 180; i++) {
+      await sleep(1000);
+      fstStatus = (await state(cdp)).status || '';
+      if (/waveform loaded|cannot open|too large|trim the dump|more than the \d+ MB/i.test(fstStatus)) break;
+    }
+    const fstLoaded = /waveform loaded/.test(fstStatus);
+    note('large FST load', { bytes: fstSize, status: fstStatus });
+    check('denseDump: a large FST loads or is refused, never crashes',
+      (fstLoaded || /cannot open|too large|trim the dump|more than the \d+ MB/i.test(fstStatus))
+        && await cdp.eval('!!document.querySelector(".app")') === true, fstStatus);
+    if (fstLoaded) {
+      const fstLoadMemory = await mem();
+      check('denseDump: a large FST loads inside the wasm policy cap',
+        !!fstLoadMemory && fstLoadMemory.wasmBytes <= POLICY_CAP, fstLoadMemory && fstLoadMemory.wasmBytes);
+      const firstSignal = await cdp.eval('(function(){ const name = document.querySelector(".sidebar .sig-row .sig-name"); if (!name) return null; const text = (name.innerText || "").trim().split("[")[0]; name.parentElement.click(); return text; })()');
+      const fstRest = await settle(8000);
+      note('large FST first row', { signal: firstSignal, memory: fstRest });
+      check('denseDump: the large FST stays inside the memory policy',
+        !!fstRest && fstRest.decodedBytes <= fstRest.budget + 8 * 1024 * 1024
+          && fstRest.wasmBytes <= POLICY_CAP, fstRest);
+      // the user's likely path: bulk add a whole scope (many dense rows) and
+      // scroll through the new rows - the decoded history must stay bounded
+      await cdp.eval('(function(){ const row = Array.prototype.find.call(document.querySelectorAll(".tree-row"), function(r){ return (r.getAttribute("title") || "") === "top"; }); if (row) row.click(); })()');
+      await sleep(800);
+      const bulkTitle = await cdp.eval('(function(){ const row = Array.prototype.find.call(document.querySelectorAll(".tree-row"), function(r){ return /^top\\.u\\d+$/.test(r.getAttribute("title") || ""); }); return row ? row.getAttribute("title") : null; })()');
+      const bulkClicked = bulkTitle ? await cdp.eval('(function(){ const row = Array.prototype.find.call(document.querySelectorAll(".tree-row"), function(r){ return (r.getAttribute("title") || "") === ' + JSON.stringify(bulkTitle) + '; }); if (!row) return null; const button = row.querySelector(".tree-add"); if (!button) return null; button.click(); return true; })()') : null;
+      const fstBulkRest = await settle(10000);
+      const fstRows = await state(cdp);
+      note('large FST bulk add', { scope: bulkTitle, clicked: bulkClicked, rows: (fstRows.waveNames || []).length, status: fstRows.status, memory: fstBulkRest });
+      check('denseDump: a bulk add of a large-FST scope stays inside the memory policy',
+        bulkClicked === true && (fstRows.waveNames || []).length > 0 && !!fstBulkRest
+          && fstBulkRest.decodedBytes <= fstBulkRest.budget + 8 * 1024 * 1024
+          && fstBulkRest.overBudget === false && fstBulkRest.wasmBytes <= POLICY_CAP,
+        { clicked: bulkClicked, rows: fstRows.waveNames, memory: fstBulkRest });
+      const fstSurface = await cdp.eval('window.__qa.rect("#wave-surface")');
+      if (fstSurface) {
+        const fx = Math.round(fstSurface.x + fstSurface.w / 2);
+        const fy = Math.round(fstSurface.y + fstSurface.h / 2);
+        for (let notch = 0; notch < 24; notch++) {
+          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: fx, y: fy, deltaX: 0, deltaY: 800 });
+          await sleep(250);
+        }
+      }
+      const fstScrolled = await settle(6000);
+      note('large FST after scrolling', fstScrolled);
+      check('denseDump: scrolling the large-FST rows keeps the decoded history inside the policy',
+        !!fstScrolled && fstScrolled.decodedBytes <= fstScrolled.budget + 8 * 1024 * 1024
+          && fstScrolled.wasmBytes <= POLICY_CAP, fstScrolled);
+      check('denseDump: the large FST bulk add raises no exceptions',
+        (await exceptions(cdp)).length === 0, await exceptions(cdp));
+    }
+  }
+  check('denseDump: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-dense-dump.png');
 };
 
 (async () => {

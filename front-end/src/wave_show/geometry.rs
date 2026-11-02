@@ -114,6 +114,16 @@ impl Stamped for Change {
     }
 }
 
+/// The changes of a time ordered slice inside `start ..= end`.
+///
+/// Both bounds are inclusive, like `DecodedSignal::window`; an empty range is
+/// an empty slice. The row windows (`wave_show::windowed`) store a padded
+/// fetch range and draw from this slice, so the window semantics stay in one
+/// place.
+pub fn slice_window(items: &[Change], start: Time, end: Time) -> &[Change] {
+    slice_window_stamped(items, start, end)
+}
+
 /// [`slice_window`] for anything time stamped.
 ///
 /// The row model slices through the backend's `DecodedSignal`, so this is only

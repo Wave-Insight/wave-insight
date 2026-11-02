@@ -20,6 +20,7 @@
 use std::cell::Cell;
 use std::collections::HashSet;
 
+use wasm_bindgen::JsCast;
 use web_sys::Event;
 use yew::prelude::*;
 
@@ -42,6 +43,32 @@ struct FlatRow {
     has_children: bool,
     /// Whether its children are shown.
     expanded: bool,
+}
+
+/// Which kind of sidebar row a context menu was opened on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowKind {
+    /// A module/instance row of the tree.
+    Module,
+    /// A signal row of the selected scope.
+    Signal,
+}
+
+/// A context-menu gesture on a sidebar row (right click, or the context-menu
+/// key / Shift+F10 on the keyboard).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowContext {
+    pub kind: RowKind,
+    /// The row's full path.
+    pub path: String,
+    /// Signals "add all in scope" would add (module rows; 0 for signals).
+    pub scope_signals: usize,
+    /// The visible module rows at the time of the gesture (for "select all
+    /// visible"); empty for signal rows.
+    pub visible: Vec<String>,
+    /// Viewport coordinates the menu opens at.
+    pub x: i32,
+    pub y: i32,
 }
 
 /// What a module-tree click means for the bulk selection.
@@ -99,6 +126,12 @@ pub struct ModuleStructProps {
     /// "Add selected (N)": the app adds the selection's signals in one batch.
     #[prop_or_default]
     pub onaddselected: Callback<()>,
+    /// The selection bar's "Clear" button.
+    #[prop_or_default]
+    pub onclear: Callback<()>,
+    /// A row asked for its context menu (right click / keyboard).
+    #[prop_or_default]
+    pub onrowcontext: Callback<RowContext>,
 }
 
 pub struct ModuleStruct {
@@ -311,6 +344,28 @@ impl Component for ModuleStruct {
             let callback = ctx.props().onaddselected.clone();
             Callback::from(move |_: MouseEvent| callback.emit(()))
         };
+        let onclear = {
+            let callback = ctx.props().onclear.clone();
+            Callback::from(move |_: MouseEvent| callback.emit(()))
+        };
+        let oncontext = ctx.props().onrowcontext.clone();
+        let visible_paths = self.visible_paths();
+        let select_all = {
+            let callback = ctx.props().onselection.clone();
+            let paths = visible_paths.clone();
+            Callback::from(move |_: MouseEvent| {
+                callback.emit(TreeSelect::Range(paths.clone()));
+            })
+        };
+        let over_cap = selected_count > bulk::BULK_ADD_CAP;
+        let add_selected_title = if over_cap {
+            format!(
+                "Too many signals ({selected_count}) — the limit is {}; select fewer scopes",
+                bulk::BULK_ADD_CAP
+            )
+        } else {
+            format!("Add {selected_count} signals from the selected scopes")
+        };
         let onscroll = {
             let module_ref = self.module_ref.clone();
             link.callback(move |_: Event| {
@@ -327,9 +382,17 @@ impl Component for ModuleStruct {
                 <section class="panel">
                     <div class="panel-head">
                         {"Modules"}
-                        <button type="button" class="tree-add-selected"
+                        <button type="button" class="tree-select-all"
+                            aria-label="Select all visible modules"
+                            title="Select all visible modules for bulk add"
+                            onclick={select_all}>
+                            {"Select all"}
+                        </button>
+                        <button type="button"
+                            class={if over_cap {"tree-add-selected over-cap"} else {"tree-add-selected"}}
                             aria-label="Add selected signals"
-                            title={format!("Add {selected_count} signals from the selected scopes")}
+                            aria-disabled={if over_cap {"true"} else {"false"}}
+                            title={add_selected_title.clone()}
                             disabled={ctx.props().selection.is_empty()}
                             onclick={onaddselected.clone()}>
                             {format!("Add selected ({selected_count})")}
@@ -374,9 +437,56 @@ impl Component for ModuleStruct {
                                 let add_label = format!("Add all signals in {}", row.path);
                                 let add_callback = ctx.props().onaddscope.clone();
                                 let click_link = link.clone();
+                                let context_path = row.path.clone();
+                                let context_signals = bulk::signals_under(tree, &row.path).len();
+                                let context_visible = visible_paths.clone();
+                                let context_callback = oncontext.clone();
+                                let context_menu = Callback::from(move |event: MouseEvent| {
+                                    event.prevent_default();
+                                    event.stop_propagation();
+                                    context_callback.emit(RowContext {
+                                        kind: RowKind::Module,
+                                        path: context_path.clone(),
+                                        scope_signals: context_signals,
+                                        visible: context_visible.clone(),
+                                        x: event.client_x(),
+                                        y: event.client_y(),
+                                    });
+                                });
+                                let keyboard_path = row.path.clone();
+                                let keyboard_signals = bulk::signals_under(tree, &row.path).len();
+                                let keyboard_visible = visible_paths.clone();
+                                let keyboard_callback = oncontext.clone();
+                                let keyboard_menu = Callback::from(move |event: KeyboardEvent| {
+                                    let opens = event.key() == "ContextMenu"
+                                        || (event.shift_key() && event.key() == "F10");
+                                    if !opens {
+                                        return;
+                                    }
+                                    event.prevent_default();
+                                    let (left, top, height) = event
+                                        .current_target()
+                                        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                                        .map(|element| {
+                                            let rect = element.get_bounding_client_rect();
+                                            (rect.left(), rect.top(), rect.height())
+                                        })
+                                        .unwrap_or((0.0, 0.0, 0.0));
+                                    keyboard_callback.emit(RowContext {
+                                        kind: RowKind::Module,
+                                        path: keyboard_path.clone(),
+                                        scope_signals: keyboard_signals,
+                                        visible: keyboard_visible.clone(),
+                                        x: (left + 24.0) as i32,
+                                        y: (top + height) as i32,
+                                    });
+                                });
                                 html! {
                                     <div class={chosen} title={title}
+                                        tabindex="0"
                                         aria-selected={if is_selected {"true"} else {"false"}}
+                                        oncontextmenu={context_menu}
+                                        onkeydown={keyboard_menu}
                                         onclick={click_link.callback(move |event: MouseEvent| Msg::Select {
                                             path: path.clone(),
                                             ctrl: event.ctrl_key() || event.meta_key(),
@@ -406,6 +516,35 @@ impl Component for ModuleStruct {
                             }
                         }
                     </div>
+                    // the sticky bulk bar is a footer on purpose: it must not
+                    // push the tree rows (a bar above the list moved every row
+                    // when the first selection appeared, which broke the
+                    // click-the-row-you-see behaviour)
+                    {if !ctx.props().selection.is_empty() {
+                        html!{
+                        <div class="bulk-bar" role="status" aria-label="Bulk selection">
+                            <span class="bulk-count">{format!("{selected_count} signals selected")}</span>
+                            <button type="button" class="bulk-add"
+                                aria-label="Add selected signals"
+                                aria-disabled={if over_cap {"true"} else {"false"}}
+                                title={add_selected_title.clone()}
+                                onclick={onaddselected.clone()}>
+                                {"Add selected"}
+                            </button>
+                            <button type="button" class="bulk-clear"
+                                aria-label="Clear bulk selection"
+                                title="Clear the bulk selection"
+                                onclick={onclear.clone()}>
+                                {"Clear"}
+                            </button>
+                            <span class="bulk-hint" title="Click a module row to select it, Ctrl/Cmd-click to toggle, Shift-click a range">
+                                {"Ctrl/Cmd-click to toggle · Shift-click a range"}
+                            </span>
+                        </div>
+                        }
+                    } else {
+                        html!{}
+                    }}
                 </section>
                 <section class="panel panel-grow">
                     <div class="panel-head">
@@ -415,7 +554,8 @@ impl Component for ModuleStruct {
                     <SignalStruct
                         tree={tree.clone()}
                         selected={selected}
-                        signaladd={link.callback(Msg::SignalAdd)} />
+                        signaladd={link.callback(Msg::SignalAdd)}
+                        onrowcontext={ctx.props().onrowcontext.clone()} />
                 </section>
             </div>
         }
@@ -444,6 +584,11 @@ impl ModuleStruct {
                 .map(|tree| tree.initial_path())
                 .unwrap_or_default()
         }
+    }
+
+    /// The visible module rows, in display order (for "select all visible").
+    fn visible_paths(&self) -> Vec<String> {
+        self.rows.iter().map(|row| row.path.clone()).collect()
     }
 
     /// Adopt the tree from the props: a new tree resets every expansion, exactly

@@ -447,6 +447,56 @@ fn bench_window(c: &mut Criterion) {
     group.finish();
 }
 
+/// The bounded drawing path: window_changes_many streams one pass for all rows,
+/// caps each row fairly and never materialises a full history.  Compare it with
+/// the full-history decode of the same 8 rows, which is what crashed the large
+/// FST user report.
+fn bench_window_many(c: &mut Criterion) {
+    let mut group = c.benchmark_group("window_many");
+    group.sample_size(10);
+
+    let large = Synthetic::new(LARGE_STEPS);
+    let waveform = large.open();
+    let mut rows = vec![large.clock, large.data];
+    rows.extend(large.buses.iter().copied().take(8));
+    let start = large.end_time / 4;
+    let end = start + large.end_time / 100;
+
+    group.bench_function("full_trace_capped", |b| {
+        b.iter(|| {
+            let rows = waveform
+                .window_changes_many(&rows, 0, None, 256)
+                .expect("the synthetic dump streams");
+            black_box(rows)
+        })
+    });
+    group.bench_function("zoomed_capped", |b| {
+        b.iter(|| {
+            let rows = waveform
+                .window_changes_many(&rows, start, Some(end), 256)
+                .expect("the synthetic dump streams");
+            black_box(rows)
+        })
+    });
+
+    // The full-history path for the same eight rows, on a fresh waveform per
+    // iteration (the first decode pays the body parse), for the memory/time
+    // comparison in the module docs.
+    group.bench_function("decoded_many_full_history_8", |b| {
+        b.iter_batched(
+            || large.open(),
+            |waveform| {
+                waveform
+                    .decoded_changes_many(&rows[..8])
+                    .expect("the synthetic dump decodes");
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    group.finish();
+}
+
 /// Formatting values for the view: `WaveValue::render` (the public seam onto
 /// the `waveform::render` helpers, which are crate private).
 fn bench_render(c: &mut Criterion) {
@@ -489,6 +539,7 @@ criterion_group!(
     bench_decode,
     bench_value_at,
     bench_window,
+    bench_window_many,
     bench_render
 );
 criterion_main!(waveform_benches);

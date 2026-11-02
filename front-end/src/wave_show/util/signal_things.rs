@@ -6,11 +6,17 @@
 //! snapshot ([`SignalThings::sync`]), plus the one thing the store must not own —
 //! the decoded values.
 //!
-//! A row keeps a *handle* to its values, never a copy: the backend's
-//! [`DecodedSignal`] is sliced per frame by the canvas
-//! ([`DecodedSignal::window`]), so a redraw neither touches the dump nor clones
-//! a value. Decoding is done by the component in one batched call
-//! (`Waveform::decoded_changes_many`) for the rows that are on screen, once.
+//! A row keeps a *window*, not a history: Wave 13 replaced the whole-history
+//! decode (`Waveform::decoded_changes_many`) with one bounded request per frame
+//! ([`crate::wave_show::windowed`]) covering the visible time range plus a
+//! margin, capped by the surface width. A dense clock therefore costs a few
+//! thousand changes, not its whole history, and the memory is proportional to
+//! the pixels instead of the dump.
+//!
+//! The canvas only needs the value at any time inside the fetched range (so the
+//! left edge carries the value from before the window) and the changes inside
+//! the visible range; [`RowValues`] exposes exactly that, so `canvas.rs` did not
+//! change shape when the histories became windows.
 
 use std::ops::{Index, IndexMut};
 use std::slice::{Iter, SliceIndex};
@@ -21,6 +27,7 @@ use wave_insight_lib::waveform::{
 
 use crate::state::{Row, Settings};
 use crate::wave_show::geometry::{self, Time};
+use crate::wave_show::windowed::RowWindow;
 
 /// What kind of waveform a row draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,21 +43,23 @@ pub enum RowKind {
 /// Values of one row.
 #[derive(Clone, Default)]
 pub enum RowValues {
-    /// No dump, the signal is not in the dump, or the row was dropped from the
-    /// decode cache to stay inside the memory budget.
+    /// No dump, the signal is not in the dump, the row is outside the viewport,
+    /// or the row was dropped from the window cache to stay inside the memory
+    /// budget.
     #[default]
     Empty,
-    /// A cached, decoded history owned by the backend. Cheap to clone (one
-    /// `Arc` bump) and cheap to slice.
-    Backend(DecodedSignal),
+    /// The row's bounded window: the changes of the visible time range plus a
+    /// margin, and the value carried into it. Cheap to clone (one `Arc` bump).
+    Window(RowWindow),
 }
 
 impl RowValues {
     /// `true` if there is nothing to draw.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_empty(&self) -> bool {
         match self {
             RowValues::Empty => true,
-            RowValues::Backend(decoded) => decoded.is_empty(),
+            RowValues::Window(window) => window.is_empty(),
         }
     }
 
@@ -58,19 +67,19 @@ impl RowValues {
     pub fn kind(&self) -> RowKind {
         match self {
             RowValues::Empty => RowKind::Empty,
-            RowValues::Backend(decoded) => match decoded.first_change().map(|(_, value)| value) {
-                Some(value) if value.width() == Some(1) => RowKind::Bool,
+            RowValues::Window(window) => match window.first_value().and_then(WaveValue::width) {
+                Some(1) => RowKind::Bool,
                 Some(_) => RowKind::Bits,
                 None => RowKind::Empty,
             },
         }
     }
 
-    /// The value in effect at `time`.
+    /// The value in effect at `time`, inside the fetched window.
     pub fn value_at(&self, time: Time) -> Option<&WaveValue> {
         match self {
             RowValues::Empty => None,
-            RowValues::Backend(decoded) => decoded.value_at(time),
+            RowValues::Window(window) => window.value_at(time),
         }
     }
 
@@ -82,36 +91,44 @@ impl RowValues {
         end: Time,
         view: &geometry::View,
         width: f64,
-        mut visit: impl FnMut(f64, &'a WaveValue),
+        visit: impl FnMut(f64, &'a WaveValue),
     ) {
-        let RowValues::Backend(decoded) = self else {
+        let RowValues::Window(window) = self else {
             return;
         };
-        let window = decoded.window(start, Some(end));
-        geometry::for_each_pixel_change(window, view, width, |x, (_, value)| visit(x, value));
+        window.for_each_change(start, end, view, width, visit);
     }
 
-    /// The changes of this row inside `start ..= end`, as a borrowed slice.
+    /// The changes of this row inside `start ..= end`, as a borrowed slice of the
+    /// cached window.
     pub fn window(&self, start: Time, end: Time) -> &[Change] {
         match self {
             RowValues::Empty => &[],
-            RowValues::Backend(decoded) => decoded.window(start, Some(end)),
+            RowValues::Window(window) => window.window(start, end),
+        }
+    }
+
+    /// The cached window itself, when the row has one.
+    pub fn cached(&self) -> Option<&RowWindow> {
+        match self {
+            RowValues::Empty => None,
+            RowValues::Window(window) => Some(window),
         }
     }
 
     /// Bit count to format values with: the declared (or dump) width, clamped
     /// to what the values really hold.
     ///
-    /// A dump can be narrower than the design (a truncated vector, a `$var`
-    /// that is narrower than the declared port), and the formatter must not be
-    /// asked for more bits than the value has.
+    /// A dump can be narrower than the design (a truncated vector, a `$var` that
+    /// is narrower than the declared port), and the formatter must not be asked
+    /// for more bits than the value has.
     pub fn format_width(&self, declared: usize) -> usize {
         let declared = declared.max(1);
         match self {
             RowValues::Empty => declared,
-            RowValues::Backend(decoded) => decoded
-                .first_change()
-                .and_then(|(_, value)| value.width())
+            RowValues::Window(window) => window
+                .first_value()
+                .and_then(WaveValue::width)
                 .map(|width| declared.min(width.max(1)))
                 .unwrap_or(declared),
         }
@@ -272,15 +289,10 @@ impl SignalThings {
             item.choose = row.chosen;
             next.push(item);
         }
-        // rows that are gone give their cached signal back to the backend
-        let mut unload = Vec::new();
-        for item in previous {
-            if let (RowValues::Backend(_), Some(index)) = (&item.values, item.index) {
-                unload.push(index);
-            }
-        }
+        // Windowed rows own their cache: drawing never fills the backend's
+        // decode cache, so nothing has to be unloaded from the dump here.
         self.item = next;
-        unload
+        Vec::new()
     }
 
     /// Re-resolve every row against a new dump and drop the old values.
@@ -315,56 +327,110 @@ impl SignalThings {
             let Some(item) = self.item.get(row) else {
                 break;
             };
-            let RowValues::Backend(decoded) = &item.values else {
+            let Some(window) = item.values.cached() else {
                 continue;
             };
-            out.extend(
-                decoded
-                    .window(start, Some(end))
-                    .iter()
-                    .map(|(time, _)| *time),
-            );
+            out.extend(window.window(start, end).iter().map(|(time, _)| *time));
         }
     }
 
-    /// Rows in `rows` that still need a decode: `(row, signal index)`.
-    pub fn pending(&self, rows: std::ops::Range<usize>) -> Vec<(usize, usize)> {
-        let mut pending = Vec::new();
-        for row in rows {
-            let Some(item) = self.item.get(row) else {
-                break;
-            };
-            if !item.values.is_empty() {
-                continue;
-            }
-            if let Some(index) = item.index {
-                pending.push((row, index));
-            }
-        }
-        pending
-    }
-
-    /// Store the decoded history of one row.
-    pub fn set_backend(&mut self, row: usize, decoded: DecodedSignal) {
+    /// Store the bounded window of one row.
+    pub fn set_window(&mut self, row: usize, window: RowWindow) {
         if let Some(item) = self.item.get_mut(row) {
-            item.values = RowValues::Backend(decoded);
+            item.values = RowValues::Window(window);
         }
     }
 
-    /// Drop the values of every row outside `keep`, returning the signal indices
-    /// that the caller should unload from the backend cache.
-    pub fn drop_outside(&mut self, keep: std::ops::Range<usize>) -> Vec<usize> {
-        let mut unload = Vec::new();
+    /// The cached window of one row, when it has one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn window_of(&self, row: usize) -> Option<&RowWindow> {
+        self.item.get(row).and_then(|item| item.values.cached())
+    }
+
+    /// Bytes all cached windows in `rows` hold together (the memory budget).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn window_bytes(&self, rows: std::ops::Range<usize>) -> usize {
+        let end = rows.end.min(self.item.len());
+        let start = rows.start.min(end);
+        self.item[start..end]
+            .iter()
+            .filter_map(|item| item.values.cached())
+            .map(RowWindow::bytes)
+            .sum()
+    }
+
+    /// Drop the cached windows of every row outside `keep`.
+    ///
+    /// A row that scrolls back in fetches one bounded window again, so this is
+    /// the cheapest way to give memory back for a long row list.
+    pub fn drop_outside(&mut self, keep: std::ops::Range<usize>) {
         for (row, item) in self.item.iter_mut().enumerate() {
             if keep.contains(&row) || matches!(item.values, RowValues::Empty) {
                 continue;
             }
-            if let (RowValues::Backend(_), Some(index)) = (&item.values, item.index) {
-                unload.push(index);
-            }
             item.values = RowValues::Empty;
         }
-        unload
+    }
+
+    /// Keep the window cache inside `budget`, dropping the rows farthest from
+    /// the viewport first (least recently looked at), then the edges of the
+    /// visible range. Returns the bytes still cached.
+    pub fn trim_windows(&mut self, keep: std::ops::Range<usize>, budget: usize) -> usize {
+        let budget = budget.max(1);
+        let mut total: usize = self
+            .item
+            .iter()
+            .filter_map(|item| item.values.cached())
+            .map(RowWindow::bytes)
+            .sum();
+        if total <= budget {
+            return total;
+        }
+        let rows = self.item.len();
+        let mut outside: Vec<usize> = (0..rows).filter(|row| !keep.contains(row)).collect();
+        outside.sort_by_key(|row| {
+            if *row < keep.start {
+                keep.start - *row
+            } else {
+                row.saturating_sub(keep.end)
+            }
+        });
+        for row in outside {
+            if total <= budget {
+                break;
+            }
+            if let Some(item) = self.item.get_mut(row) {
+                if let RowValues::Window(window) = &item.values {
+                    total = total.saturating_sub(window.bytes());
+                    item.values = RowValues::Empty;
+                }
+            }
+        }
+        // still over budget (a viewport full of very dense rows): drop from the
+        // edges of the visible range, which fetch again when scrolled to
+        let mut low = keep.start.min(rows);
+        let mut high = keep.end.min(rows);
+        while total > budget && low < high {
+            let row = low;
+            low += 1;
+            if let Some(item) = self.item.get_mut(row) {
+                if let RowValues::Window(window) = &item.values {
+                    total = total.saturating_sub(window.bytes());
+                    item.values = RowValues::Empty;
+                }
+            }
+            if total <= budget || low >= high {
+                break;
+            }
+            high -= 1;
+            if let Some(item) = self.item.get_mut(high) {
+                if let RowValues::Window(window) = &item.values {
+                    total = total.saturating_sub(window.bytes());
+                    item.values = RowValues::Empty;
+                }
+            }
+        }
+        total
     }
 
     pub fn iter(&self) -> Iter<'_, SignalItem> {
@@ -412,6 +478,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::wave_show::windowed::{RowWindow, WindowRequest};
     use wave_insight_lib::waveform::{Bits, Change};
 
     fn store_row(path: &str, width: usize) -> Row {
@@ -425,14 +492,6 @@ mod tests {
             drive: Vec::new(),
             bit: None,
         }
-    }
-
-    fn decoded(width: usize, changes: usize) -> DecodedSignal {
-        let value = WaveValue::Bits(Bits::all_unknown(width));
-        let changes: Arc<[Change]> = (0..changes)
-            .map(|index| (index as u64 * 10, value.clone()))
-            .collect();
-        DecodedSignal::from_changes(changes)
     }
 
     fn synced(paths: &[(&str, usize)]) -> SignalThings {
@@ -460,7 +519,7 @@ mod tests {
     #[test]
     fn sync_keeps_the_values_of_rows_that_survive_a_reorder() {
         let mut things = synced(&[("a", 1), ("b", 1)]);
-        things.set_backend(0, decoded(1, 3));
+        things.set_window(0, window(&[0, 10, 20], 0, 100));
         // the store reorders: the decoded row must follow its path, not its index
         let rows = vec![store_row("b", 1), store_row("a", 1)];
         let unload = things.sync(&rows, None);
@@ -476,9 +535,10 @@ mod tests {
         // pretend both were resolved against a dump
         things[0].index = Some(4);
         things[1].index = Some(5);
-        things.set_backend(1, decoded(1, 2));
+        things.set_window(1, window(&[0, 10], 0, 100));
         let unload = things.sync(&[store_row("a", 1)], None);
-        assert_eq!(unload, vec![5], "only the decoded, removed row is unloaded");
+        // drawing caches windows, not backend histories: nothing to unload
+        assert!(unload.is_empty());
         assert_eq!(things.len(), 1);
     }
 
@@ -495,33 +555,17 @@ mod tests {
     }
 
     #[test]
-    fn pending_lists_only_rows_that_need_a_decode() {
-        let mut things = synced(&[("a", 1), ("b", 1), ("c", 1), ("d", 1)]);
-        things[0].index = Some(7);
-        things[1].index = Some(8);
-        things[3].index = Some(9);
-        things.set_backend(1, decoded(1, 3));
-
-        //only the empty rows with a signal index are worth asking the backend
-        assert_eq!(things.pending(0..4), vec![(0, 7), (3, 9)]);
-        //and only inside the requested range
-        assert_eq!(things.pending(1..3), Vec::new());
-        assert_eq!(things.pending(3..9), vec![(3, 9)]);
-    }
-
-    #[test]
     fn drop_outside_frees_rows_that_left_the_viewport() {
         let mut things = synced(&[("a", 1), ("b", 1), ("c", 1)]);
         things[0].index = Some(1);
         things[1].index = Some(2);
         things[2].index = Some(3);
         for row in 0..3 {
-            things.set_backend(row, decoded(1, 2));
+            things.set_window(row, window(&[0, 10, 20], 0, 100));
         }
 
-        //keep row 1 only: the others go back to "no data" and are unloaded
-        let unload = things.drop_outside(1..2);
-        assert_eq!(unload, vec![1, 3]);
+        //keep row 1 only: the others give their window back
+        things.drop_outside(1..2);
         assert!(
             !things[1].values.is_empty(),
             "row inside the window survives"
@@ -540,7 +584,7 @@ mod tests {
     fn refresh_drops_the_values_and_re_resolves() {
         let mut things = synced(&[("a", 1)]);
         things[0].index = Some(3);
-        things.set_backend(0, decoded(1, 2));
+        things.set_window(0, window(&[0, 10], 0, 100));
         things.refresh(None);
         assert!(things[0].values.is_empty());
         assert_eq!(things[0].index, None);
@@ -548,12 +592,12 @@ mod tests {
     }
 
     #[test]
-    fn edges_lists_the_changes_of_the_decoded_rows_in_the_window() {
-        // three rows, only the first is decoded (values at 0, 10, 20)
+    fn edges_lists_the_changes_of_the_cached_rows_in_the_window() {
+        // three rows, only the first has a window (values at 0, 10, 20)
         let mut things = synced(&[("a", 1), ("b", 8), ("c", 1)]);
         things[0].index = Some(1);
         things[1].index = Some(2);
-        things.set_backend(0, decoded(1, 3));
+        things.set_window(0, window(&[0, 10, 20], 0, 100));
 
         let mut edges = Vec::new();
         things.edges(0..3, 5, 25, &mut edges);
@@ -573,7 +617,7 @@ mod tests {
     #[test]
     fn format_width_clamps_to_what_the_values_hold() {
         //the dump is narrower than the design: format with the dump's width
-        let values = RowValues::Backend(decoded(5, 1));
+        let values = RowValues::Window(width_window(5, &[0]));
         assert_eq!(values.format_width(16), 5);
         //a wider value than declared keeps the declared width
         assert_eq!(values.format_width(3), 3);
@@ -584,10 +628,106 @@ mod tests {
     #[test]
     fn row_kind_follows_the_dump_width() {
         assert_eq!(RowValues::Empty.kind(), RowKind::Empty);
-        assert_eq!(RowValues::Backend(decoded(1, 1)).kind(), RowKind::Bool);
-        assert_eq!(RowValues::Backend(decoded(8, 1)).kind(), RowKind::Bits);
-        //a vector with no changes has nothing to draw
-        assert_eq!(RowValues::Backend(decoded(1, 0)).kind(), RowKind::Empty);
+        assert_eq!(
+            RowValues::Window(width_window(1, &[0])).kind(),
+            RowKind::Bool
+        );
+        assert_eq!(
+            RowValues::Window(width_window(8, &[0])).kind(),
+            RowKind::Bits
+        );
+        //a window with no changes and no carried value has nothing to draw
+        assert_eq!(
+            RowValues::Window(width_window(1, &[])).kind(),
+            RowKind::Empty
+        );
+    }
+
+    /// A window of `width`-bit unknown values at the given time stamps.
+    fn width_window(width: usize, times: &[u64]) -> RowWindow {
+        let value = WaveValue::Bits(Bits::all_unknown(width));
+        let changes: Arc<[Change]> = times.iter().map(|time| (*time, value.clone())).collect();
+        RowWindow::new(
+            changes,
+            None,
+            WindowRequest {
+                start: 0,
+                end: 100,
+                visible_start: 0,
+                visible_end: 100,
+                cap: 64,
+            },
+            false,
+        )
+    }
+
+    /// A bounded window holding one change per time stamp.
+    fn window(times: &[u64], start: u64, end: u64) -> RowWindow {
+        let value = WaveValue::Bits(Bits::all_unknown(1));
+        let changes: Arc<[Change]> = times.iter().map(|time| (*time, value.clone())).collect();
+        RowWindow::new(
+            changes,
+            None,
+            WindowRequest {
+                start,
+                end,
+                visible_start: start,
+                visible_end: end,
+                cap: 64,
+            },
+            false,
+        )
+    }
+
+    #[test]
+    fn a_row_caches_one_bounded_window() {
+        let mut things = synced(&[("a", 1)]);
+        assert!(things.window_of(0).is_none());
+        things.set_window(0, window(&[0, 10, 20], 0, 100));
+        let cached = things.window_of(0).expect("the window is cached");
+        assert_eq!(cached.req.start, 0);
+        assert_eq!(cached.req.end, 100);
+        // the value at the left edge is carried from the window
+        assert!(things[0].values.value_at(15).is_some());
+        // and the window reports its bytes for the budget
+        assert_eq!(
+            things.window_bytes(0..1),
+            3 * crate::wave_show::windowed::BYTES_PER_CHANGE
+        );
+        things.drop_outside(0..1);
+        assert!(things.window_of(0).is_some());
+    }
+
+    #[test]
+    fn trim_windows_evicts_the_rows_farthest_from_the_viewport() {
+        let mut things = synced(&[("a", 1), ("b", 1), ("c", 1), ("d", 1)]);
+        for row in 0..4 {
+            things.set_window(row, window(&[0, 10, 20, 30], 0, 100));
+        }
+        let bytes = crate::wave_show::windowed::BYTES_PER_CHANGE;
+        let all = things.window_bytes(0..4);
+        assert_eq!(all, 16 * bytes);
+        // room for two rows: the two outside the viewport go first
+        let left = things.trim_windows(1..3, 8 * bytes);
+        assert!(left <= 8 * bytes);
+        assert!(
+            things.window_of(0).is_none(),
+            "row before the viewport dropped"
+        );
+        assert!(
+            things.window_of(3).is_none(),
+            "row after the viewport dropped"
+        );
+        assert!(things.window_of(1).is_some());
+        assert!(things.window_of(2).is_some());
+        // a budget that cannot hold even the visible rows keeps trimming them
+        let left = things.trim_windows(1..3, bytes);
+        assert!(left <= bytes);
+        assert_eq!(
+            things.window_bytes(0..4),
+            left,
+            "the cache reports what it still holds"
+        );
     }
 
     /// A 4-bit value with the given low bits (msb first).

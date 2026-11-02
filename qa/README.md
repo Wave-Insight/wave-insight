@@ -6,8 +6,9 @@ fails the run when the matrix is red.
 
 ## Requirements
 
-- Node.js 18 or newer (the runner uses `fetch`, `AbortSignal.timeout` and
-  `fs.cpSync`).
+- Node.js 22 or newer (the runner uses `fetch`, `AbortSignal.timeout`,
+  `fs.cpSync` and the global `WebSocket` the CDP client needs; Node 20 only has
+  `WebSocket` behind a flag, which is why the CI jobs pin 22).
 - A Chrome/Chromium build. The runner looks for the usual per-OS locations; set
   `CHROME=C:\path\to\chrome.exe` (or the equivalent) to override.
 
@@ -70,7 +71,7 @@ Scenario list (the runner's `--list` prints it, default is all):
 `mismatch`, `loadDrive`, `inlayHints`, `wave1`, `wave2`, `virtualization`,
 `persistence`, `session`, `findValue`, `a11y`, `elaboration`, `diagnostics`,
 `exportTxt`, `corruption`, `multiDump`, `bitRanges`, `completion`, `inspectorBits`,
-`splitView`, `largeDump`, `bulkAdd`.
+`splitView`, `largeDump`, `bulkAdd`, `denseDump`.
 
 `wave1` asserts the Wave 1 features (fixed point readout, search options);
 `wave2` asserts the Wave 2 features (CSV export through a real download,
@@ -214,17 +215,78 @@ is `Add all signals in <scope path>`; the Modules panel head has
 `Add selected signals`, title `Add N signals from the selected scopes` and
 `disabled` at 0. Plain click focuses a row and resets the selection; Ctrl/Cmd+click
 toggles; Shift+click selects the visible range from the anchor; the batch runs
-from the button and from Ctrl/Cmd+Enter. The scenario asserts the scope add, the
+from the button and from Ctrl/Cmd+Enter. The scenario asserts the
 scope add, the partial batch (`added N signals (M already in the wave)`), the
 fully deduped batch (`no new signals: M already in the wave`), that one batch
 re-renders the shell at most once, and the 2000-signal cap refusal
 (`too many signals to add at once: N (limit 2000) - select fewer modules`) with
-no rows added.
+no rows added. The Wave 13 discoverability layer is covered too: every
+`.tree-add` is always visible (computed opacity 1), a right-click / Shift+F10 on
+a row opens `.row-menu[role=menu][aria-label="Row actions"]` (items
+"Add all signals in this scope (N)", "Select for bulk add", "Select all visible
+(M)", "Clear bulk selection"; Escape closes it), `.tree-select-all` (text
+"Select all", aria-label "Select all visible modules") selects every visible row,
+and the sticky `.bulk-bar[role=status][aria-label="Bulk selection"]` (count "N
+signals selected", Add selected, Clear, the Ctrl/Shift hint) appears as a footer
+so the rows do not move (the scenario asserts the first row's bounding top is
+unchanged when the selection appears). Above 2000 signals `.tree-add-selected`
+gains `.over-cap` + `aria-disabled="true"` and the bulk bar Add selected is
+still clickable by design, so the actionable refusal is asserted from it.
 
-Baseline on the Wave 12 build (2026-11-02, 57 scenarios):
+`denseDump` covers the dense waveform shape that blew the desktop app up (the
+user's >100 MB FST): a clock that changes on every time step, so the decoded
+history is huge while the file stays moderate. The fixture is generated at run
+time by `fixtures/generators/gen-dense.js` into `qa/artifacts/dense/`
+(gitignored): 200k steps by default (~5 MB, 400k changes),
+`QA_DENSE_STEPS=2000000` opts into a bigger one. The scenario asserts the row
+paints, that at rest `decodedBytes` stays inside the documented budget
+(64 MB + 8 MB slack) with `overBudget` false, that a visible dense row decodes
+only a bounded window (the 2 MB regression bound a full-history decode cannot
+meet), that three zoom cycles neither grow the decoded history nor the wasm
+monotonically, that a second dense row does not double the decoded history, and
+that a large FST (when available) stays inside the same policy -
+`QA_LARGE_FST=<path>` adds that opt-in case.
+
+With `QA_LARGE_FST=<path>` the scenario also runs the same contract on a real
+FST: it loads (or is refused), adds the first row, bulk-adds a whole scope
+(the user's likely path: many dense rows at once), scrolls through the added
+rows, and asserts the decoded history and the wasm stay inside the same policy
+after every step. The 97.5 MiB `large.fst` / 3.05 MiB `dense.fst` synthetic
+fixtures come from `fixtures/generators/fst-gen/` (gen.c + build/regenerate
+recipe; the files are not committed).
+
+The FST reports could not be reproduced with a real FST here: no
+`vcd2fst`/`gtkwave` is installed, the msys64 `iverilog`/`vvp` crash with
+STATUS_ENTRYPOINT_NOT_FOUND, verilator 4.024 predates `--trace-fst` and the
+network search for a legal public sample is unavailable in this sandbox, so the
+dense VCD is an explicit proxy for the full-history decode path. Pre-fix
+numbers (v0.16.0 build) for the record: a 259 MB / 10M-change dense VCD loaded
+at wasm 511 MB; adding the clock row decoded `decodedBytes` 240 MB with
+`overBudget` true and grew the wasm to 1.09 GB, a second dense row to 1.52 GB
+and 480 MB decoded - per dense row ~+0.5 GB wasm / +229 MB decoded, no
+eviction, which is the 3+ GB the user hit with several dense signals.
+
+Real-FST measurements on the same pre-fix build (large.fst: 3,025 signals,
+58,002,967 changes): load 1 s / wasm 205 MB; adding `top.clk` decodes 24 MB
+(1M changes) - still under the budget; bulk-adding 3,024 signals and scrolling
+through them peaks at decodedBytes ~67 MB (inside the 64 MB + slack budget) and
+wasm 355 MB. So the FST's *size* alone is not the trigger: the renderer only
+decodes visible rows and the scroll cache evicts. The blow-up happens when
+visible rows are *dense* (changes per row): the dense proxy's 10M-change row
+decodes to 240 MB with overBudget true and grows the wasm by ~0.5 GB per such
+row - a handful of those is the user's 3+ GB.
+
+With the bounded-window decode (v0.17.0) the same shapes decode only the
+visible window: the 200k-change dense row drops to `decodedBytes` 148,000 B
+(was 4,800,024 B), a second dense row no longer doubles it, and the zoom cycles
+stay flat; on the real `large.fst` the `top.clk` row drops to 148,000 B (was
+24,000,000 B), a 250-row bulk add settles at 5,328,000 B and scrolling over the
+added rows at 10,656,000 B - all inside the budget with `overBudget` false.
+
+Baseline on the Wave 13 build (2026-11-02, 58 scenarios):
 
 ```
-=== summary: 503 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
+=== summary: 524 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
 ```
 
 The summary has five counters: **passed**, **failed**, **pending** (an R2 rule
@@ -265,6 +327,15 @@ node qa/fixtures/generators/gen-sparse.js
 node qa/fixtures/generators/gen-many-signals.js
 node qa/fixtures/generators/gen-corrupt.js
 node qa/fixtures/generators/gen-large.js   # large-dump fixtures (written to qa/artifacts/large at run time)
+node qa/fixtures/generators/gen-dense.js   # dense fixtures (written to qa/artifacts/dense at run time)
+
+`fixtures/generators/fst-gen/` is a recipe rather than a fixture: `gen.c` +
+`README.md` build a deterministic synthetic FST with GTKWave's libfst (clone,
+gcc line, generate commands, sizes and tuning table). The generated
+`large.fst` (102,273,753 B, 3,025 signals, 1M steps, 58,002,967 changes) and
+`dense.fst` (3,203,089 B, 30k steps, 1,742,967 changes) live outside the repo
+(e.g. `%TEMP%\wi-fst`) and are passed to the denseDump scenario with
+`QA_LARGE_FST=<path>`.
 ```
 
 ## CI

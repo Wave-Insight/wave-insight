@@ -48,6 +48,9 @@ pub struct SignalStructProps {
     /// A signal was clicked: its hierarchical path.
     #[prop_or_default]
     pub signaladd: Callback<String>,
+    /// A signal row asked for its context menu.
+    #[prop_or_default]
+    pub onrowcontext: Callback<crate::module_struct::RowContext>,
 }
 
 pub struct SignalStruct {
@@ -233,7 +236,8 @@ impl Component for SignalStruct {
                             name={signal.display_name()}
                             width={signal.width}
                             path={signal.path.clone()}
-                            onclick={link.callback(Msg::GetClick)}/>
+                            onclick={link.callback(Msg::GetClick)}
+                            onrowcontext={ctx.props().onrowcontext.clone()}/>
                     }})
                 }
                 {

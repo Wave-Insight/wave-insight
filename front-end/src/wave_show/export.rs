@@ -1,7 +1,8 @@
 //! Exporting the values of wave rows as a downloaded CSV/TXT file.
 //!
-//! Two shapes, both produced from the *decoded* histories the renderer already
-//! caches ([`DecodedSignal`]):
+//! Two shapes, both produced from the whole decoded history of the rows (the
+//! drawing path uses bounded windows instead; the export decodes the history it
+//! needs and refuses a trace that is too dense, see `WaveShow::decoded_for`):
 //!
 //! * one row — `time,value` CSV (or `<time> <value>` TXT), one line per change;
 //! * every row — long format `time,signal,value`, produced by a k-way merge of
@@ -20,7 +21,7 @@ use std::collections::BinaryHeap;
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
-use wave_insight_lib::waveform::{Change, DecodedSignal, WaveValue};
+use wave_insight_lib::waveform::{Change, WaveValue};
 
 use crate::nav::{value_text, ValueFormat};
 
@@ -573,18 +574,6 @@ pub fn dump_stem(waveform: Option<&wave_insight_lib::waveform::Waveform>) -> Str
     } else {
         root.to_string()
     }
-}
-
-/// A decoded history for one row, borrowing the cached handle when the
-/// renderer already decoded it.
-///
-/// Kept here (and not in the component) so the "cached or decode" rule has one
-/// name; the caller passes the handle the renderer holds.
-pub fn decoded_or(
-    cached: Option<&DecodedSignal>,
-    decode: impl FnOnce() -> Option<DecodedSignal>,
-) -> Option<DecodedSignal> {
-    cached.cloned().or_else(decode)
 }
 
 #[cfg(test)]

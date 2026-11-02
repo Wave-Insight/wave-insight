@@ -11,6 +11,8 @@ pub use file::{FileLoad, LoadReport};
 #[cfg(feature = "tauri")]
 pub use filelist::current_webview;
 #[cfg(feature = "tauri")]
+pub use filelist::dump_bytes;
+#[cfg(feature = "tauri")]
 pub use filelist::invoke;
 #[cfg(feature = "tauri")]
 pub use filelist::FileList;

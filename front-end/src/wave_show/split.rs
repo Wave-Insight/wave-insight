@@ -21,7 +21,8 @@ use super::canvas;
 use super::geometry::{visible_rows, View};
 use super::memory;
 use super::time::build_axis;
-use super::util::signal_things::{derive_bit, SignalThings};
+use super::util::signal_things::SignalThings;
+use super::windowed::{self, WindowRequest};
 
 #[derive(Debug, Properties, PartialEq)]
 pub struct SplitPaneProps {
@@ -352,9 +353,13 @@ impl SplitPane {
         // the same virtualized window the left pane uses: only the rows that
         // intersect the surface are drawn/decoded
         let (draw, fetch) = visible_rows(self.scroll_top, height, rows);
-        self.decode_pending(fetch);
-
         let view = self.effective_view(width);
+        // Wave 13: one bounded window fetch for the visible time range
+        self.decode_pending(fetch, view, width);
+        // the row windows are this pane's drawing cache: keep them inside the
+        // dump's share of the global budget
+        let budget = memory::per_dump_share(memory::dump_handles(&self.store).len());
+        self.signal_things.trim_windows(draw.clone(), budget);
         let axis = build_axis(view.x_axis, view.size, width);
         let visible: Vec<(usize, &super::util::signal_things::SignalItem)> = (draw.start..draw.end)
             .filter_map(|row| self.signal_things.iter().nth(row).map(|item| (row, item)))
@@ -493,25 +498,50 @@ impl SplitPane {
         )
     }
 
-    /// Decode the rows that are (or are about to be) on screen, in one pass.
-    fn decode_pending(&mut self, fetch: std::ops::Range<usize>) {
-        let Some(waveform) = self.waveform.as_ref().map(|handle| handle.waveform()) else {
+    /// Fetch the bounded window that covers the pane's visible time range for
+    /// the rows that are (or are about to be) on screen.
+    ///
+    /// Same bounded path as the left pane: the visible range plus a margin, a
+    /// per-signal cap derived from the surface width, and no whole-history
+    /// materialisation. A row whose cached window still covers the view is not
+    /// fetched again (a small pan is free).
+    fn decode_pending(&mut self, fetch: std::ops::Range<usize>, view: View, width: f64) {
+        let Some(handle) = self.waveform.clone() else {
             return;
         };
-        let pending = self.signal_things.pending(fetch);
-        if pending.is_empty() {
+        let waveform = handle.waveform();
+        let req = WindowRequest::for_view(view, width);
+        let mut rows: Vec<usize> = Vec::new();
+        let mut signals: Vec<usize> = Vec::new();
+        for row in fetch {
+            let Some(item) = self.signal_things.iter().nth(row) else {
+                break;
+            };
+            let Some(index) = item.index else {
+                continue;
+            };
+            if !windowed::needs_fetch(item.values.cached(), req) {
+                continue;
+            }
+            rows.push(row);
+            signals.push(index);
+        }
+        if rows.is_empty() {
             return;
         }
-        let indices: Vec<usize> = pending.iter().map(|(_, index)| *index).collect();
-        if let Ok(decoded) = waveform.decoded_changes_many(&indices) {
-            for ((row, _), handle) in pending.into_iter().zip(decoded) {
-                let bit = self.signal_things.iter().nth(row).and_then(|item| item.bit);
-                match bit {
-                    Some(bit) => self
-                        .signal_things
-                        .set_backend(row, derive_bit(&handle, bit as usize)),
-                    None => self.signal_things.set_backend(row, handle),
-                }
+        let Ok(fetched) = windowed::fetch(waveform, &signals, req) else {
+            return;
+        };
+        for (row, window) in rows.into_iter().zip(fetched) {
+            let Some(window) = window else {
+                continue;
+            };
+            let bit = self.signal_things.iter().nth(row).and_then(|item| item.bit);
+            match bit {
+                Some(bit) => self
+                    .signal_things
+                    .set_window(row, windowed::derive_bit_window(&window, bit as usize)),
+                None => self.signal_things.set_window(row, window),
             }
         }
     }

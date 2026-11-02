@@ -387,20 +387,17 @@ html, body {
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1;
-  opacity: 0;
-  transition: opacity 0.12s ease;
+  /* always visible: the Wave 12 build hid it on hover and the user never found
+     the bulk-add flow */
+  opacity: 1;
+  color: var(--text-1);
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .tree-add::before { content: "+"; }
 
-.tree-row:hover .tree-add,
-.tree-row.selected .tree-add,
-.tree-add:focus-visible {
-  opacity: 1;
-}
-
 .tree-add:hover {
-  background: var(--bg-4);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
@@ -430,6 +427,154 @@ html, body {
 .tree-add-selected:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+/* Wave 13: bulk-add discoverability - a sticky selection bar, an always-on
+   select-all control, and the right-click row menu. */
+.tree-select-all {
+  appearance: none;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  border-radius: var(--radius-sm);
+  padding: 1px 7px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: none;
+}
+
+.tree-select-all:hover {
+  color: var(--text-0);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.tree-add-selected.over-cap {
+  color: var(--danger, #e5534b);
+  border-color: var(--danger, #e5534b);
+  opacity: 0.8;
+}
+
+/* the sticky "N signals selected" bar above the module tree */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent-line);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-0);
+}
+
+.bulk-count {
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.bulk-add,
+.bulk-clear {
+  appearance: none;
+  border: 1px solid var(--accent-line);
+  background: var(--bg-1);
+  color: var(--text-0);
+  border-radius: var(--radius-sm);
+  padding: 1px 8px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bulk-add:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-0, #101418);
+}
+
+.bulk-clear {
+  border-color: var(--line);
+  color: var(--text-1);
+  font-weight: 400;
+}
+
+.bulk-clear:hover {
+  color: var(--text-0);
+  border-color: var(--accent-line);
+}
+
+.bulk-add[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.bulk-hint {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* the right-click row menu (fixed, opened at the pointer) */
+.row-menu-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+}
+
+.row-menu {
+  position: fixed;
+  z-index: 71;
+  min-width: 230px;
+  max-width: 360px;
+  padding: 4px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.row-menu-item {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-0);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.row-menu-item:hover:not(:disabled),
+.row-menu-item:focus-visible {
+  background: var(--accent-soft);
+  color: var(--text-0);
+  outline: none;
+}
+
+.row-menu-item:disabled {
+  color: var(--text-2);
+  cursor: default;
+}
+
+.row-menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--line);
 }
 
 .tree-folder { color: var(--accent); flex: 0 0 auto; }

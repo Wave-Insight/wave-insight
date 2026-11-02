@@ -3,12 +3,14 @@
 Engineers open waveform dumps that are routinely hundreds of megabytes and
 sometimes several gigabytes. Memory is the first-order constraint of a wave
 viewer: a tool that crashes on a large dump is not usable for the job it exists
-for. This note records the current model, what Wave 12 changes, and the two
-honest paths to true memory-mapped access (desktop native backend, browser
-worker with a lazy byte source).
+for. This note records the current model, what Waves 12-13 change (the footprint work
+and the bounded windowed renderer), and the two honest paths to true
+memory-mapped access (desktop native backend, browser worker with a lazy byte
+source).
 
-Status: **current model documented + footprint work in Wave 12; native mmap
-backend is the next architectural step.**
+Status: **current model documented; footprint work (Wave 12) and bounded windowed
+rendering (Wave 13) are in; the native mmap backend is the next architectural
+step.**
 
 ## 1. Why it is hard in this architecture
 
@@ -34,7 +36,7 @@ The desktop build embeds exactly the same wasm bundle in a Tauri webview.
   come the hierarchy (path strings, one per signal), the packed change storage
   and the decoded cache (historically 64 MiB per open dump).
 
-## 2. What Wave 12 does (footprint, not architecture)
+## 2. What Waves 12-13 do (footprint and bounded decode, not architecture)
 
 1. **Measure, then fix**: a memory readout (`__waveDebug.memory = {
    wasmBytes, fileBytes, decodedBytes, budget }`) and a status chip; measured
@@ -53,10 +55,29 @@ The desktop build embeds exactly the same wasm bundle in a Tauri webview.
    footprint cannot fit the wasm budget is refused with a message that says what
    to do (use the desktop build once it has the native backend, convert the dump
    to FST, or split it) - never an allocator abort.
+6. **Bounded windowed decode (Wave 13)**: the renderer no longer materialises a
+   row's full history. It calls `window_changes_many` for a capped window (one
+   stream pass for all visible rows, a fair per-row cap of roughly one change per
+   pixel, early exit) and keeps the windows in a per-row cache inside the global
+   64 MiB budget.
 
 These make today's large-but-finite dumps work and turn the cliff into a
 message. They do not remove the fundamental limit: the browser build still keeps
-the whole file in wasm memory.
+the whole file in wasm memory - but a drawn row costs a window now, not a full
+history.
+
+### 2b. Why windowing was the real fix
+
+The Wave 12 work reduced the footprint of a load; it did not stop the renderer
+from materialising the complete change history of every visible row. Dense
+*visible* rows, not file size, were the trigger: a real 97.5 MiB / 3,025-signal /
+58M-change FST loaded and scrolled inside the budget, while one visible
+10M-change row decoded 229 MB and grew the wasm by ~0.5 GB per row (a handful of
+those is the user's 3+ GB crash). With `window_changes_many` a drawn row decodes
+only the changes in the visible time window plus a small `before` prefix, so the
+cost is bounded by the pixels on screen. The `window_many` benchmark shows the
+difference: 2.33 ms for eight rows over the full trace, against 99.6 ms for the
+full-history decode of the same rows (which also materialises them).
 
 ## 3. Desktop: native backend with a memory map
 
@@ -110,7 +131,9 @@ first.
   it over VCD for very large dumps.
 - The browser budget is about the *sum* of open dumps; keep one or two dumps
   open in the browser and use the desktop build for multi-GB sessions.
-- The memory readout in the status bar/debug hook is the ground truth: if a
+- Dense rows are bounded by the window now, but a very wide window or many
+  simultaneously visible dense rows still consume the soft 64 MiB decode budget;
+  the memory readout in the status bar/debug hook is the ground truth: if a
   planned session exceeds it, convert or switch build, do not gamble.
 
 ## 6. Verification
@@ -118,7 +141,12 @@ first.
 - Generated large dumps (30/60/120 MB VCD) loaded through the real app in the QA
   matrix: load-or-actionable-refusal, the memory readout within budget, memory
   released on close, split counts both dumps.
-- Library unit tests/benches for the accounting and interning; the byte-source
-  abstraction keeps the browser path byte-identical.
+- Library unit tests/benches for the accounting and interning, plus the
+  `window_many` benchmark comparing the capped path with the full-history decode;
+  the byte-source abstraction keeps the browser path byte-identical.
+- The `denseDump` QA scenario: dense VCD proxy plus an opt-in real FST
+  (`QA_LARGE_FST=<path>`), asserting that a visible dense row decodes only a
+  bounded window, that zoom cycles do not grow the decoded history/wasm and that
+  a second dense row does not double the history.
 - A native test for the future mmap backend (open a temp file with memmap2,
   answer a window query, drop it) before any UI wiring.

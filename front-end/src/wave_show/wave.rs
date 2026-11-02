@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wave_insight_lib::waveform::{DecodedSignal, TimeRange};
+use wave_insight_lib::waveform::{Change, DecodedSignal, TimeRange};
 use yew::prelude::*;
 
 use crate::state::DumpHandle;
@@ -23,6 +23,7 @@ use super::settings::Settings;
 use super::signal::SignalName;
 use super::time::{build_axis, Time as TimeBar};
 use super::util::signal_things::{derive_bit, RowValues, SignalItem, SignalThings};
+use super::windowed::{self, WindowRequest};
 
 /// Rows around the viewport that are kept decoded once they were shown, so a
 /// scroll back and forth does not decode again. In row units.
@@ -34,6 +35,12 @@ const KEEP_ROWS: usize = geometry::PREFETCH_ROWS * 4;
 /// Rows outside the viewport that are rendered into the DOM name column, so a
 /// fast scroll does not pop.
 const NAME_OVERSCAN: usize = 4;
+/// Change budget of one export row / one value-search row.
+///
+/// Drawing is windowed, but export and find are whole-history operations: they
+/// are refused with an actionable message instead of materialising a history
+/// that would not fit in the wasm memory.
+const HISTORY_CHANGE_LIMIT: usize = 1_000_000;
 /// Width of the label column (signal name + cursor value), in css pixels. Also
 /// what a double click on the column's grip restores. Must agree with
 /// `--names-w` in `styles.css`: the inline style this component writes always
@@ -223,8 +230,11 @@ pub struct WaveShow {
 
     /// what the last `view` was measured with, so `rendered` can notice a moved layout
     used: RefCell<Metrics>,
-    /// rows that were decoded by the last redraw, for the debug hook
+    /// rows whose window was fetched by the last redraw, for the debug hook
     last_decoded: usize,
+    /// bytes the cached row windows hold (this pane's drawing cache, budgeted
+    /// through the global decode budget)
+    window_bytes: usize,
     draws: u64,
 
     /// the listeners are created once and dropped in `destroy`; forgetting them
@@ -298,6 +308,7 @@ impl Component for WaveShow {
 
             used: RefCell::new(Metrics::default()),
             last_decoded: 0,
+            window_bytes: 0,
             draws: 0,
             names_w: DEFAULT_NAMES_W,
             names_drag: None,
@@ -1041,15 +1052,14 @@ impl WaveShow {
             selected
         };
         let current = self.cursors.one.unwrap_or(-1).max(0) as Time;
+        // how far outside the window one bounded fetch reaches for a row whose
+        // cached window does not contain the cursor
+        let reach = (self.view.time_span(metrics.surface_w).ceil() as u64)
+            .max(1)
+            .saturating_mul(4);
         let mut best: Option<Time> = None;
         for row in rows {
-            let Some(item) = self.signal_things.iter().nth(row) else {
-                continue;
-            };
-            let RowValues::Backend(decoded) = &item.values else {
-                continue;
-            };
-            let changes = decoded.changes();
+            let changes = self.near_changes(row, current, reach);
             let candidate = if direction > 0 {
                 let index = changes.partition_point(|(time, _)| *time <= current);
                 changes.get(index).map(|(time, _)| *time)
@@ -1207,26 +1217,49 @@ impl WaveShow {
         }
     }
 
-    /// The decoded history of one row: the renderer's cache when it has one,
-    /// otherwise a decode of the dump signal (which also fills the cache, so a
-    /// second export of the same row is free).
+    /// The whole decoded history of one row, for an export or a value search.
+    ///
+    /// Drawing is windowed now; export/find are user-initiated whole-history
+    /// operations, so they are *bounded* here: a dense trace that would
+    /// materialise more than `HISTORY_CHANGE_LIMIT` changes is refused with an
+    /// actionable message instead of building a multi-hundred-MB vector and
+    /// aborting the tab.
     ///
     /// An expanded bit row exports the bit, not its parent bus: the derived
     /// history is the one the row draws.
-    fn decoded_for(&self, index: usize) -> Option<DecodedSignal> {
-        let item = self.signal_things.iter().nth(index)?;
-        let cached = match &item.values {
-            RowValues::Backend(decoded) => Some(decoded),
-            RowValues::Empty => None,
-        };
-        export::decoded_or(cached, || {
-            let waveform = self.waveform.as_ref()?.waveform();
-            let signal = item.index?;
-            let decoded = waveform.decoded_changes(signal).ok()?;
-            Some(match item.bit {
-                Some(bit) => derive_bit(&decoded, bit as usize),
-                None => decoded,
-            })
+    fn decoded_for(&self, index: usize) -> Result<DecodedSignal, String> {
+        let item = self
+            .signal_things
+            .iter()
+            .nth(index)
+            .ok_or_else(|| "the row is gone — open the settings again".to_string())?;
+        let waveform = self
+            .waveform
+            .as_ref()
+            .map(|handle| handle.waveform())
+            .ok_or_else(|| "no dump open — load a waveform before exporting".to_string())?;
+        let signal = item.index.ok_or_else(|| {
+            format!(
+                "{}: no values — the signal is not in the open dump",
+                item.name
+            )
+        })?;
+        // count first: the cap tells whether a full decode would be too dense
+        let probe = waveform
+            .window_changes_many(&[signal], 0, None, HISTORY_CHANGE_LIMIT)
+            .map_err(|error| error.message())?;
+        if probe.first().is_some_and(|row| row.capped) {
+            return Err(format!(
+                "{}: more than {} value changes — too dense for an in-browser whole-history operation; narrow the dump or use the desktop build",
+                item.name, HISTORY_CHANGE_LIMIT
+            ));
+        }
+        let decoded = waveform
+            .decoded_changes(signal)
+            .map_err(|error| error.message())?;
+        Ok(match item.bit {
+            Some(bit) => derive_bit(&decoded, bit as usize),
+            None => decoded,
         })
     }
 
@@ -1258,9 +1291,7 @@ impl WaveShow {
                 let name = item.name.clone();
                 let row_format = ValueFormat::from_setting(&item.setting);
                 let width = item.format_width();
-                let decoded = self.decoded_for(index).ok_or_else(|| {
-                    format!("{name}: no decoded values — the signal is not in the open dump")
-                })?;
+                let decoded = self.decoded_for(index)?;
                 let row = export::ExportRow {
                     name: name.clone(),
                     format: row_format,
@@ -1294,9 +1325,12 @@ impl WaveShow {
                 let mut decoded_rows: Vec<DecodedSignal> = Vec::new();
                 let mut meta: Vec<(String, ValueFormat, usize)> = Vec::new();
                 for index in 0..self.signal_things.len() {
-                    let Some(decoded) = self.decoded_for(index) else {
+                    // a row that is not in the dump contributes nothing; a
+                    // too-dense trace is a hard, actionable error
+                    if self.signal_things[index].index.is_none() {
                         continue;
-                    };
+                    }
+                    let decoded = self.decoded_for(index)?;
                     let item = &self.signal_things[index];
                     meta.push((
                         item.name.clone(),
@@ -1377,11 +1411,49 @@ impl WaveShow {
         self.signal_things
             .iter()
             .filter_map(|item| match &item.values {
-                RowValues::Backend(decoded) => decoded.span().map(|(_, end)| end as i64),
+                RowValues::Window(window) => window.span_end().map(|end| end as i64),
                 RowValues::Empty => None,
             })
             .max()
             .unwrap_or(0)
+    }
+
+    /// Changes of one row around `current`, for the "next transition" walk.
+    ///
+    /// The row's cached window answers when it contains the cursor (the common
+    /// case: the cursor is on screen). Outside it, one *bounded* window fetch is
+    /// made for that row, so the walk never needs the whole history of a dense
+    /// trace. The fetch is capped by the surface width like a redraw.
+    fn near_changes(&self, row: usize, current: Time, reach: Time) -> Vec<Change> {
+        let Some(item) = self.signal_things.iter().nth(row) else {
+            return Vec::new();
+        };
+        if let Some(window) = item.values.cached() {
+            if window.req.start <= current && window.req.end >= current {
+                return window.changes().to_vec();
+            }
+        }
+        let (Some(index), Some(handle)) = (item.index, self.waveform.as_ref()) else {
+            return Vec::new();
+        };
+        // a row whose values are not cached yet still has to be able to walk:
+        // ask for a bounded window around the cursor
+        let width = self.measure().surface_w;
+        let req = WindowRequest {
+            start: current.saturating_sub(reach),
+            end: current.saturating_add(reach),
+            visible_start: current.saturating_sub(reach),
+            visible_end: current.saturating_add(reach),
+            cap: super::windowed::window_cap(width),
+        };
+        match windowed::fetch(handle.waveform(), &[index], req) {
+            Ok(mut windows) => windows
+                .pop()
+                .flatten()
+                .map(|window| window.changes().to_vec())
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
     }
 
     /// Indices of the rows the settings dialog is open for; empty when closed.
@@ -1422,68 +1494,83 @@ impl WaveShow {
         }
     }
 
-    /// Decode the rows that are (or are about to be) on screen, in one call.
+    /// Fetch the window that covers the visible time range for the rows that
+    /// are (or are about to be) on screen.
     ///
-    /// `decoded_changes_many` reads a whole set of signals per pass over the
-    /// body, so asking for the visible rows one by one would re-read the dump
-    /// once per row. Rows that are already decoded are not touched.
-    fn decode_pending(&mut self, fetch: std::ops::Range<usize>) {
-        let Some(waveform) = self.waveform.as_ref().map(|waveform| waveform.waveform()) else {
+    /// One bounded backend pass for all of them (`window_changes_many`): the
+    /// visible range plus a margin, with a per-signal cap derived from the
+    /// surface width. A dense signal therefore costs a few changes per pixel
+    /// column instead of its whole history, which is what keeps the memory
+    /// proportional to the pixels and not to the dump. A row whose cached window
+    /// still covers the view (a small pan) is not fetched again.
+    fn decode_pending(&mut self, fetch: std::ops::Range<usize>, width: f64) {
+        // clone the handle so the backend borrow does not block the cache writes
+        let Some(handle) = self.waveform.clone() else {
             self.last_decoded = 0;
             return;
         };
-        let pending = self.signal_things.pending(fetch);
-        if pending.is_empty() {
+        let waveform = handle.waveform();
+        let req = WindowRequest::for_view(self.view, width);
+        let mut rows: Vec<usize> = Vec::new();
+        let mut signals: Vec<usize> = Vec::new();
+        for row in fetch {
+            let Some(item) = self.signal_things.iter().nth(row) else {
+                break;
+            };
+            let Some(index) = item.index else {
+                continue;
+            };
+            if !windowed::needs_fetch(item.values.cached(), req) {
+                continue;
+            }
+            rows.push(row);
+            signals.push(index);
+        }
+        if rows.is_empty() {
             self.last_decoded = 0;
             return;
         }
-        let indices: Vec<usize> = pending.iter().map(|(_, index)| *index).collect();
-        match waveform.decoded_changes_many(&indices) {
-            Ok(decoded) => {
-                for ((row, _), handle) in pending.into_iter().zip(decoded) {
-                    // an expanded bit is one bit of its parent's history: derive
-                    // the bit instead of asking the backend for a signal that
-                    // does not exist in the dump
-                    let bit = self.signal_things.iter().nth(row).and_then(|item| item.bit);
-                    match bit {
-                        Some(bit) => {
-                            let derived = derive_bit(&handle, bit as usize);
-                            self.signal_things.set_backend(row, derived);
-                        }
-                        None => self.signal_things.set_backend(row, handle),
-                    }
-                }
-                self.last_decoded = indices.len();
-            }
+        let fetched = match windowed::fetch(waveform, &signals, req) {
+            Ok(fetched) => fetched,
             Err(_error) => {
-                //the rows keep their "no data" line; a later redraw retries
+                //the rows keep their previous window; a later redraw retries
                 self.last_decoded = 0;
+                return;
             }
+        };
+        let mut decoded = 0usize;
+        for (row, window) in rows.into_iter().zip(fetched) {
+            let Some(window) = window else {
+                continue;
+            };
+            // an expanded bit is one bit of its parent's window: derive the bit
+            // instead of asking the backend for a signal the dump does not have
+            let bit = self.signal_things.iter().nth(row).and_then(|item| item.bit);
+            match bit {
+                Some(bit) => self
+                    .signal_things
+                    .set_window(row, windowed::derive_bit_window(&window, bit as usize)),
+                None => self.signal_things.set_window(row, window),
+            }
+            decoded += 1;
         }
+        self.last_decoded = decoded;
     }
 
-    /// Give the memory back when the decoded histories grow past the budget.
+    /// Keep the row window cache inside the budget.
     ///
-    /// Two steps, because the budget is one number for the whole tab:
-    ///
-    /// 1. this pane's own share of the budget: rows comfortably outside the
-    ///    viewport drop their handle and the backend cache entry (scrolling back
-    ///    re-decodes them in one batch);
-    /// 2. the cross-dump part ([~memory::trim~]): dumps no pane draws give back
-    ///    their decoded histories, and their parsed bodies when that is still
-    ///    not enough. Nothing a pane draws is touched here.
+    /// Drawing no longer fills the backend's decode cache: a row holds one
+    /// bounded window (`windowed::RowWindow`). The budget is still one number for
+    /// the whole tab: rows outside the viewport give their window back first,
+    /// then the rows at the edges of the visible range, and dumps no pane draws
+    /// give their decoded data back through `memory::trim`.
     fn trim_cache(&mut self, draw: std::ops::Range<usize>) {
-        if let Some(handle) = self.waveform.as_ref() {
-            let waveform = handle.waveform();
-            let open_dumps = memory::dump_handles(&self.store).len();
-            if waveform.cache_stats().decoded_bytes() > memory::per_dump_share(open_dumps) {
-                let rows = self.signal_things.len();
-                let keep = draw.start.saturating_sub(KEEP_ROWS)..(draw.end + KEEP_ROWS).min(rows);
-                for index in self.signal_things.drop_outside(keep) {
-                    let _ = waveform.unload_signal(index);
-                }
-            }
-        }
+        let rows = self.signal_things.len();
+        let keep = draw.start.saturating_sub(KEEP_ROWS)..(draw.end + KEEP_ROWS).min(rows);
+        self.signal_things.drop_outside(keep);
+        let open_dumps = memory::dump_handles(&self.store).len();
+        let budget = memory::per_dump_share(open_dumps);
+        self.window_bytes = self.signal_things.trim_windows(draw, budget);
         // the cross-dump budget: what no pane draws is given back
         let _ = memory::trim(&self.store);
     }
@@ -1501,7 +1588,7 @@ impl WaveShow {
         let rows = self.signal_things.len();
         let (draw, fetch) = visible_rows(self.scroll_top, metrics.surface_h, rows);
         let decode_started = js_sys::Date::now();
-        self.decode_pending(fetch);
+        self.decode_pending(fetch, metrics.surface_w);
         let decode_ms = js_sys::Date::now() - decode_started;
         if self.last_decoded > 0 && (self.cursors.one.is_some() || self.cursors.two.is_some()) {
             // one render is needed for the value column to show the new decode
@@ -1545,11 +1632,18 @@ impl WaveShow {
         };
         let stats = canvas::paint(&canvas, &frame);
         self.draws += 1;
-        let decoded_bytes = self
+        // drawing caches bounded windows now; the backend's own decode cache is
+        // only used by export/find, so the readout reports both
+        let backend_bytes = self
             .waveform
             .as_ref()
             .map(|waveform| waveform.waveform().cache_stats().decoded_bytes())
             .unwrap_or(0);
+        let decoded_bytes = backend_bytes.saturating_add(self.window_bytes);
+        // the readout reports the number drawing is actually budgeted by: the
+        // backend cache (export/find) plus this pane's cached row windows
+        let mut memory = memory::stats(&self.store);
+        memory.decoded_bytes = decoded_bytes;
         canvas::publish_debug(&canvas::DebugInfo {
             redraw_ms: js_sys::Date::now() - redraw_started,
             decode_ms,
@@ -1564,7 +1658,7 @@ impl WaveShow {
             cursor2: cursors.two,
             view: self.view,
             trace_end: self.time_range.map(|range| range.end as i64),
-            memory: memory::stats(&self.store),
+            memory,
         });
     }
 

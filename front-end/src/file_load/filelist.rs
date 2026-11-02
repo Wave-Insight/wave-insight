@@ -161,12 +161,20 @@ impl Component for FileList {
                         let exit = ctx.props().onexit.clone();
                         let file = name.clone();
                         spawn_local(async move {
-                            // The command returns the whole file: there is no
-                            // slice to report progress for (the backend command
-                            // hands back one buffer), so the dialog gets the
-                            // size guard and the parse line but no percentage.
-                            let bytes: Vec<u8> =
-                                from_value(invoke("choose_vcd", args).await).unwrap_or_default();
+                            // The command returns the whole file as a *raw* IPC
+                            // body (tauri::ipc::Response): invoke resolves to an
+                            // ArrayBuffer and dump_bytes copies it into a Vec<u8>
+                            // once. There is no slice to report progress for (the
+                            // backend hands back one buffer), so the dialog gets
+                            // the size guard and the parse line but no percentage.
+                            let raw = invoke("choose_vcd", args).await;
+                            let bytes = match dump_bytes(&raw) {
+                                Some(bytes) => bytes,
+                                None => {
+                                    onerror.emit(format!("{file}: the dump could not be read"));
+                                    return;
+                                }
+                            };
                             if bytes.is_empty() {
                                 onerror.emit(format!("{file}: the dump could not be read"));
                                 return;
@@ -322,4 +330,32 @@ impl Component for FileList {
 #[derive(Serialize, Deserialize)]
 struct GetFileListArgs {
     name: Vec<String>,
+}
+
+/// Turn the raw result of a dump command into bytes.
+///
+/// choose_vcd / choose_vcd_absolute answer with tauri::ipc::Response, i.e. an
+/// InvokeResponseBody::Raw: the webview's invoke resolves to an ArrayBuffer, so
+/// this is the single copy into wasm memory (Uint8Array::to_vec allocates the
+/// Vec<u8> and copies once). That replaces the old path, where the command
+/// returned Vec<u8> and Tauri's default IPC serialized it to a JSON array of
+/// numbers (a 100 MB dump became hundreds of MB of JSON plus a 100M-element JS
+/// array in the webview).
+///
+/// A Uint8Array view is accepted too (defensive: another transport could hand
+/// one over), and the legacy JSON number-array shape is kept as a fallback so a
+/// stale dist still opens dumps - but that fallback is the slow path this
+/// change exists to remove.
+pub fn dump_bytes(value: &JsValue) -> Option<Vec<u8>> {
+    if value.is_instance_of::<js_sys::ArrayBuffer>() {
+        return Some(js_sys::Uint8Array::new(value).to_vec());
+    }
+    if value.is_instance_of::<js_sys::Uint8Array>() {
+        let view: &js_sys::Uint8Array = value.unchecked_ref();
+        return Some(view.to_vec());
+    }
+    if js_sys::Array::is_array(value) {
+        return from_value::<Vec<u8>>(value.clone()).ok();
+    }
+    None
 }

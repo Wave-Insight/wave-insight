@@ -61,12 +61,20 @@ run `trunk build` once in `front-end/` or create the same placeholder:
 mkdir -p front-end/dist && printf '<!doctype html><title>placeholder</title>\n' > front-end/dist/index.html
 ```
 
+With that placeholder all eight CI jobs (Rust test / test-front-end /
+test-release / fmt / clippy / build / deploy / qa, plus the audit workflow) are
+green on `main` again. The QA job uses a second, root-relative `dist-qa` bundle
+(the Pages bundle uses `--public-url /wave-insight/`, so serving it at `/` 404s
+every asset) and Node 22, and the release-profile test job caught a corrupt-FST
+length that made the FST reader allocate 5e16 bytes - the FST validator now
+rejects such files at open (see the changelog).
+
 ### benchmarks
 
 The waveform and language-server hot paths have criterion benchmarks under
-`wave-insight-lib/benches/`: `waveform.rs` (six groups - `open`,
-`time_range_hint`, `decode`, `value_at`, `window`, `render` - twenty
-benchmarks) and `lsp.rs` (two groups - `design` and `lsp` - position queries
+`wave-insight-lib/benches/`: `waveform.rs` (seven groups - `open`,
+`time_range_hint`, `decode`, `value_at`, `window`, `window_many`, `render` -
+twenty-three benchmarks) and `lsp.rs` (two groups - `design` and `lsp` - position queries
 **and completion** against a synthetic 100-module / ~3.5k-signal design). Large
 dumps are generated in memory (a ~1.7 MB / 100k-change and an ~8.3 MB /
 500k-change VCD), so no multi-megabyte dump is committed:
@@ -93,7 +101,10 @@ completion group - `lsp/completion_plain` 101.04 us, `completion_prefix`
 29.83 us, `completion_member` 36.45 us. On the waveform side: opening the
 8.3 MB synthetic VCD 1.82 ms, the first `time_range_hint` call 0.59-0.66 ms,
 `decode/single` 11.0 ms, the large streamed window 41.5 ms and
-`render/row_hex_8bit` 244 us; the remaining documented ranges are unchanged.
+`render/row_hex_8bit` 244 us. The bounded drawing path added in Wave 13 is
+`window_many/full_trace_capped` at 2.33 ms for eight rows where the full-history
+decode of the same rows takes 99.6 ms - and it does not materialise the
+histories. The remaining documented ranges are unchanged.
 The span index built with each elaboration is why the position queries are in
 the microsecond range; their answers are byte-identical to the old scans
 (differential test at every fixture position).
@@ -120,8 +131,8 @@ a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
-and asserts the user-visible behaviour (the current matrix has **57 scenarios /
-503 assertions**; `--list` prints them). The full matrix is green with the R2
+and asserts the user-visible behaviour (the current matrix has **58 scenarios /
+524 assertions**; `--list` prints them). The full matrix is green with the R2
 layout rules required. The newest scenarios cover the generated/arrayed design
 tree in the sidebar, elaboration diagnostics reaching the editor and the top-bar
 chip, the TXT export matching the CSV for the same row, multi-dump tabs and the
@@ -148,8 +159,9 @@ runs an advisory smoke job (`empty,vcd,layout,layoutRules`) against the bundle t
 build job produced. The **full matrix** also runs in CI: `.github/workflows/qa.yml`
 builds the bundle with the CI wasm profile and runs `node qa/run.mjs --layout`
 every Monday (05:00 UTC) and on manual dispatch; it is advisory (it cannot block a
-merge) and uploads the screenshots and log when it fails. The suite's README
-explains the fixtures and how to add a scenario.
+merge) and uploads the screenshots and log when it fails. The suite needs **Node >= 22** (the CDP client uses the global `WebSocket`, which
+Node 20 lacks); the CI QA job runs Node 22 against a root-relative `dist-qa`
+bundle. The suite's README explains the fixtures and how to add a scenario.
 
 ### wasm version
 
@@ -204,7 +216,12 @@ The build runs `trunk build --features tauri` first (see `beforeBuildCommand` in
 repository's environment the desktop build is **compile-verified only**
 (`cargo check -p app`, `trunk build --features tauri`); opening the window,
 the IPC commands, drag-and-drop and `cargo tauri build` bundles are validated by
-the tag workflow on the real runners, not by a desktop runtime test here.
+the tag workflow on the real runners, not by a desktop runtime test here. The dump/source commands return `tauri::ipc::Response` (the raw
+body) instead of `Vec<u8>`, so a 100 MB dump crosses the IPC boundary as one
+`ArrayBuffer` and one copy into wasm - it used to be serialised as a JSON array
+of numbers (hundreds of MB of JSON, a 100M-element JS array and another wasm
+copy). This path only runs in the desktop build, so it is verified by compilation
+here and belongs to the next release's desktop test.
 
 ### dependency migrations
 
@@ -314,16 +331,19 @@ placed.
   the same selection behaviour) they always had.
 - **Bulk add**: in the module tree, Ctrl/Cmd+click toggles a scope in a
   multi-selection and Shift+click selects the visible range (selected rows are
-  marked `.tree-row.selected`/`aria-selected`); the Modules header shows an
-  **Add selected (N)** button (Ctrl/Cmd+Enter does the same) and each row's
-  **+** adds every signal in that scope. One batch adds them all: dedupe and the
-  remembered display settings apply, the row list updates once (500 rows = one
-  render), the status line says `added N signals (M already in the wave)`, and a
-  selection above the 2000-row cap is rejected with an error instead of a partial
-  add. Limits: the button is not disabled above the cap (it reports the error
-  when clicked), the selection is session-only and is cleared when the tree
-  rebuilds, bulk add does not move the inspector selection, and there is no
-  marquee or Shift+arrow selection yet.
+  marked `.tree-row.selected`/`aria-selected`). Every row also has an
+  always-visible add button, and a right-click (or Shift+F10) opens a row menu:
+  **Add all signals in this scope (N)**, **Add signal**, **Select for bulk add**,
+  **Select all visible (M)**, **Clear bulk selection**. The Modules header has
+  **Select all**, and once anything is selected a sticky **bulk bar** footer shows
+  "N signals selected" with **Add selected** and **Clear** plus the Ctrl/Shift
+  hint - it does not move the tree rows. One batch adds everything: dedupe and
+  the remembered display settings apply, the row list updates once (500 rows =
+  one render), the status line says `added N signals (M already in the wave)`,
+  and above the 2000-row cap the add buttons turn visibly over-cap and the action
+  reports the error instead of a partial add. Limits: the selection is
+  session-only and is cleared when the tree rebuilds, bulk add does not move the
+  inspector selection, and there is no marquee or Shift+arrow selection yet.
 - **Persistence**: the window layout (sidebar width, editor/wave ratio, sidebar
   visibility) and each signal's display settings (format, fixed point, analog,
   colour) are remembered in the browser's `localStorage` and restored on the next
@@ -357,14 +377,23 @@ file. What that means in practice:
   error, not an allocator abort). VCD and GHW keep the file bytes and materialise
   the whole trace body in wellen's packed form; FST streams its body and keeps
   only the header and time table. On top sit the hierarchy and the decoded
-  histories of the rows that are (or recently were) on screen.
+  windows of the rows that are (or recently were) on screen.
 - **Decode budget.** ONE global 64 MiB budget covers the decoded histories of
   every open dump and of the split pane (it used to be 64 MiB per pane). When it
   is exceeded, dumps that no pane draws give their decoded histories back first,
   then their parsed bodies (re-parsed on the next visit); a dump that is being
-  drawn is never evicted, so a drawn signal's history is effectively unbounded
-  and the budget is soft - `overBudget` in the readout says when that happens.
-  Closing a dump or the split frees its decoded data and parsed body immediately.
+  drawn is never evicted, so the window caches of drawn rows can push
+  `decodedBytes` over the budget - it is soft, and `overBudget` in the readout
+  says when that happens (a drawn row itself is bounded by its window, next
+  bullet). Closing a dump or the split frees its decoded data and parsed body
+  immediately.
+- **Windowed decode (the crash fix).** The renderer no longer materialises a
+  row's whole history: it asks `window_changes_many` for a capped window (one
+  stream pass, a fair per-row cap of roughly one change per pixel) and keeps a
+  per-row window cache inside the global budget. Dense *visible* rows were the
+  real blow-up trigger - a 97.5 MiB / 58M-change FST loaded and scrolled fine,
+  while one visible 10M-change row used to decode 229 MB and grow the wasm by
+  ~0.5 GB; with windows a drawn row is bounded by the window, not the trace.
 - **Pre-flight refusal.** Before a byte is read, the loader estimates the wasm
   memory a file needs (48 MB base + 3.2x file for VCD, 0.6x for FST, 2.0x for
   GHW) against a 1280 MiB policy cap and refuses with the numbers when it cannot
@@ -377,13 +406,19 @@ file. What that means in practice:
 - **Measured.** The footprint work cut the load peak by 31-44%: 34 MB -> 85.9 MB
   (was 137.7 MB), 139 MB -> 295.3 MB (was 521.8 MB), 349 MB -> 715.0 MB (was
   1033.9 MB). Hierarchy string interning cut hierarchy bytes by 58.3% on a
-  200k-signal design (78.8 MB -> 32.9 MB, 394 B -> 164 B per signal).
+  200k-signal design (78.8 MB -> 32.9 MB, 394 B -> 164 B per signal). The
+  windowed path benchmarks at 2.33 ms for eight rows over the full trace
+  (full-history decode of the same rows: 99.6 ms), and a dense row now stays
+  inside the decode budget instead of growing it by the full history.
 - **Honest limits.** The browser keeps the whole file for VCD/GHW (there is no
   mmap in the browser); wasm linear memory never shrinks, so a tab's high-water
-  mark is its real footprint even after closing dumps; a drawn signal's history is
-  not evicted; and wasm32 has a hard 4 GiB address space (a browser tab usually
-  dies well before that). Prefer FST over VCD for very large dumps, keep one or
-  two dumps open in the browser, and use the desktop build for multi-GB sessions.
+  mark is its real footprint even after closing dumps; a drawn row decodes only
+  a capped window, but that window plus the per-row cache still costs memory, so
+  an extremely wide window over a dense row can exceed the soft budget (the
+  `overBudget` flag says so); and wasm32 has a hard 4 GiB address space (a
+  browser tab usually dies well before that). Prefer FST over VCD for very large
+  dumps, keep one or two dumps open in the browser, and use the desktop build for
+  multi-GB sessions.
 - **Direction.** The desktop build can run the engine natively over a read-only
   memory map (`memmap2`) and send only rendered slices to the webview; the
   browser's analogue is a dedicated worker plus an OPFS lazy byte source. The
@@ -444,7 +479,8 @@ file. What that means in practice:
   header.
 * **Very large dumps.** See [Memory and very large dumps](#memory-and-very-large-dumps):
   the browser keeps the whole file for VCD/GHW, the 64 MiB decode budget is soft
-  (a drawn signal's history is not evicted) and wasm memory never shrinks. The
+  (a drawn row decodes a capped window, but window + cache still cost memory)
+  and wasm memory never shrinks. The
   loader still refuses files over 512 MB up front (and warns from 100 MB), and
   the memory pre-flight refuses a load whose estimated footprint will not fit
   the 1280 MiB policy cap - with numbers and advice instead of an allocator
@@ -482,7 +518,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 57 scenarios / 503 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
+- [x] browser QA suite moved into the repository (`qa/`, 58 scenarios / 524 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
@@ -498,7 +534,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] fast dump open: the VCD time range is found from the header plus a bounded tail scan instead of the whole body (~20x cheaper on the 8.3 MB benchmark)
 - [x] migration plans for yew 0.21 and Tauri 2 added under `docs/migrations/` (breaker lists, steps, verification)
 - [x] LSP/design position queries indexed: `textDocument/definition` answers in ~12 us on the synthetic 100-module design (byte-identical to the old scan, differential-tested) with a new `bench lsp` suite
-- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs and the split view, driver/load bit ranges in the hover and the inspector, editor completion, corruption recovery (truncated/flipped FST, header-truncated VCD, conflicting-width VCD) and the memory-first large-dump behaviour - 57 scenarios / 503 assertions
+- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs and the split view, driver/load bit ranges in the hover and the inspector, editor completion, corruption recovery (truncated/flipped FST, header-truncated VCD, conflicting-width VCD), the memory-first large-dump behaviour and the dense-row windowed-decode contract - 58 scenarios / 524 assertions
 - [x] multi-dump + split-view design note under `docs/design/multi-dump.md` (planned Wave 8)
 - [x] Tauri 2 migration: v2 config + capabilities, `__TAURI__.core` IPC and `onDragDropEvent` drag-and-drop, Linux webkit2gtk-4.1 prerequisites, CI on Ubuntu 24.04 (compile-verified; runtime and bundles are validated by the tag workflow)
 - [x] waveform hardening: a corrupt/truncated FST is rejected by a structural pre-parse validator instead of aborting the viewer; aliased signals stream under the requested variable index; deterministic VCD/FST fuzz and query-tier differential tests cover the entry points
@@ -520,6 +556,11 @@ Done in the next release (unreleased at the time of writing):
 - [x] library memory efficiency: hierarchy string interning (-58.3% hierarchy bytes, 394 -> 164 B/signal on 200k signals), lazy full paths, exact `memory_stats` accounting and the file-or-memory `ByteSource` trait
 - [x] the user-reported crash root cause fixed: a malformed VCD with one variable id declared at conflicting widths is rejected as Corrupt at open (wellen used to panic and trap the wasm); same-width aliasing stays legal
 - [x] design note `docs/design/large-files.md`: current memory model, why the browser has no mmap, the desktop native memory-mapped backend plan and the browser worker/OPFS option
+- [x] bounded windowed rendering (the 3+ GB dense-row crash fix): `window_changes_many` + `WindowedSignal` (one stream pass, fair per-pixel cap, O(rows*cap) memory) with a per-row window cache inside the global 64 MiB budget, plus the `window_many` benchmark (2.33 ms vs 99.6 ms full history for 8 rows) and the `denseDump` QA scenario
+- [x] FST validation hardening: internal counts (geometry max handle, blackouts, time-table items, frame/value-change handle counts, alias chains) are checked against the bytes present, so a corrupt alias-chain length is a `Corrupt` error instead of a 5e16-byte allocation
+- [x] desktop raw IPC: `choose_vcd`/`choose_vcd_absolute` return `tauri::ipc::Response` (one ArrayBuffer + one wasm copy) instead of `Vec<u8>` serialised as a JSON number array
+- [x] bulk-add discoverability: always-visible per-row add button, right-click/Shift+F10 row menu, Select all in the Modules head, sticky bulk bar (count/Add selected/Clear/Ctrl-Shift hint) that does not move the rows, and a visible over-cap state
+- [x] CI green again: the clippy job creates a `front-end/dist` placeholder on a clean checkout, the QA job builds a root-relative `dist-qa` bundle and uses Node 22, and the release test run exposed the corrupt-FST allocation path above
 
 Still open:
 

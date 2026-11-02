@@ -14,6 +14,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use tauri::ipc::Response;
+
 /// One row of the directory listing the open-file dialog shows.
 #[derive(serde::Serialize)]
 struct FileEntry {
@@ -100,17 +102,36 @@ fn get_file_list(name: Vec<String>) -> Vec<FileEntry> {
     ret
 }
 
-/// Read a dump and hand the bytes to the webview.
+/// Read a dump and hand the bytes to the webview as a raw IPC body.
+///
+/// The return type is deliberately `tauri::ipc::Response`, not `Vec<u8>`:
+/// Tauri's default IPC path serializes any `Serialize` value to JSON
+/// (`impl<T: Serialize> IpcResponse for T` -> `serde_json::to_string`), so a
+/// `Vec<u8>` becomes a JSON array of numbers - one number per byte, several
+/// bytes of JSON each. A 100 MB dump therefore becomes a ~300-400 MB JSON
+/// string in the native process and a 100M-element JS array in the webview
+/// (several hundred MB to >1 GB), which is the memory blow-up the desktop
+/// report describes.
+///
+/// `Response` carries an `InvokeResponseBody::Raw` instead: the webview's
+/// `invoke` resolves to an `ArrayBuffer` (see `tauri::ipc::channel`: the raw
+/// body is delivered as `new Uint8Array(...).buffer` / `response.arrayBuffer()`),
+/// so each side holds exactly one copy. The front end turns it into a
+/// `Vec<u8>` with one `Uint8Array::to_vec()` copy
+/// (`front-end/src/file_load/filelist.rs`).
 #[tauri::command]
-fn choose_vcd(name: Vec<String>) -> Result<Vec<u8>, String> {
+fn choose_vcd(name: Vec<String>) -> Result<Response, String> {
     let path = resolve(&name).map_err(|error| format!("{error}"))?;
-    read_bytes(&path)
+    read_bytes(&path).map(Response::new)
 }
 
 /// Read a dump by absolute path (drag and drop; a launch argument is planned).
+///
+/// Same raw-body contract as [`choose_vcd`]; the drag-and-drop path in
+/// `front-end/src/app.rs` decodes it with the same helper.
 #[tauri::command]
-fn choose_vcd_absolute(path: String) -> Result<Vec<u8>, String> {
-    read_bytes(Path::new(&path))
+fn choose_vcd_absolute(path: String) -> Result<Response, String> {
+    read_bytes(Path::new(&path)).map(Response::new)
 }
 
 /// Read a source file as text.

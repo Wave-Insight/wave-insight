@@ -14,3 +14,4 @@ mod split;
 mod time;
 mod util;
 mod wave;
+pub mod windowed;

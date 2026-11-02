@@ -110,6 +110,30 @@ pub fn find_value(store: &Store, query: &str, direction: Direction, width: f64) 
         ))));
         return;
     };
+    // A value search walks the whole history; on a dense trace that history can
+    // be hundreds of MB. Bound it first and refuse with an actionable message
+    // instead of materialising it: the same cap drawing uses, but for the whole
+    // trace rather than a window.
+    const SEARCH_CHANGE_LIMIT: usize = 1_000_000;
+    match waveform.window_changes_many(&[info.index()], 0, None, SEARCH_CHANGE_LIMIT) {
+        Ok(probe) => {
+            if probe.first().is_some_and(|window| window.capped) {
+                store.dispatch(Action::Status(Status::error(format!(
+                    "{}: more than {} value changes — too dense to search in the browser; narrow the dump or use the desktop build",
+                    row.name, SEARCH_CHANGE_LIMIT
+                ))));
+                return;
+            }
+        }
+        Err(error) => {
+            store.dispatch(Action::Status(Status::error(format!(
+                "{}: no values to search ({})",
+                row.name,
+                error.message()
+            ))));
+            return;
+        }
+    }
     let decoded = match waveform.decoded_changes(info.index()) {
         Ok(decoded) => decoded,
         Err(error) => {

@@ -48,6 +48,16 @@ pub fn signals_under_many(tree: &SidebarTree, paths: &[String]) -> Vec<String> {
     out
 }
 
+/// The scope a signal path lives in (`top.u_cpu.pc` -> `top.u_cpu`).
+///
+/// Used by the signal-row context menu: bulk add works on scopes, so
+/// "select for bulk add" on a signal selects its parent scope.
+pub fn parent_scope(path: &str) -> Option<String> {
+    path.rsplit_once('.')
+        .map(|(parent, _)| parent.to_string())
+        .filter(|parent| !parent.is_empty())
+}
+
 /// The visible rows between `anchor` and `target`, inclusive, in display order.
 ///
 /// Shift+click keeps the anchor (the last plain/ctrl click) so a second
@@ -170,6 +180,15 @@ mod tests {
                 "top.g[0].u_leaf.y"
             ]
         );
+    }
+
+    #[test]
+    fn a_signal_path_resolves_to_its_parent_scope() {
+        assert_eq!(parent_scope("top.u_cpu.pc").as_deref(), Some("top.u_cpu"));
+        assert_eq!(parent_scope("top.clk").as_deref(), Some("top"));
+        // a top-level name has no scope to select
+        assert_eq!(parent_scope("clk"), None);
+        assert_eq!(parent_scope(""), None);
     }
 
     #[test]
