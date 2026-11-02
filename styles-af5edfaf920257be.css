@@ -1046,6 +1046,52 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
 
 .file-strip { padding: 8px 10px; }
 
+/* ==========================================================================
+   file_load: reading a big dump (progress + cancel)
+   ========================================================================== */
+
+.file-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.file-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-progress-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.file-progress-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+
+.file-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 80ms linear;
+}
+
+.file-cancel {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
 .monaco-wrap { height: 100%; background: var(--bg-1); }
 
 .timebar-readout code {
@@ -1195,4 +1241,296 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
   color: var(--text-2);
   font-family: var(--font-mono);
   font-size: 11px;
+}
+/* ==========================================================================
+   keyboard focus and the accessible tab strip (a11y pass)
+   ========================================================================== */
+
+/* One focus ring for every interactive element. :focus-visible keeps it off
+   mouse clicks (no ring on a button the user just clicked) while making Tab
+   navigation visible. */
+:where(button, input, select, textarea, [tabindex], .sig-row, .tree-row):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* the virtualized wave row is absolutely positioned; an outward ring would be
+   clipped by the scroller, so it goes inside */
+.wave-name-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* the tab strip: .tab is a div now (a button may not contain the close button),
+   so it lays its two real buttons out itself */
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.tab-name,
+.tab-close {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tab-close {
+  opacity: 0.55;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.tab-close:hover,
+.tab-close:focus-visible {
+  opacity: 1;
+  color: var(--danger);
+}
+
+/* the two modals keep their look, but are announced as dialogs */
+.modal:focus-within { outline: none; }
+
+/* a disabled control must still be distinguishable when it is focused */
+:where(button, input):disabled { cursor: not-allowed; opacity: 0.5; }
+
+/* ==========================================================================
+   Dump tabs
+   One tab per open dump. The strip only exists when at least two dumps are
+   open, so a single-dump session keeps exactly the old layout. It sits above
+   the waveform / drivers tab strip inside the wave frame.
+   ========================================================================== */
+
+.dump-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex: 0 0 26px;
+  height: 26px;
+  padding: 0 6px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.dump-tab {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.dump-tab:hover { color: var(--text-0); }
+
+.dump-tab.active {
+  color: var(--text-0);
+  border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dump-tab-name,
+.dump-tab-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  height: 100%;
+  padding: 0 4px;
+}
+
+.dump-tab-name { padding: 0 2px 0 10px; }
+
+.dump-tab-close {
+  width: 18px;
+  border-radius: 3px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.dump-tab-close:hover {
+  color: var(--text-0);
+  background: var(--bg-4);
+}
+/* ==========================================================================
+   Split view (docs/design/multi-dump.md step 3)
+   The toolbar only exists with >= 2 dumps; the two-pane container only while
+   the split is open, so a single-dump session keeps exactly its old DOM.
+   ========================================================================== */
+
+.split-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 26px;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-1);
+  overflow: hidden;
+}
+
+.split-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  border-radius: var(--radius-sm);
+  padding: 1px 8px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.split-btn:hover { color: var(--text-0); border-color: var(--accent-line); }
+
+.split-btn.active {
+  color: var(--text-0);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.split-close { margin-left: auto; }
+
+.split-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  /* set by the app: the left (interactive) pane's share, 0.25..0.75 */
+  --split-ratio: 0.5;
+}
+
+.split-view > .wave-pane {
+  flex: 0 0 calc(var(--split-ratio) * 100%);
+  min-width: 0;
+}
+
+/* the draggable divider between the two panes */
+.split-separator {
+  flex: 0 0 7px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: var(--line-soft);
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  position: relative;
+  touch-action: none;
+}
+
+.split-separator::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+  background: var(--text-2);
+  opacity: 0.5;
+}
+
+.split-separator:hover,
+.split-separator:focus-visible,
+.split-separator.dragging {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.split-separator:hover::after,
+.split-separator:focus-visible::after,
+.split-separator.dragging::after {
+  background: var(--accent);
+  opacity: 1;
+}
+
+/* full-window shield while the divider is dragged (tier A: no re-render) */
+.split-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  cursor: col-resize;
+}
+
+.split-pane {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--wave-bg);
+  border-left: 1px solid var(--line);
+}
+
+.split-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 var(--dock-tabs-h);
+  height: var(--dock-tabs-h);
+  padding: 0 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-1);
+  overflow: hidden;
+}
+
+.split-pane-name {
+  color: var(--text-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.split-pane-mode {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.split-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  cursor: grab;
+}
+
+.split-canvas-wrap:active {
+  cursor: grabbing;
+}
+
+.split-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* the bit range of a driver/load reference in the inspector (e.g. q[3:0]) */
+.inspector-bits {
+  color: var(--text-2);
+  font-size: 10px;
+  margin: 0 4px;
 }
