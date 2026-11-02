@@ -12,6 +12,7 @@ use super::design::DesignState;
 use super::dumps::Dumps;
 use super::persist::{RowPrefs, SessionRow, Sessions};
 use super::sources::{Source, Sources};
+use super::split::Split;
 use super::types::{Dialog, Focus, Goto, Layout, Picker, Row, RowsSlice, Status, Viewport};
 
 /// The wave rows, versioned so a subscriber compares one integer.
@@ -91,6 +92,9 @@ pub struct State {
     /// hierarchy wins) or from the elaborated design. A versioned cache: the
     /// components subscribe instead of rebuilding it per render.
     pub tree: Option<crate::nav::SidebarTree>,
+    /// The side-by-side split: which dump the read-only right pane shows and
+    /// whether the two panes share a time window.
+    pub split: Option<Split>,
 }
 
 impl State {

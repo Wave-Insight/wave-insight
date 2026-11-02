@@ -42,7 +42,7 @@ Windows users can use the thin wrapper:
 Exit codes: `0` the matrix is green, `1` at least one assertion failed, `2` the
 harness itself could not run (no Chrome, build missing, server did not start).
 
-`run.mjs` copies `front-end/dist` into `qa/.stage` (gitignored), starts
+`run.mjs` copies `front-end/dist` into a per-run `qa/.stage/<pid>/` (gitignored, so parallel runs do not collide), starts
 `serve.js` on a free port, starts headless Chrome with a throwaway profile and
 CDP on a second free port, runs the matrix, then kills both. Screenshots go to
 `qa/artifacts/` (also gitignored). `--keep` keeps `qa/.stage` for debugging.
@@ -69,7 +69,8 @@ Scenario list (the runner's `--list` prints it, default is all):
 `busBench`, `busBands`, `snap`, `valueColumn`, `analog`, `analogStep`,
 `mismatch`, `loadDrive`, `inlayHints`, `wave1`, `wave2`, `virtualization`,
 `persistence`, `session`, `findValue`, `a11y`, `elaboration`, `diagnostics`,
-`exportTxt`, `corruption`, `multiDump`, `bitRanges`.
+`exportTxt`, `corruption`, `multiDump`, `bitRanges`, `completion`, `inspectorBits`,
+`splitView`.
 
 `wave1` asserts the Wave 1 features (fixed point readout, search options);
 `wave2` asserts the Wave 2 features (CSV export through a real download,
@@ -130,10 +131,39 @@ drivers and carry "- driven here: q[3:0], q[7:4]". A hover on `y` (driven as
 a whole signal) must have no driven-here line, which keeps the assertion
 specific to bit ranges rather than to any driver.
 
-Baseline on the Wave 9 build (2026-11-02, 52 scenarios):
+`completion` and `inspectorBits` cover the Wave 10 editor/inspector features.
+`completion` uses the completion provider seam: `window.__waveInsightProviders`
+now also carries the 6th provider,
+`completion.provideCompletionItems(model, position, context, token)` (the
+4-argument monaco form; `__qa.provider('completion', file, line, col)` wraps
+it), plus `completion.triggerCharacters === ["."]`. The scenario asserts the
+plain mode (enclosing module members and module names, with the monaco kinds
+Variable 4 / Field 3 / Module 8 / Reference 21), that a partial prefix
+narrows the list (`.cl` -> `clk` only), that `u_cpu.` returns only that
+module's members with a kind and a detail, and that an unknown qualifier and
+a position before the first module return an empty list. `inspectorBits`
+opens `bit_ranges.sv`, selects `q` and asserts the Drivers rows render
+`<span class="inspector-bits" title="q[3:0]">q[3:0]</span>` between the name
+and the size for the two sliced drivers (`q[3:0]`, `q[7:4]`), while a
+whole-signal driver (`y`) adds no range label.
+
+`splitView` covers the two-dump split view. With one dump there is no
+`.split-toolbar` and no `.split-view` (the DOM is exactly the old one). With
+two dumps the toolbar (role=toolbar, aria-label "Split view") appears; its
+toggle (`aria-pressed`) opens a `.split-view` that keeps the interactive left
+`.wave-pane` (`#wave-surface`) and adds a read-only `.split-pane` (name,
+"read only" mode, `canvas.split-canvas`). The scenario asserts the right pane
+shows the non-active dump's name and a painted canvas (pixel ink), that the
+right-pane choices list only the non-active dumps, that the Linked toggle
+flips `aria-pressed`, that a cursor commit on the left pane with the split
+open does not re-render the shell (the same `__waveDebug.render_count` tier-A
+rule), and that closing removes `.split-view`, keeps the toolbar and leaves
+`#wave-surface` as the only wave pane.
+
+Baseline on the Wave 10 build (2026-11-02, 55 scenarios):
 
 ```
-=== summary: 414 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
+=== summary: 446 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
 ```
 
 The summary has five counters: **passed**, **failed**, **pending** (an R2 rule

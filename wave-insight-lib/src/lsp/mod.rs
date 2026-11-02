@@ -29,7 +29,9 @@
 //! [`LspServer::handle_message`] keeps returning replies only.  Completion
 //! answers the identifiers visible in the enclosing module (ports, signals,
 //! parameters, genvars, instances and module names) from the indexed design
-//! without elaborating it.  Unknown requests are answered with JSON-RPC
+//! without elaborating it; the partial word before the caret filters the list
+//! case-insensitively and a dotted prefix (u_cpu., u_mid.u_leaf.) completes the
+//! members of that instance's module.  Unknown requests are answered with JSON-RPC
 //! `-32601`, unknown notifications are ignored.
 //!
 //! # Coordinates

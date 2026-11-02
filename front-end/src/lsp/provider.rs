@@ -1,4 +1,4 @@
-//! The five monaco language providers, backed by the browser LSP client and the
+//! The six monaco language providers, backed by the browser LSP client and the
 //! waveform.
 //!
 //! Installation happens once per page, on the `systemverilog` language, through
@@ -152,12 +152,48 @@ fn register(monaco: &JsValue, bridge: LspBridge) {
         set(&inlay, "onDidChangeInlayHints", event.into());
     }
 
+    // Completion: the only provider monaco also calls while the user types, so
+    // it is the one that must stay cheap. The bridge is synchronous and in
+    // process (the LSP runs in this wasm module), so there is nothing to debounce
+    // on our side: monaco debounces the trigger itself (quickSuggestionsDelay)
+    // and cancels a stale request through the token, which the body honours.
+    // The trigger character is the one the server advertises (a dot) and the
+    // server returns its whole visible set, letting monaco filter by the prefix.
+    let completion = Object::new();
+    let completion_provider = {
+        let bridge = bridge.clone();
+        Closure::wrap(Box::new(
+            move |model: JsValue,
+                  position: JsValue,
+                  _context: JsValue,
+                  token: JsValue|
+                  -> JsValue {
+                Promise::resolve(&provide_completion(&bridge, &model, &position, &token)).into()
+            },
+        )
+            as Box<dyn FnMut(JsValue, JsValue, JsValue, JsValue) -> JsValue>)
+    };
+    set(
+        &completion,
+        "provideCompletionItems",
+        completion_provider
+            .as_ref()
+            .unchecked_ref::<Function>()
+            .into(),
+    );
+    completion_provider.forget();
+    // the same trigger set the server advertises in its initialize reply
+    let triggers = Array::new();
+    triggers.push(&JsValue::from_str("."));
+    set(&completion, "triggerCharacters", triggers.into());
+
     attach(&languages, "registerDefinitionProvider", &definition);
     attach(&languages, "registerReferenceProvider", &references);
     attach(&languages, "registerHoverProvider", &hover);
     attach(&languages, "registerDocumentSymbolProvider", &symbols);
     attach(&languages, "registerInlayHintsProvider", &inlay);
-    publish(definition, references, hover, symbols, inlay);
+    attach(&languages, "registerCompletionItemProvider", &completion);
+    publish(definition, references, hover, symbols, inlay, completion);
 }
 
 /// Attach one provider object to the language.
@@ -249,6 +285,69 @@ fn provide_document_symbols(bridge: &LspBridge, model: &JsValue) -> JsValue {
         array.push(&symbol_js(symbol));
     }
     array.into()
+}
+
+/// One textDocument/completion call: the raw LSP items as monaco suggestions.
+///
+/// A cancelled request (the user typed another character before this one
+/// answered) resolves to an empty list instead of a stale popup.
+fn provide_completion(
+    bridge: &LspBridge,
+    model: &JsValue,
+    position: &JsValue,
+    token: &JsValue,
+) -> JsValue {
+    let cancelled = Reflect::get(token, &JsValue::from_str("isCancellationRequested"))
+        .map(|value| value.as_bool().unwrap_or(false))
+        .unwrap_or(false);
+    if cancelled {
+        return completion_list(&[]);
+    }
+    let Some((file, line, column)) = editor_position(model, position) else {
+        return completion_list(&[]);
+    };
+    let items = bridge.completion(&file, line, column);
+    completion_list(&items)
+}
+
+/// The {suggestions: [...]} object monaco's provideCompletionItems returns.
+///
+/// "incomplete" is left at monaco's default (false), which means "this list is
+/// the whole answer" — true here: the server sends every visible identifier and
+/// monaco filters it by the prefix the user typed.
+fn completion_list(items: &[serde_json::Value]) -> JsValue {
+    let suggestions = Array::new();
+    for item in items {
+        suggestions.push(&completion_item_js(item));
+    }
+    let list = Object::new();
+    set(&list, "suggestions", suggestions.into());
+    list.into()
+}
+
+/// One LSP CompletionItem to the object monaco's suggest widget consumes.
+fn completion_item_js(item: &serde_json::Value) -> JsValue {
+    let object = Object::new();
+    let label = item
+        .get("label")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    set(&object, "label", JsValue::from_str(label));
+    // the label is also the text inserted: the server's labels are the
+    // identifiers themselves (no snippet placeholders)
+    set(&object, "insertText", JsValue::from_str(label));
+    let kind = item
+        .get("kind")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(LSP_COMPLETION_TEXT);
+    set(&object, "kind", JsValue::from_f64(completion_kind(kind)));
+    if let Some(detail) = item.get("detail").and_then(serde_json::Value::as_str) {
+        set(&object, "detail", JsValue::from_str(detail));
+    }
+    if let Some(sort_text) = item.get("sortText").and_then(serde_json::Value::as_str) {
+        set(&object, "sortText", JsValue::from_str(sort_text));
+    }
+    object.into()
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +455,30 @@ const LSP_CONSTANT: i64 = 14;
 const LSP_OBJECT: i64 = 19;
 
 /// LSP `SymbolKind` → `monaco.languages.SymbolKind`.
+// LSP CompletionItemKind values the server sends (see lsp::server).
+const LSP_COMPLETION_FIELD: i64 = 5;
+const LSP_COMPLETION_VARIABLE: i64 = 6;
+const LSP_COMPLETION_MODULE: i64 = 9;
+const LSP_COMPLETION_REFERENCE: i64 = 18;
+const LSP_COMPLETION_TEXT: i64 = 1;
+
+/// LSP CompletionItemKind to monaco.languages.CompletionItemKind.
+///
+/// The two enums are numbered differently (LSP starts at Text = 1, monaco has
+/// Method = 0 and no Text until 18), so every kind this server emits is
+/// translated instead of passed through; an unknown kind falls back to Text so
+/// monaco never receives an invalid number.
+fn completion_kind(kind: i64) -> f64 {
+    match kind {
+        LSP_COMPLETION_FIELD => 3.0,      // Field
+        LSP_COMPLETION_VARIABLE => 4.0,   // Variable
+        LSP_COMPLETION_MODULE => 8.0,     // Module
+        LSP_COMPLETION_REFERENCE => 21.0, // Reference
+        LSP_COMPLETION_TEXT => 18.0,      // Text
+        _ => 18.0,                        // Text: never an invalid kind
+    }
+}
+
 fn symbol_kind(kind: i64) -> f64 {
     match kind {
         LSP_MODULE => 1.0,    // Module
@@ -377,7 +500,14 @@ fn symbol_kind(kind: i64) -> f64 {
 /// headless driver calls these very functions (the ones monaco dispatches to)
 /// to inspect definition, hover, references, documentSymbol and inlay hint
 /// results directly.
-fn publish(definition: Object, references: Object, hover: Object, symbols: Object, inlay: Object) {
+fn publish(
+    definition: Object,
+    references: Object,
+    hover: Object,
+    symbols: Object,
+    inlay: Object,
+    completion: Object,
+) {
     let Some(window) = web_sys::window() else {
         return;
     };
@@ -387,6 +517,10 @@ fn publish(definition: Object, references: Object, hover: Object, symbols: Objec
     set(&hook, "hover", hover.into());
     set(&hook, "documentSymbol", symbols.into());
     set(&hook, "inlayHints", inlay.into());
+    // hook.completion.provideCompletionItems(model, position, context, token):
+    // four arguments (monaco's signature); context is {triggerKind,
+    // triggerCharacter} and may be any object, the body does not read it.
+    set(&hook, "completion", completion.into());
 
     let to_uri = Closure::<dyn Fn(String) -> String>::new(|file: String| document_uri(&file));
     set(
@@ -418,4 +552,28 @@ fn js_function(target: &JsValue, name: &str) -> Option<Function> {
 
 fn set(object: &JsValue, key: &str, value: JsValue) {
     let _ = Reflect::set(object, &JsValue::from_str(key), &value);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::completion_kind;
+
+    #[test]
+    fn the_completion_kinds_this_server_sends_are_translated() {
+        // LSP Field=5 -> monaco Field=3; Variable=6 -> 4; Module=9 -> 8;
+        // Reference=18 -> 21; Text=1 -> 18 (monaco has no Text before 18)
+        assert_eq!(completion_kind(5), 3.0);
+        assert_eq!(completion_kind(6), 4.0);
+        assert_eq!(completion_kind(9), 8.0);
+        assert_eq!(completion_kind(18), 21.0);
+        assert_eq!(completion_kind(1), 18.0);
+    }
+
+    #[test]
+    fn an_unknown_completion_kind_falls_back_to_text() {
+        // a future server kind must never reach monaco as an invalid number
+        for kind in [0i64, 2, 7, 13, 25, 99] {
+            assert_eq!(completion_kind(kind), 18.0, "kind {kind}");
+        }
+    }
 }

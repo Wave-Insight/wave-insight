@@ -114,6 +114,16 @@ pub enum Action {
     DialogOpened { indices: Vec<usize> },
     /// The settings dialog closed (applied, deleted or dismissed).
     DialogClosed,
+
+    /// The side-by-side split opened, showing dump `right` in the read-only
+    /// pane (the active dump stays on the left).
+    SplitOpened { right: usize },
+    /// The split closed: the DOM returns to the single-pane session.
+    SplitClosed,
+    /// The right pane switched to another dump.
+    SplitRightChanged { right: usize },
+    /// Linked time axis toggled.
+    SplitLinkedToggled,
 }
 
 /// Work the reducer may not do itself: I/O, the LSP, the editor.

@@ -163,6 +163,27 @@ pub fn fixed_point_text(value: &WaveValue, show: &ShowType, fraction_bits: u32) 
     Some(format!("{rounded:.1}"))
 }
 
+/// The bit-range label of one driver/load reference: `q[3:0]`.
+///
+/// `SignalReference::bits` is the range exactly as the source wrote it
+/// (`[3:0]`, `[7]`, `[i]`) and is `None` for a whole-signal reference, which
+/// shows nothing extra. The local name is prefixed on purpose: a bus can be
+/// driven in slices (`q[3:0]` and `q[7:4]`), and the range alone would not say
+/// which signal it belongs to once the panel lists several references.
+///
+/// Pure, so the formatting rule is host tested.
+pub fn bits_label(local_name: &str, bits: Option<&str>) -> Option<String> {
+    let bits = bits?.trim();
+    if bits.is_empty() {
+        return None;
+    }
+    if local_name.is_empty() {
+        Some(bits.to_string())
+    } else {
+        Some(format!("{local_name}{bits}"))
+    }
+}
+
 /// Every dump signal a hierarchical path can mean, most specific first.
 ///
 /// This is the waveform side of the mapping [`DesignState::resolve_candidates`]
@@ -460,6 +481,54 @@ mod tests {
                 fixed_point: Some(8)
             }
         );
+    }
+
+    #[test]
+    fn a_bit_range_is_shown_as_the_signal_slice() {
+        use super::bits_label;
+        // the source form of the range is kept verbatim, the name is prefixed
+        assert_eq!(bits_label("q", Some("[3:0]")).as_deref(), Some("q[3:0]"));
+        assert_eq!(bits_label("q", Some("[7]")).as_deref(), Some("q[7]"));
+        assert_eq!(bits_label("q", Some("[i]")).as_deref(), Some("q[i]"));
+        // a whole-signal reference shows nothing extra
+        assert_eq!(bits_label("q", None), None);
+        // an empty/blank range is the same as none (never a bare name)
+        assert_eq!(bits_label("q", Some("")), None);
+        assert_eq!(bits_label("q", Some("   ")), None);
+        // a missing local name still shows the range rather than losing it
+        assert_eq!(bits_label("", Some("[3:0]")).as_deref(), Some("[3:0]"));
+    }
+
+    #[test]
+    fn the_inspector_bits_are_the_drivers_bit_ranges_in_row_order() {
+        // The inspector pairs SignalDetails rows with the FlatSignal references
+        // by index; this is the contract that pairing depends on. Parsing a real
+        // source is the cheapest honest check (no browser, no fixture file).
+        use super::bits_label;
+        use crate::state::design::DesignState;
+        let source = "module top(input logic clk, output logic [7:0] q);\n\
+                      assign q[3:0] = 4'h1;\n\
+                      assign q[7:4] = 4'h2;\n\
+                      endmodule\n";
+        let mut design = DesignState::new();
+        design.add_source("top.sv", source);
+        let details = design.signal_details("top.q").expect("q resolves");
+        let flat = design.flat_signal("top.q").expect("q is in the design");
+        let drivers: Vec<Option<String>> = flat.drivers.iter().map(|d| d.bits.clone()).collect();
+        // both drivers are sliced, and in the order the details rows use
+        assert_eq!(
+            drivers,
+            vec![Some("[3:0]".to_string()), Some("[7:4]".to_string())]
+        );
+        assert_eq!(details.drivers.len(), drivers.len());
+        // the label the inspector renders for each row
+        let labels: Vec<String> = drivers
+            .iter()
+            .map(|bits| bits_label(&flat.local_name, bits.as_deref()).unwrap_or_default())
+            .collect();
+        assert_eq!(labels, vec!["q[3:0]".to_string(), "q[7:4]".to_string()]);
+        // a whole-signal reference stays silent
+        assert_eq!(bits_label(&flat.local_name, None), None);
     }
 }
 

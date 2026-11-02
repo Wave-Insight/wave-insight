@@ -5,8 +5,8 @@ props-and-`Rc<RefCell<_>>` plumbing with one store, and use the same move to fix
 the pane layout.
 
 Status: **steps 1-3 and step 3b implemented; step 4 is down to pane
-wiring.** The store lives in `front-end/src/state/` (eleven modules, about 5.4k
-lines of Rust with 77 native `#[test]`s): layout, status, wave rows, viewport/cursors, the
+wiring.** The store lives in `front-end/src/state/` (twelve modules, about 5.7k
+lines of Rust with 83 native `#[test]`s): layout, status, wave rows, viewport/cursors, the
 open sources, the design database, the derived module tree, focus (the inspector
 signal and the module-tree instance), jump requests, the path picker, the
 settings dialog, the per-signal preferences and the per-dump sessions are store
@@ -30,6 +30,11 @@ active entry, and the reducer enforces the 1.5 GiB open-dumps budget. The
 shell's dump strip subscribes a tab-only `DumpsTabsSlice` whose version is bumped
 only when the tab list or the active index changes, so a viewport/cursor commit
 never re-renders the shell (the tier-A render-count gate stays green).
+Wave 10 added `State.split` (`Option<Split { right, linked }>`, always a dump
+other than the active one) with `SplitOpened`/`SplitClosed`/`SplitRightChanged`/
+`SplitLinkedToggled`; the renderer reads a *specific* dump through per-dump
+selectors (`rows_of`, `dump_name_of`, the pane handle) instead of only the active
+entry, and the shell subscribes the split slice to render the toolbar and pane.
 **Step 4 is down to pane wiring**: the panes could subscribe directly instead of
 receiving shell-mirrored props, the picker/dialog props could be pure store reads
 instead of `App`/`WaveShow` mirrors, `Effect::MonacoShow` is still a no-op seam,
@@ -249,7 +254,7 @@ propagation, so an unrelated dispatch simply never reaches it.
 
 | Component | Subscribes to | Re-renders on |
 |---|---|---|
-| `App` | `layout` and the tab-only `dump_tabs` (its own renders), plus mirrors of `sources`, `focus`, `nav.goto` and the cursor/row callbacks of the inlay hints | sidebar/editor ratio, drawer; the mirrors keep the shell's render-time copies and the hint context current |
+| `App` | `layout`, the tab-only `dump_tabs` and `split` (its own renders), plus mirrors of `sources`, `focus`, `nav.goto` and the cursor/row callbacks of the inlay hints | sidebar/editor ratio, drawer; the mirrors keep the shell's render-time copies and the hint context current |
 | `TopBar` | `nav.status`, `nav.problems` | status line, language-server problem chip |
 | `Sidebar` (`ModuleStruct`) | `tree`, `focus.instance` (via `App` props; store-owned since step 3b) | dump/design change, instance click |
 | `SignalList` (today `SignalStruct`) | `tree`, `sources` | module selection, filter list |
@@ -302,6 +307,7 @@ Stored (source of truth, survives everything):
 | `layout` | `sidebar_w`, `editor_ratio`, `drawer_open` |
 | `row_prefs` / `sessions` | remembered per-signal settings / per-dump row lists (persisted, see below) |
 | `nav` | `goto`, `jump_token`, `top`, `status`, `problems`, `picker`, `dialog` - **in** |
+| `split` | `Option<Split { right, linked }>`: the read-only right pane's dump index (never the active one) and whether the time axis is linked - **in (Wave 10)** |
 
 Derived (recomputed or cached with a version key, never serialized):
 
@@ -737,13 +743,14 @@ The task-10 wording, made checkable, with the status at the time of writing:
   asserted by the browser matrix's `layoutRules` scenario
 - `cargo test -p front-end --bins` covers `reduce` (row add/remove/reorder,
   document open/close, dump switch, jump, picker, dialog, design/focus); **done
-  so far** — 77 native tests cover layout, rows, sources, design, focus, jump,
+  so far** — 83 native tests cover layout, rows, sources, design, focus, jump,
   viewport/cursors, sessions, persistence, picker, dialog and the multi-dump
   set (add/activate/close/dedupe/budget)
 - the browser matrix passes, with the rewires listed above; **the gate** — it has
-  grown from the 140 assertions of the original task to 51 scenarios (the latest
-  are `corruption` and `multiDump` after `findValue`/`elaboration`/`diagnostics`/
-  `exportTxt`), and the QA owner re-measures the baseline after each wave.
+  grown from the 140 assertions of the original task to 55 scenarios / 446
+  assertions (the latest are `completion`, `inspectorBits` and `splitView` after
+  `corruption`/`multiDump`), and the QA owner re-measures the baseline after each
+  wave.
 
 ---
 

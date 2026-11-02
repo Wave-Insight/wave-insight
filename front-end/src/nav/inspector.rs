@@ -33,6 +33,27 @@ pub enum Msg {
 
 pub struct SignalInspector;
 
+/// Bit ranges of the selected signal's references, in the same order as
+/// SignalDetails::drivers / SignalDetails::loads.
+///
+/// The store's SignalDetails rows are built from the same FlatSignal in the
+/// same order, so index i here belongs to row i there. Owned on purpose: the
+/// design borrow must not outlive the selector call.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ReferenceBits {
+    local_name: String,
+    drivers: Vec<Option<String>>,
+    loads: Vec<Option<String>>,
+}
+
+impl ReferenceBits {
+    /// The range text of driver/load index, or None for a whole-signal
+    /// reference (or a row the design did not report).
+    fn get(rows: &[Option<String>], index: usize) -> Option<&str> {
+        rows.get(index).and_then(|bits| bits.as_deref())
+    }
+}
+
 impl Component for SignalInspector {
     type Message = Msg;
     type Properties = SignalInspectorProps;
@@ -57,8 +78,25 @@ impl Component for SignalInspector {
         // take an owned copy of everything; the database borrow must not be held
         // while the html is built
         let store = props.store.clone();
-        let (details, has_sources, top, diagnostics, candidates) = store.select(|state| {
+        let (details, bits, has_sources, top, diagnostics, candidates) = store.select(|state| {
             let design = &state.design;
+            // Wave 8: the design db carries the bit range of every driver/load
+            // reference; read it in the same pass as the details so the rows and
+            // their ranges cannot disagree.
+            let bits = props
+                .path
+                .as_deref()
+                .and_then(|path| design.flat_signal(path))
+                .map(|signal| ReferenceBits {
+                    local_name: signal.local_name.clone(),
+                    drivers: signal
+                        .drivers
+                        .iter()
+                        .map(|driver| driver.bits.clone())
+                        .collect(),
+                    loads: signal.loads.iter().map(|load| load.bits.clone()).collect(),
+                })
+                .unwrap_or_default();
             let candidates = props
                 .path
                 .as_deref()
@@ -76,6 +114,7 @@ impl Component for SignalInspector {
                     .path
                     .as_deref()
                     .and_then(|path| design.signal_details(path)),
+                bits,
                 !design.is_empty(),
                 design.top().map(str::to_string),
                 design.diagnostic_count(),
@@ -95,7 +134,7 @@ impl Component for SignalInspector {
                     </span>
                 </div>
                 <div class="panel-body">
-                    {self.body(link, props, details, has_sources, top, diagnostics, candidates)}
+                    {self.body(link, props, details, bits, has_sources, top, diagnostics, candidates)}
                 </div>
             </section>
         }
@@ -109,6 +148,7 @@ impl SignalInspector {
         link: &Scope<Self>,
         props: &SignalInspectorProps,
         details: Option<super::SignalDetails>,
+        bits: ReferenceBits,
         has_sources: bool,
         top: Option<String>,
         diagnostics: usize,
@@ -166,9 +206,22 @@ impl SignalInspector {
                     <span class="sig-name" title={details.path.clone()}>{details.path.clone()}</span>
                     <span class="sig-size">{width}</span>
                 </div>
-                {self.section(link, "Declaration", details.declaration.as_slice())}
-                {self.section(link, &format!("Drivers ({})", details.drivers.len()), &details.drivers)}
-                {self.section(link, &format!("Loads ({})", details.loads.len()), &details.loads)}
+                // the declaration is always the whole signal: no range column
+                {self.section(link, "Declaration", details.declaration.as_slice(), &[], "")}
+                {self.section(
+                    link,
+                    &format!("Drivers ({})", details.drivers.len()),
+                    &details.drivers,
+                    &bits.drivers,
+                    &bits.local_name,
+                )}
+                {self.section(
+                    link,
+                    &format!("Loads ({})", details.loads.len()),
+                    &details.loads,
+                    &bits.loads,
+                    &bits.local_name,
+                )}
                 {
                     if diagnostics > 0 {
                         html!{<div class="sig-row" style="cursor:default;color:var(--text-2)">
@@ -180,7 +233,14 @@ impl SignalInspector {
         }
     }
 
-    fn section(&self, link: &Scope<Self>, title: &str, rows: &[SourceRow]) -> Html {
+    fn section(
+        &self,
+        link: &Scope<Self>,
+        title: &str,
+        rows: &[SourceRow],
+        bits: &[Option<String>],
+        local_name: &str,
+    ) -> Html {
         html! {
             <>
                 <p class="modal-label" style="padding:6px 12px 2px">{title.to_string()}</p>
@@ -192,19 +252,37 @@ impl SignalInspector {
                             </div>
                         }
                     }else {
-                        html!{ for rows.iter().map(|row| self.row(link, row)) }
+                        html!{ for rows.iter().enumerate().map(|(index, row)| {
+                            self.row(link, row, ReferenceBits::get(bits, index), local_name)
+                        }) }
                     }
                 }
             </>
         }
     }
 
-    fn row(&self, link: &Scope<Self>, row: &SourceRow) -> Html {
+    fn row(
+        &self,
+        link: &Scope<Self>,
+        row: &SourceRow,
+        bits: Option<&str>,
+        local_name: &str,
+    ) -> Html {
         let (file, line, col) = row.target();
+        // a sliced reference reads q[3:0] next to the location; a whole-signal
+        // one adds nothing, so the common case stays exactly as it was
+        let bits_label = super::bits_label(local_name, bits);
         html! {
             <div class="sig-row" title={format!("{} — {}", row.label, row.detail)}
                 onclick={link.callback(move |_| Msg::Goto((file.clone(), line, col)))}>
                 <span class="sig-name">{row.label.clone()}</span>
+                {
+                    if let Some(label) = bits_label {
+                        html!{<span class="inspector-bits" title={label.clone()}>{label}</span>}
+                    } else {
+                        html!{}
+                    }
+                }
                 <span class="sig-size">{row.detail.clone()}</span>
                 <span class="sig-add">{"↗"}</span>
             </div>

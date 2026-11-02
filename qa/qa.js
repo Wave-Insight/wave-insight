@@ -135,6 +135,9 @@ window.__qa = {
     if (kind === 'definition') res = hook.definition.provideDefinition(model, pos, token);
     else if (kind === 'references') res = hook.references.provideReferences(model, pos, {includeDeclaration:true}, token);
     else if (kind === 'hover') res = hook.hover.provideHover(model, pos, token);
+    // completion is the only 4-argument provider (monaco passes the trigger
+    // context); the hook wraps the registered provider itself
+    else if (kind === 'completion') res = hook.completion.provideCompletionItems(model, pos, { triggerKind: 1 }, token);
     else if (kind === 'symbols') res = hook.documentSymbol.provideDocumentSymbols(model, token);
     return Promise.resolve(res).then(v => JSON.stringify(v));
   },
@@ -3193,6 +3196,293 @@ scenarios.bitRanges = async (cdp) => {
     !!whole.value && whole.value.includes('bit_ranges.y') && !whole.value.includes('driven here'), whole.value);
   check('bitRanges: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   await cdp.shot('qa-bit-ranges.png');
+};
+
+// --- Wave 10: Monaco completion in the editor ---------------------------------
+// The completion provider is the 6th registered provider; the __qa.provider
+// helper's `completion` branch calls its 4-argument form (monaco passes the
+// trigger context). The server returns its whole visible set and filters by the
+// text before the caret: plain names give the enclosing module's ports/signals/
+// parameters/genvars/instances plus every module name, `instance.` gives that
+// module's members only, an unknown qualifier and a position before the first
+// module give an empty list.
+scenarios.completion = async (cdp) => {
+  const complete = async (file, line, column) => {
+    const raw = await cdp.eval('window.__qa.provider("completion", ' + JSON.stringify(file) + ', ' + line + ', ' + column + ')');
+    if (!raw || raw === 'no-hook' || String(raw).startsWith('no-model')) return { error: raw };
+    try {
+      const parsed = JSON.parse(raw);
+      return { suggestions: parsed && parsed.suggestions ? parsed.suggestions : [] };
+    } catch (error) {
+      return { error: String(raw) };
+    }
+  };
+  const labels = (result) => (result.suggestions || []).map((item) => item.label);
+  const kindOf = (result, label) => {
+    const item = (result.suggestions || []).find((suggestion) => suggestion.label === label);
+    return item ? item.kind : null;
+  };
+  // append a comment line to top.sv through monaco; the editor's change event
+  // syncs the buffer to the store and the LSP, which is what the server reads
+  const appendLine = async (text) => cdp.eval(`(function(){
+    const hook = window.__waveInsightProviders;
+    const uri = hook.documentUri('top.sv');
+    const model = monaco.editor.getModels().find(function(m){ return m.uri.toString() === uri; });
+    if (!model) return { error: 'no-model' };
+    const last = model.getLineCount();
+    const end = model.getLineMaxColumn(last);
+    model.applyEdits([{ range: { startLineNumber: last, startColumn: end, endLineNumber: last, endColumn: end },
+      text: String.fromCharCode(10) + ${JSON.stringify(text)} }]);
+    const line = model.getLineCount();
+    return { line: line, column: model.getLineMaxColumn(line) };
+  })()`);
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'top.sv'), path.join(FIXTURES, 'cpu.sv')]);
+  await waitTabs(cdp, 2);
+  await sleep(2500);
+  // the editor only forwards changes of the model it currently shows to the
+  // store and the LSP, so the buffer edits below must happen while top.sv is
+  // the active tab (a background model's applyEdits would not reach the server)
+  await cdp.eval('window.__qa.clickText(".tab .tab-name", "top.sv")');
+  await sleep(800);
+  const hook = await cdp.eval('window.__waveInsightProviders ? { completion: !!window.__waveInsightProviders.completion, triggers: window.__waveInsightProviders.completion ? Array.from(window.__waveInsightProviders.completion.triggerCharacters || []) : null } : null');
+  note('completion hook', hook);
+  check('completion: the completion provider is published with its trigger characters',
+    !!hook && hook.completion === true && (hook.triggers || []).includes('.'), hook);
+  // plain mode: the enclosing module's members plus every module name
+  const plain = await complete('top.sv', 12, 1);
+  note('completion plain', { count: labels(plain).length, labels: labels(plain) });
+  check('completion: a plain position lists the module scope',
+    !!plain.suggestions && labels(plain).includes('clk') && labels(plain).includes('u_cpu') && labels(plain).includes('cpu'), labels(plain));
+  check('completion: the item kinds map to monaco (Variable/Field/Module/Reference)',
+    kindOf(plain, 'clk') === 4 && kindOf(plain, 'u_cpu') === 21 && kindOf(plain, 'cpu') === 8, {
+      clk: kindOf(plain, 'clk'), u_cpu: kindOf(plain, 'u_cpu'), cpu: kindOf(plain, 'cpu') });
+  const params = await complete('cpu.sv', 12, 5);
+  note('completion parameters', { WIDTH: kindOf(params, 'WIDTH'), next_pc: kindOf(params, 'next_pc') });
+  check('completion: parameters are Field items and signals are Variable items',
+    kindOf(params, 'WIDTH') === 3 && kindOf(params, 'next_pc') === 4, {
+      WIDTH: kindOf(params, 'WIDTH'), next_pc: kindOf(params, 'next_pc') });
+  // a partial prefix filters case-insensitively: `.cl` in the u_cpu port list
+  const filtered = await complete('top.sv', 14, 12);
+  note('completion cl', labels(filtered));
+  check('completion: a prefix narrows the list to the matching label',
+    JSON.stringify(labels(filtered)) === JSON.stringify(['clk']), labels(filtered));
+  // member access: `u_cpu.` returns only that module's members
+  const spot = await appendLine('// u_cpu.');
+  note('completion edit spot', spot);
+  await sleep(1500);
+  const members = await complete('top.sv', spot.line, spot.column);
+  note('completion u_cpu.', { count: labels(members).length, labels: labels(members) });
+  check('completion: instance access lists that module members only',
+    ['clk', 'reset', 'instr', 'pc', 'data_out', 'next_pc', 'pc_reg', 'active', 'STEP'].every((label) => labels(members).includes(label)), labels(members));
+  const instrItem = (members.suggestions || []).find((item) => item.label === 'instr');
+  check('completion: member items carry a kind and a detail',
+    kindOf(members, 'clk') === 4 && kindOf(members, 'STEP') === 3
+      && !!instrItem && typeof instrItem.detail === 'string' && instrItem.detail.includes('WIDTH')
+      && (members.suggestions || []).every((item) => item.insertText === item.label), {
+        clk: kindOf(members, 'clk'), STEP: kindOf(members, 'STEP'), instr: instrItem && instrItem.detail });
+  // an unknown qualifier is an empty list, not an error
+  const unknownSpot = await appendLine('// no_such_instance.');
+  await sleep(1500);
+  const unknown = await complete('top.sv', unknownSpot.line, unknownSpot.column);
+  note('completion unknown qualifier', labels(unknown));
+  check('completion: an unknown qualifier returns no suggestions',
+    !!unknown.suggestions && unknown.suggestions.length === 0, labels(unknown));
+  // before the first module of a file nothing is visible
+  const before = await complete('cpu.sv', 1, 1);
+  note('completion before the module', labels(before));
+  check('completion: a position before the first module returns no suggestions',
+    !!before.suggestions && before.suggestions.length === 0, labels(before));
+  check('completion: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-completion.png');
+};
+
+// --- Wave 10: driver/load bit ranges in the inspector -------------------------
+// The Drivers/Loads rows of a sliced reference render
+// <span class="inspector-bits" title="q[3:0]">q[3:0]</span> between the name and
+// the size; a whole-signal reference adds nothing, so the common row is
+// unchanged.
+scenarios.inspectorBits = async (cdp) => {
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'bit_ranges.sv')]);
+  await waitTabs(cdp, 1);
+  await sleep(2500);
+  const added = await addSignal(cdp, 'q');
+  await sleep(800);
+  await cdp.eval('window.__qa.clickText(".dock-tab", "Drivers / loads")');
+  await sleep(800);
+  let s = await state(cdp);
+  note('inspector q', { head: s.inspectorHead, tab: s.dockTab });
+  const bits = await cdp.eval(`(function(){
+    const rows = Array.prototype.slice.call(document.querySelectorAll('.inspector-panel .panel-body .sig-row'));
+    const sliced = rows.filter(function(row){ return !!row.querySelector('.inspector-bits'); }).map(function(row){
+      const name = row.querySelector('.sig-name');
+      const bit = row.querySelector('.inspector-bits');
+      const size = row.querySelector('.sig-size');
+      return {
+        text: (bit.innerText || '').trim(),
+        title: bit.getAttribute('title'),
+        afterName: !!name && name.nextElementSibling === bit,
+        beforeSize: !!size && bit.nextElementSibling === size,
+      };
+    });
+    return {
+      all: Array.prototype.map.call(document.querySelectorAll('.inspector-panel .inspector-bits'), function(e){ return (e.innerText || '').trim(); }),
+      sliced: sliced,
+    };
+  })()`);
+  note('inspector bits', bits);
+  check('inspectorBits: the sliced drivers are labelled with their ranges',
+    added && JSON.stringify(bits.all) === JSON.stringify(['q[3:0]', 'q[7:4]']), bits.all);
+  check('inspectorBits: the range sits between the name and the size',
+    bits.sliced.length === 2 && bits.sliced.every((row) => row.afterName && row.beforeSize), bits.sliced);
+  check('inspectorBits: the range title repeats the label',
+    bits.sliced.length === 2 && bits.sliced.every((row) => row.title === row.text), bits.sliced);
+  check('inspectorBits: the panel shows the selected signal',
+    (s.inspectorHead || '').includes('bit_ranges.q'), s.inspectorHead);
+  // a whole-signal driver adds no range label
+  const addedY = await addSignal(cdp, 'y');
+  await sleep(800);
+  const bitsY = await cdp.eval('window.__qa.qa(".inspector-panel .inspector-bits").map(function(e){ return (e.innerText || "").trim(); })');
+  const sY = await state(cdp);
+  note('inspector y', { head: sY.inspectorHead, bits: bitsY });
+  check('inspectorBits: a whole-signal driver has no range label',
+    addedY && bitsY.length === 0, bitsY);
+  check('inspectorBits: the panel switched to the whole signal',
+    (sY.inspectorHead || '').includes('bit_ranges.y'), sY.inspectorHead);
+  check('inspectorBits: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-inspector-bits.png');
+};
+
+// --- Wave 10: split view (two dumps side by side) ----------------------------
+// Only with two or more dumps. The toolbar holds the split toggle, one right-
+// pane choice per *non-active* dump, the linked toggle and the close button;
+// while open .split-view holds the interactive left .wave-pane and a read-only
+// .split-pane with its own canvas. A single-dump session keeps exactly the DOM
+// it had before (no toolbar, no split view).
+scenarios.splitView = async (cdp) => {
+  const splitState = () => cdp.eval(`(function(){
+    const toolbar = document.querySelector('.split-toolbar');
+    const view = document.querySelector('.split-view');
+    const toggle = document.querySelector('.split-btn[aria-label="Split view"]');
+    const linked = document.querySelector('.split-btn[aria-label="Linked time axis"]');
+    const close = document.querySelector('.split-btn.split-close');
+    const pane = document.querySelector('.split-pane');
+    const name = pane ? pane.querySelector('.split-pane-name') : null;
+    const mode = pane ? pane.querySelector('.split-pane-mode') : null;
+    const surface = document.querySelector('#wave-surface');
+    return {
+      toolbar: !!toolbar,
+      view: !!view,
+      toolbarRole: toolbar ? toolbar.getAttribute('role') : null,
+      toolbarLabel: toolbar ? toolbar.getAttribute('aria-label') : null,
+      pressed: toggle ? toggle.getAttribute('aria-pressed') : null,
+      linked: linked ? linked.getAttribute('aria-pressed') : null,
+      close: !!close,
+      choices: Array.prototype.map.call(document.querySelectorAll('.split-btn.split-right-choice'), function(b){ return { label: b.getAttribute('aria-label'), active: b.classList.contains('active') }; }),
+      // textContent, not innerText: the pane mode is styled text-transform:
+      // uppercase, and the assertion is about the DOM text, not the rendering
+      paneName: name ? (name.textContent || '').trim() : null,
+      paneMode: mode ? (mode.textContent || '').trim() : null,
+      canvas: !!document.querySelector('canvas.split-canvas'),
+      surface: !!surface,
+      surfaceInSplit: !!(surface && surface.closest('.split-view')),
+    };
+  })()`);
+  // ink of the right pane's canvas: alpha > 8 counts as a painted pixel
+  const splitInk = () => cdp.eval(`(function(){
+    const c = document.querySelector('canvas.split-canvas');
+    if (!c) return -1;
+    const ctx = c.getContext('2d');
+    if (!ctx) return -1;
+    try {
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      let ink = 0;
+      for (let i = 0; i < d.length; i += 4) { if (d[i + 3] > 8) ink += 1; }
+      return ink;
+    } catch (error) { return -1; }
+  })()`);
+  const clickBtn = (label) => cdp.eval(`(function(){
+    const b = Array.prototype.find.call(document.querySelectorAll('.split-btn'), function(x){ return x.getAttribute('aria-label') === ${JSON.stringify(label)}; });
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(600);
+  let st = await splitState();
+  note('single dump', st);
+  check('splitView: a single-dump session has no split toolbar', !st.toolbar, st);
+  check('splitView: a single-dump session has no split view', !st.view, st);
+  // give the first dump a row so the right pane has something to paint
+  const addedFirst = await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(700);
+  await cdp.upload([path.join(FIXTURES, 'mismatch.vcd')]);
+  await waitStatus(cdp, '2 dumps open', 25000);
+  await sleep(800);
+  st = await splitState();
+  note('two dumps', st);
+  check('splitView: the toolbar appears with two dumps',
+    st.toolbar && st.toolbarRole === 'toolbar' && st.toolbarLabel === 'Split view', st);
+  check('splitView: the split starts closed', !st.view && st.pressed === 'false', st);
+  const opened = await clickBtn('Split view');
+  await sleep(1200);
+  st = await splitState();
+  note('split open', st);
+  check('splitView: the split opens with the other dump on the right',
+    opened && st.view && st.pressed === 'true' && st.paneName === 'wave.vcd', st);
+  check('splitView: the right pane is read only', st.paneMode === 'read only', st.paneMode);
+  check('splitView: the right choice lists only the non-active dump',
+    st.choices.length === 1 && st.choices[0].label === 'Show wave.vcd on the right' && st.choices[0].active === true, st.choices);
+  check('splitView: the left pane stays interactive inside the split',
+    st.surface && st.surfaceInSplit && st.canvas, { surface: st.surface, inSplit: st.surfaceInSplit, rightCanvas: st.canvas });
+  const ink = await splitInk();
+  note('right pane ink', ink);
+  check('splitView: the right canvas is painted', ink > 0, ink);
+  // linked time axis toggles and flips back
+  const toggled = await clickBtn('Linked time axis');
+  await sleep(700);
+  const linkedOff = await splitState();
+  const toggledBack = await clickBtn('Linked time axis');
+  await sleep(700);
+  const linkedOn = await splitState();
+  note('linked toggle', { off: linkedOff.linked, on: linkedOn.linked });
+  check('splitView: the linked toggle flips the pressed state',
+    toggled && toggledBack && linkedOff.linked === 'false' && linkedOn.linked === 'true', { off: linkedOff.linked, on: linkedOn.linked });
+  // tier-A rule with the split open: a cursor commit on the left pane must not
+  // re-render the shell
+  const surface = await cdp.eval('window.__qa.rect("#wave-surface")');
+  const x0 = Math.round(surface.x + Math.min(160, surface.w / 3));
+  const y = Math.round(surface.y + 40);
+  const counts = async () => ({
+    shell: await cdp.eval('window.__qa.dbg("render_count")'),
+    pane: await cdp.eval('window.__qa.dbg("pane_render_count")'),
+  });
+  const before = await counts();
+  await cdp.mouse('mousePressed', x0, y, { buttons: 1 });
+  await sleep(300);
+  const atStart = await counts();
+  await cdp.mouse('mouseMoved', x0 + 1, y, { buttons: 1 });
+  await sleep(250);
+  const mid = await counts();
+  await cdp.mouse('mouseReleased', x0 + 1, y, { buttons: 0 });
+  await sleep(500);
+  const after = await counts();
+  note('split cursor renders', { before, atStart, mid, after });
+  check('splitView: a cursor commit with the split open does not re-render the shell',
+    atStart.shell === mid.shell && atStart.shell === after.shell, { before, atStart, mid, after });
+  // close: the split view goes, the toolbar stays and the plain wave pane is back
+  const closed = await clickBtn('Close split view');
+  await sleep(900);
+  st = await splitState();
+  note('split closed', st);
+  check('splitView: closing removes the split view', closed && !st.view, st);
+  check('splitView: the toolbar stays after closing', st.toolbar && st.pressed === 'false', st);
+  check('splitView: the plain wave pane is back', st.surface && !st.surfaceInSplit && !st.canvas, st);
+  check('splitView: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-split-view.png');
 };
 (async () => {
   const wanted = process.argv.slice(2);

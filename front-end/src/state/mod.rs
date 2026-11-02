@@ -46,6 +46,7 @@ pub mod persist;
 pub mod reduce;
 pub mod select;
 pub mod sources;
+pub mod split;
 //the module that defines the State struct lives in state/state.rs, the name the design doc uses
 #[allow(clippy::module_inception)]
 pub mod state;
@@ -66,6 +67,8 @@ pub use persist::{Persister, RowPrefs, Session, SessionRow, Sessions, Storage};
 pub use reduce::reduce;
 #[allow(unused_imports)]
 pub use sources::{Source, Sources, SourcesSlice};
+#[allow(unused_imports)]
+pub use split::Split;
 #[allow(unused_imports)]
 pub use state::{Nav, Rows, State};
 #[allow(unused_imports)]

@@ -114,15 +114,17 @@ a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
-and asserts the user-visible behaviour (the current matrix has **52 scenarios /
-414 assertions**; `--list` prints them). The full matrix is green with the R2
+and asserts the user-visible behaviour (the current matrix has **55 scenarios /
+446 assertions**; `--list` prints them). The full matrix is green with the R2
 layout rules required. The newest scenarios cover the generated/arrayed design
 tree in the sidebar, elaboration diagnostics reaching the editor and the top-bar
-chip, the TXT export matching the CSV for the same row, multi-dump tabs, the
-driver/load bit ranges in the editor hover (`bitRanges`), and the `corruption`
-regression: deterministic truncated-FST / flipped-FST-length / header-truncated-
-VCD fixtures must produce an actionable error and recover to a valid dump
-instead of crashing the page. Build the front end first, then run:
+chip, the TXT export matching the CSV for the same row, multi-dump tabs and the
+split view, the driver/load bit ranges in the editor hover and the inspector
+(`bitRanges`, `inspectorBits`), editor completion (`completion`), and the
+`corruption` regression: deterministic truncated-FST / flipped-FST-length /
+header-truncated-VCD fixtures must produce an actionable error and recover to a
+valid dump instead of crashing the page. Each run stages its build in its own
+`qa/.stage/<pid>/`, so parallel matrix runs no longer collide. Build the front end first, then run:
 
 ```bash
 node qa/run.mjs                 # full matrix against front-end/dist
@@ -135,8 +137,11 @@ Windows users can use the thin wrapper (`qa\run.ps1`, same flags);
 `qa/run.ps1 -List` prints the scenario names. Exit codes are real: `0` green,
 `1` a failing assertion, `2` the harness could not run (missing Chrome/build). CI
 runs an advisory smoke job (`empty,vcd,layout,layoutRules`) against the bundle the
-build job produced; the suite's README explains the fixtures and how to add a
-scenario.
+build job produced. The **full matrix** also runs in CI: `.github/workflows/qa.yml`
+builds the bundle with the CI wasm profile and runs `node qa/run.mjs --layout`
+every Monday (05:00 UTC) and on manual dispatch; it is advisory (it cannot block a
+merge) and uploads the screenshots and log when it fails. The suite's README
+explains the fixtures and how to add a scenario.
 
 ### wasm version
 
@@ -150,11 +155,13 @@ cd front-end
 CARGO_PROFILE_RELEASE_OPT_LEVEL=s trunk serve --release
 ```
 
-The release wasm with the CI profile is **9,953,799 bytes = 9.49 MiB**
+The release wasm with the CI profile is **10,003,350 bytes = 9.54 MiB**
 (about 2 MB over the wire, because GitHub Pages serves the assets
 gzip-compressed). CI pins trunk 0.22.1 and fails the build if the release wasm
 grows past **10 MiB** (`WASM_SIZE_BUDGET` in the Rust workflow), so a size
-blow-up shows up before it ships. Keep the `CARGO_PROFILE_RELEASE_OPT_LEVEL=s`
+blow-up shows up before it ships; the current build leaves roughly half a
+MiB of headroom, so a big new dependency needs a budget review. Keep the
+`CARGO_PROFILE_RELEASE_OPT_LEVEL=s`
 part of the command: a plain `trunk build --release` uses the default
 `opt-level = 3` and produces a ~12.36 MiB bundle that *looks* like a budget
 regression. The site itself is deployed from the same workflow with
@@ -208,7 +215,8 @@ wave view; scroll to move through the signals, `ctrl`+wheel to zoom, drag to
 zoom into a range, left/right click to place the two cursors, `z`/`f` to zoom
 out and fit, `n`/`shift+n` to jump between value transitions. `Delete` removes
 the selected rows. The wave frame has a `Drivers / loads` tab that shows the
-declaration, drivers and loads of the selected signal and jumps to them. A row's
+declaration, drivers and loads of the selected signal and jumps to them; a
+sliced driver/load shows the slice it touches (e.g. `q[3:0]`) next to the size. A row's
 `...` menu opens its settings: number format (including a fixed-point exponent),
 an analog trace, colour, load/drive actions and an **Export** section. To the
 right of each signal name the value at the cursor is shown after a cursor is
@@ -237,8 +245,19 @@ placed.
   exceed 1.5 GiB, and past that the open is
   refused with an actionable message ("close a dump tab first") rather than
   letting the tab run out of wasm memory. The status line appends
-  `— N dumps open, M MB`. A side-by-side split view of two dumps is designed but
-  not implemented yet: see [`docs/design/multi-dump.md`](docs/design/multi-dump.md).
+  `— N dumps open, M MB`.
+- **Split view**: with at least two dumps open, the wave frame shows a split
+  toolbar: **Split view** opens a right pane, every *other* dump gets a **Show
+  <name> on the right** choice, **Linked** toggles a shared time axis and **Close
+  split** closes the second pane. The left pane stays interactive; the right pane
+  is read-only (its dump's name plus a `read only` label, painted with the same
+  canvas machinery and decoding only visible rows). Linked mode maps the left
+  pane's visible window onto the right dump by fraction of trace (clamped) and
+  draws the cursors at the mapped times. Limits: the right pane is read-only (no
+  independent pan/zoom, no row scrolling or selection), the split is a fixed
+  50/50 (no draggable ratio yet), and the split state is not persisted across
+  reloads. A single-dump session renders no split DOM at all. See
+  [`docs/design/multi-dump.md`](docs/design/multi-dump.md).
 - **Large dumps**: a browser dump is read in 8 MB chunks with a progress row in
   the sidebar and a reading line in the top bar, then a `parsing ...` line while
   the parser runs. Esc or the cancel button stops the read and reports that the
@@ -253,7 +272,11 @@ placed.
   an `N problem(s)` chip visible even when the source pane is collapsed. The
   merged diagnostics are republished when the top module changes. Source hover
   cards also list the bit ranges a signal is driven or read through, as written
-  in the source (e.g. `- driven here: q[3:0], q[7:4]`).
+  in the source (e.g. `- driven here: q[3:0], q[7:4]`). The source editor also
+  completes: typing (or Ctrl+Space) suggests the enclosing module's
+  ports/signals/parameters/genvars/instances plus the database's module names,
+  and after `instance.` it lists that instance's module members, filtered by a
+  case-insensitive prefix.
 - **Find a value**: the ruler box (`time / value`) accepts either kind of query.
   Type an integer and press Enter to move cursor 1 to that time (the old goto
   behaviour); type anything else and press Enter to jump to the *next* change of
@@ -318,10 +341,13 @@ closer is a real button, and the wave list and candidate picker expose
   `width-mismatch`, non-constant generate bounds) merged with the parser/front-end
   ones per document, deduplicated and republished when the top module changes. A
   skipped construct may still be reported as a warning even though the source is
-  valid SystemVerilog. Completion is implemented **server-side**
-  (`textDocument/completion` plus an advertised `completionProvider`); the
-  browser editor does not call it yet - wiring the Monaco provider is a later
-  wave, so there is no completion popup in the app today. One documented gap:
+  valid SystemVerilog. Completion now works in the editor through the Monaco
+  provider (trigger `.`, case-insensitive prefix filtering, cancellation
+  honoured). Its limits: member completion resolves the instance chains the
+  design models, but arrayed-instance selectors (`u[1].`) and generate scopes or
+  packages cannot be used as qualifiers, and the prefix extraction is not
+  select-aware (only identifiers and dots before the caret are read). One
+  documented gap:
   only the picked top module is elaborated, so an elaboration diagnostic that
   depends on another top (for example the width-mismatch fixture) is not
   surfaced in the editor yet.
@@ -344,16 +370,20 @@ closer is a real button, and the wave list and candidate picker expose
   size. That is why the loader refuses dumps over 512 MB up front (and warns from
   100 MB) instead of letting the tab run out of wasm memory; a dump that large is
   still better opened in the desktop build, which reads the file from disk.
-* **Multi-dump limits.** Several dumps are tabs in one waveform pane, not
-  side-by-side panes yet: the split view is step 3 of
-  [`docs/design/multi-dump.md`](docs/design/multi-dump.md) and is not
-  implemented. The open dumps share a 1.5 GiB file-bytes budget; past it a new
-  open is refused with an actionable message.
+* **Split-view limits.** The side-by-side view is an MVP: with two or more
+  dumps the left pane is interactive and the right pane is **read-only** - it
+  cannot pan or zoom on its own, and its rows cannot be scrolled or selected -
+  the split is a fixed 50/50 with no draggable ratio yet, and the split state is
+  not persisted across reloads (see
+  [`docs/design/multi-dump.md`](docs/design/multi-dump.md)). The open dumps share
+  a 1.5 GiB file-bytes budget; past it a new open is refused with an actionable
+  message.
 * **Bit-range hover is textual.** The source hover lists the bit ranges a
   signal is driven/read through, but only the final identifier's select is
   recorded: `+:`-style and width-star ranges are not interpreted, a
-  generate-loop select stays the text `[i]`, and the front-end inspector does
-  not display the ranges yet (the design API field is ready).
+  generate-loop select stays the text `[i]`. The source hover and the
+  Drivers/loads inspector rows both show the slice now (`q[3:0]`; a whole-signal
+  reference shows nothing).
 
 ## Todos
 
@@ -373,7 +403,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 52 scenarios / 414 assertions, own fixtures) with an advisory CI smoke job
+- [x] browser QA suite moved into the repository (`qa/`, 55 scenarios / 446 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
@@ -389,7 +419,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] fast dump open: the VCD time range is found from the header plus a bounded tail scan instead of the whole body (~20x cheaper on the 8.3 MB benchmark)
 - [x] migration plans for yew 0.21 and Tauri 2 added under `docs/migrations/` (breaker lists, steps, verification)
 - [x] LSP/design position queries indexed: `textDocument/definition` answers in ~12 us on the synthetic 100-module design (byte-identical to the old scan, differential-tested) with a new `bench lsp` suite
-- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs, driver/load bit ranges in the editor hover, and corruption recovery (truncated/flipped FST, header-truncated VCD) - 52 scenarios / 414 assertions
+- [x] browser QA coverage for the generated/arrayed design tree, elaboration diagnostics in the editor, the TXT export, multi-dump tabs and the split view, driver/load bit ranges in the hover and the inspector, editor completion, and corruption recovery (truncated/flipped FST, header-truncated VCD) - 55 scenarios / 446 assertions
 - [x] multi-dump + split-view design note under `docs/design/multi-dump.md` (planned Wave 8)
 - [x] Tauri 2 migration: v2 config + capabilities, `__TAURI__.core` IPC and `onDragDropEvent` drag-and-drop, Linux webkit2gtk-4.1 prerequisites, CI on Ubuntu 24.04 (compile-verified; runtime and bundles are validated by the tag workflow)
 - [x] waveform hardening: a corrupt/truncated FST is rejected by a structural pre-parse validator instead of aborting the viewer; aliased signals stream under the requested variable index; deterministic VCD/FST fuzz and query-tier differential tests cover the entry points
@@ -398,11 +428,15 @@ Done in the next release (unreleased at the time of writing):
 - [x] driver/load bit ranges recorded from selects and shown in the source hover ("driven here: q[3:0], q[7:4]"; limits in Known limitations)
 - [x] Yew 0.21 migration: `features = ["csr"]`, `yew::Renderer` instead of `start_app`, the 5 `changed(old_props)` impls, the old crate-wide clippy allow removed, 179 front-end tests green; the CI-profile wasm is 9.49 MiB (inside the 10 MiB budget)
 - [x] LSP completion server-side: `textDocument/completion` answers ports/signals, parameters/localparams/genvars, instances and module names with details/sortText (no elaboration needed); the Monaco wiring is still to come
+- [x] side-by-side split view (MVP): split toolbar, read-only right pane, linked time axis by fraction of trace, mapped cursors; per-dump selectors; tab switches swap panes and closing a dump remaps or closes the split
+- [x] editor completion popup: Monaco provider (trigger `.`, kind mapping, insertText/detail/sortText, cancellation) plus the v2 server-side member completions after `instance.`
+- [x] inspector shows the sliced reference for drivers/loads (`.inspector-bits`, whole-signal references show nothing)
+- [x] QA harness runs stage their build in a per-run directory (parallel-safe) and `.github/workflows/qa.yml` runs the full matrix weekly + on dispatch (advisory)
 
 Still open:
 
-- [ ] wire the LSP completion into the Monaco editor (the server side is ready)
-- [ ] side-by-side split view of two dumps (`docs/design/multi-dump.md`, step 3)
+- [ ] split-view polish: right-pane interaction (pan/zoom, row scrolling/selection), a draggable split ratio, and persisted split state
+- [ ] completion qualifiers for arrayed instances/generate scopes, and select-aware prefix extraction
 - [ ] inline python for writing your own process on signal values
 - [ ] signal bundles (AXI, Avalon and so on)
 - [ ] SpinalHDL support

@@ -620,6 +620,32 @@ impl LspBridge {
         }
     }
 
+    /// `textDocument/completion` for one 1-based position, as the raw LSP
+    /// items (`{label, kind, detail, sortText}`).
+    ///
+    /// Completion is position-only, so it needs no document version: the server
+    /// parses the buffer it already holds, and every buffer change reaches it as
+    /// a `didChange` before this request. The server answers with a plain array;
+    /// the other legal LSP shape, a `CompletionList` (`{items: [...]}`), is
+    /// accepted too so a future server change cannot silently empty the popup.
+    pub fn completion(&self, file: &str, line: u32, column: u32) -> Vec<Value> {
+        let uri = document_uri(file);
+        let params = position_params(&uri, line, column);
+        let mut bridge = self.0.borrow_mut();
+        match bridge.request("textDocument/completion", params) {
+            Ok(Value::Array(items)) => items,
+            Ok(list) => list
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            Err(error) => {
+                bridge.record(&error);
+                Vec::new()
+            }
+        }
+    }
+
     /// Ask the UI to show `location`.
     pub fn jump(&self, location: &Location) {
         let Some(file) = file_of_uri(&location.uri) else {

@@ -1363,3 +1363,120 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
   color: var(--text-0);
   background: var(--bg-4);
 }
+/* ==========================================================================
+   Split view (docs/design/multi-dump.md step 3)
+   The toolbar only exists with >= 2 dumps; the two-pane container only while
+   the split is open, so a single-dump session keeps exactly its old DOM.
+   ========================================================================== */
+
+.split-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 26px;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-1);
+  overflow: hidden;
+}
+
+.split-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  border-radius: var(--radius-sm);
+  padding: 1px 8px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.split-btn:hover { color: var(--text-0); border-color: var(--accent-line); }
+
+.split-btn.active {
+  color: var(--text-0);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.split-close { margin-left: auto; }
+
+.split-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.split-view > .wave-pane {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+
+.split-pane {
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--wave-bg);
+  border-left: 1px solid var(--line);
+}
+
+.split-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 var(--dock-tabs-h);
+  height: var(--dock-tabs-h);
+  padding: 0 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-1);
+  overflow: hidden;
+}
+
+.split-pane-name {
+  color: var(--text-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.split-pane-mode {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.split-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.split-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* the bit range of a driver/load reference in the inspector (e.g. q[3:0]) */
+.inspector-bits {
+  color: var(--text-2);
+  font-size: 10px;
+  margin: 0 4px;
+}

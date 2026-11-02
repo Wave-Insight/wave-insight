@@ -9,6 +9,7 @@ use wave_insight_lib::waveform::TimeRange;
 
 use super::dumps::DumpsTabsSlice;
 use super::sources::SourcesSlice;
+use super::split::Split;
 use super::types::{
     Cursors, Dialog, DumpHandle, Focus, Goto, Layout, Picker, RowsSlice, SessionRestore, Status,
     View, Viewport,
@@ -52,6 +53,59 @@ pub fn editor_ratio(state: &State) -> f32 {
 /// no-dump scratch list. Subscribed by the wave pane.
 pub fn rows(state: &State) -> RowsSlice {
     state.rows_slice()
+}
+
+/// The side-by-side split, when it is open.
+pub fn split(state: &State) -> Option<Split> {
+    state.split
+}
+
+/// The rows of one specific dump (the split's right pane); the active-dump
+/// selectors above are unchanged.
+pub fn rows_of(state: &State, dump: usize) -> RowsSlice {
+    state
+        .dumps
+        .items
+        .get(dump)
+        .map(|entry| entry.rows.slice())
+        .unwrap_or_default()
+}
+
+/// The committed viewport of one specific dump.
+pub fn viewport_of(state: &State, dump: usize) -> Viewport {
+    state
+        .dumps
+        .items
+        .get(dump)
+        .map(|entry| entry.viewport)
+        .unwrap_or_default()
+}
+
+/// The time range of one specific dump.
+pub fn time_range_of(state: &State, dump: usize) -> Option<TimeRange> {
+    state
+        .dumps
+        .items
+        .get(dump)
+        .and_then(|entry| entry.time_range)
+}
+
+/// The file name of one specific dump.
+pub fn dump_name_of(state: &State, dump: usize) -> Option<String> {
+    state
+        .dumps
+        .items
+        .get(dump)
+        .map(|entry| entry.id.name.clone())
+}
+
+/// The handle of one specific dump (the split's right pane decodes from it).
+pub fn dump_waveform_of(state: &State, dump: usize) -> Option<DumpHandle> {
+    state
+        .dumps
+        .items
+        .get(dump)
+        .map(|entry| entry.handle.clone())
 }
 
 /// The dump tab strip: the tab list and the active index, and nothing else.

@@ -77,6 +77,44 @@ impl Document {
         Some((position.line + 1, characters + 1))
     }
 
+    /// The identifier or dotted member prefix that ends at `position`.
+    ///
+    /// Completion needs the text already typed before the caret: for
+    /// `u_cpu.pc` it returns the whole chain, for `clk` just the identifier.
+    /// Only identifier characters (`A-Za-z0-9_$`) and `.` count, so leading
+    /// whitespace/operators are dropped and the caller can split on the last
+    /// dot to tell a member prefix from a plain name prefix.
+    pub(crate) fn dotted_prefix_before(&self, position: Position) -> String {
+        let Some(line) = self.line_text(position.line) else {
+            return String::new();
+        };
+        // Convert the UTF-16 column into a char count against the real line.
+        let mut utf16 = 0u32;
+        let mut characters = 0usize;
+        for character in line.chars() {
+            if utf16 >= position.character {
+                break;
+            }
+            utf16 += character.len_utf16() as u32;
+            characters += 1;
+        }
+        let before: Vec<char> = line.chars().take(characters).collect();
+        let mut start = before.len();
+        while start > 0 {
+            let character = before[start - 1];
+            if character.is_alphanumeric()
+                || character == '_'
+                || character == '$'
+                || character == '.'
+            {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        before[start..].iter().collect()
+    }
+
     /// A `(line, column)` pair as the design database counts them → an LSP
     /// position.
     pub fn position_of(&self, line: u32, column: u32) -> Position {

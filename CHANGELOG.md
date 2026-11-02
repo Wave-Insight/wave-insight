@@ -10,6 +10,57 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.14.0] - 2026-11-02
+
+### Added
+
+- Side-by-side split view (MVP): with two or more dumps open, a split toolbar in
+  the wave frame offers a `Split view` toggle, a `Show <name> on the right`
+  choice per non-active dump, a `Linked` time-axis toggle and `Close split`. The
+  left pane stays interactive and the right pane is read-only (its dump's name
+  plus a `read only` label, drawn with the same canvas machinery and decoding
+  only visible rows). Linked mode maps the left pane's visible window onto the
+  right dump by fraction of trace (clamped) and draws the cursors at the mapped
+  times. The store gained `State.split` (`right`, `linked`) with
+  `SplitOpened`/`SplitClosed`/`SplitRightChanged`/`SplitLinkedToggled`, and the
+  selectors can read a specific dump (`rows_of`, `dump_name_of`, the pane
+  handle) instead of only the active one; switching tabs swaps the panes, closing
+  a dump remaps the right pane or closes the split when fewer than two remain,
+  and a single-dump session renders no split DOM. Limits: the right pane cannot
+  pan/zoom on its own and has no row scrolling/selection, the split is a fixed
+  50/50 with no draggable ratio yet, and the split state is not persisted.
+- Editor completion: the Wave 9 server-side completion now has a Monaco provider
+  (registered for design sources, trigger character `.`, LSP-to-Monaco kind
+  mapping, `label`/`insertText`/`detail`/`sortText`, cancellation honoured). The
+  server side also gained member completion: after `instance.` (and nested
+  instance chains the design models, or a leading module name) it returns only
+  that module's ports/signals/parameters/genvars/instances, and the prefix after
+  the last dot filters labels case-insensitively. Limits: arrayed-instance
+  selectors (`u[1].`) and generate scopes/packages are not resolvable as
+  qualifiers, and the typed prefix is read as identifiers and dots only (not
+  select-aware).
+- The Drivers/loads inspector now shows the sliced reference of a driver/load
+  (e.g. `q[3:0]`) between the signal name and the size; a whole-signal reference
+  shows nothing. New `.inspector-bits` style.
+- Browser QA coverage: `completion`, `inspectorBits` and `splitView` scenarios,
+  bringing the matrix to 55 scenarios / 446 assertions, green with the R2 layout
+  rules required. The harness now stages each run's build in its own
+  `qa/.stage/<pid>/` directory, so parallel matrix runs no longer collide.
+- A weekly full-matrix CI workflow (`.github/workflows/qa.yml`): builds the bundle
+  with the CI wasm profile and runs `node qa/run.mjs --layout` every Monday
+  (05:00 UTC) and on manual dispatch; advisory (no push/PR trigger,
+  `continue-on-error`) with a 45-minute timeout, uploading the screenshots and
+  log when it fails.
+
+### Changed
+
+- The split is store state and the panes are per-dump: the shell renders the
+  split toolbar only with at least two dumps, and the right pane is deliberately
+  read-only (no editing surface, and the single-pane `window.__waveDebug` hook
+  keeps describing the active dump).
+- The QA matrix is now also covered by the weekly workflow above; the per-push
+  `rust.yml` smoke stays four scenarios and advisory.
+
 ## [0.13.0] - 2026-11-02
 
 ### Added

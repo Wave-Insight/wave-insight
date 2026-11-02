@@ -1,0 +1,92 @@
+name: QA (full matrix)
+
+# The browser matrix is the release oracle, but rust.yml only runs a 4-scenario
+# advisory smoke on every push. This workflow runs the FULL matrix (all
+# scenarios, layout rules required) once a week and on demand, so a slow
+# regression the smoke does not cover still surfaces.
+#
+# It is advisory and can never be a required check: it has no push/pull_request
+# trigger, and continue-on-error keeps a red matrix from failing the workflow
+# (the job itself still shows red in the run list, and the screenshots + log are
+# uploaded on failure). It is not the per-push gate; rust.yml's qa job is.
+on:
+  schedule:
+    # weekly, Monday 05:00 UTC (an hour before the bench job at 06:00)
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+#a new run supersedes the one that is still going
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  #same size profile as rust.yml, so the matrix runs against the bundle the demo
+  #actually ships (opt-level s) instead of a local default-profile build
+  CARGO_PROFILE_RELEASE_OPT_LEVEL: s
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    #advisory: see the header. A failed run still shows as a failed job.
+    continue-on-error: true
+    steps:
+    - uses: actions/checkout@v4
+
+    #the toolchain version lives in rust-toolchain.toml, do not repeat it here:
+    #`rustup show` downloads it and every later cargo call uses it
+    - name: Install the pinned toolchain
+      run: rustup show
+
+    - name: Add the wasm target
+      run: rustup target add wasm32-unknown-unknown
+
+    - name: Install trunk
+      uses: taiki-e/install-action@v2
+      with:
+        #pinned: trunk's wasm-bindgen/wasm-opt defaults move between releases
+        tool: trunk@0.22.1
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: wasm
+
+    #this workflow builds its own bundle: a scheduled run cannot download the
+    #web-dist artifact of a rust.yml run (different workflow run). The command
+    #is the same one rust.yml's build job uses; --public-url is only needed for
+    #the gh-pages deploy, the matrix serves the bundle from /.
+    - name: Build the web bundle
+      run: |
+          cd front-end
+          trunk build --no-default-features --features wasm --release
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    #ubuntu-latest ships google-chrome; qa/run.mjs finds it on PATH or via CHROME
+    #(a missing browser is a harness failure, exit 2, and the log says so).
+    #--layout makes the R2 layout rules required, exactly like the local oracle
+    #run; the per-push smoke deliberately does not pass it.
+    - name: Run the full browser matrix (layout rules required)
+      shell: bash
+      run: |
+          set -o pipefail
+          mkdir -p qa/artifacts
+          node qa/run.mjs --layout 2>&1 | tee qa/artifacts/full-matrix.log
+
+    #the screenshots and the run log are the way to see why the matrix went red
+    #(qa/artifacts is gitignored, so they only exist as a workflow artifact)
+    - name: Upload the QA screenshots and log
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: qa-full-matrix-artifacts
+        path: qa/artifacts
+        if-no-files-found: ignore
+        retention-days: 14

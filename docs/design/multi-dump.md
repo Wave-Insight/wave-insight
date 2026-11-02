@@ -6,12 +6,12 @@ note was written, exactly one dump was open and the wave rows, the viewport and
 the derived tree belonged to it implicitly. This note makes that relationship
 explicit so a second dump can be added without forking the whole UI.
 
-Status: **steps 1-2 shipped (Wave 8); step 3 (split view) remains.** The
-per-dump model and the dump tab strip landed: the strip renders one tab per open
-dump (a single-dump session included), closing the last tab removes the strip
-and brings the empty start state back, and reopening a dump restores its
-remembered rows. Step 3 - showing two dumps side by side on one time axis - is
-the open part of this note.
+Status: **steps 1-2 shipped in Wave 8; step 3 (split view) shipped as an MVP in
+Wave 10.** The per-dump model, the dump tab strip and the side-by-side split
+landed. The split's remaining limits are deliberately listed here: the right
+pane is read-only (no independent pan/zoom in unlinked mode and no row
+scrolling/selection), the split is a fixed 50/50 with no draggable ratio yet, and
+the split state is not persisted across reloads.
 
 Implementation result (Wave 8), where reality differed from the design below:
 `State.dumps` (in `front-end/src/state/dumps.rs`) owns one `DumpEntry` per tab -
@@ -28,13 +28,28 @@ total bytes) whose version is bumped only when the tab list or the active index
 changes, so a viewport/cursor commit changes the active dump's slices without
 re-rendering the shell.
 
+Implementation result (Wave 10), the split view: `State.split` holds
+`Option<Split { right, linked }>` (`right` is always a dump other than the active
+one) with `SplitOpened`/`SplitClosed`/`SplitRightChanged`/`SplitLinkedToggled`;
+the selectors can read a specific dump (`rows_of`, `dump_name_of`, the pane
+handle), so the panes are per-dump. `WaveShow`'s `SplitPane`
+(`front-end/src/wave_show/split.rs`) is a read-only canvas pane: same machinery,
+decodes only the visible rows, owns no editing surface and does not publish
+`window.__waveDebug`. Linked mode uses the pure `linked_view`/`linked_cursor`
+mapping in `state/split.rs`: fraction of the left trace onto the right trace,
+clamped, with the cursors drawn at the mapped times. The toolbar renders only
+with two or more dumps (a single dump has no split DOM), switching tabs swaps the
+panes, and closing a dump remaps the right pane or closes the split when fewer
+than two remain.
+
 ## 1. Why
 
 Comparing two runs of the same testbench (before/after a fix, two seeds, RTL vs
 gate level) is a daily Verdi workflow: open both dumps, look at the same signals,
-switch between them, later show them side by side on one time axis. The current
-app cannot do it: opening a second dump replaces the first one, and the row list
-of the first is only recoverable by reopening the file (session restore).
+switch between them, later show them side by side on one time axis. When this
+note was written the app could not do it: opening a second dump replaced the
+first one, and the row list of the first was only recoverable by reopening the
+file (session restore).
 
 ## 2. What is per-dump today
 

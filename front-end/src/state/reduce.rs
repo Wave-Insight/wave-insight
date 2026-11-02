@@ -280,6 +280,25 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             state.dumps.active = active;
             state.dumps.touch();
             state.dumps.touch_tabs();
+            // keep the split consistent with the new tab list: the closed dump
+            // cannot be the right pane, and the right pane must not be the
+            // (possibly new) active dump
+            if let Some(split) = state.split {
+                if state.dumps.len() < 2 {
+                    state.split = None;
+                } else {
+                    let mut right = split.right;
+                    if right == index {
+                        right = other_dump(state, index);
+                    } else if right > index {
+                        right = right.saturating_sub(1);
+                    }
+                    state.split = Some(super::split::Split {
+                        right: other_dump(state, right),
+                        linked: split.linked,
+                    });
+                }
+            }
             sync_top_hint(state);
             refresh_tree(state);
             state.nav.status = Some(Status::info(format!("closed {}", closed.id.name)));
@@ -428,6 +447,35 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
         Action::DialogClosed => {
             state.nav.dialog = None;
         }
+        Action::SplitOpened { right } => {
+            // a split needs a second dump to show on the right
+            if state.dumps.len() < 2 {
+                return Vec::new();
+            }
+            state.split = Some(super::split::Split {
+                right: other_dump(state, right),
+                linked: true,
+            });
+        }
+        Action::SplitClosed => {
+            state.split = None;
+        }
+        Action::SplitRightChanged { right } => {
+            if state.dumps.len() < 2 {
+                state.split = None;
+                return Vec::new();
+            }
+            let linked = state.split.map(|split| split.linked).unwrap_or(true);
+            state.split = Some(super::split::Split {
+                right: other_dump(state, right),
+                linked,
+            });
+        }
+        Action::SplitLinkedToggled => {
+            if let Some(split) = state.split.as_mut() {
+                split.linked = !split.linked;
+            }
+        }
         Action::ViewCommitted(view) => {
             let mut viewport = state.viewport_slice();
             viewport.view = view;
@@ -466,13 +514,29 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
     Vec::new()
 }
 
+/// A dump index that is *not* the active one (the right pane must show another
+/// dump): `wanted` when it is valid and different, otherwise the next one.
+fn other_dump(state: &State, wanted: usize) -> usize {
+    let len = state.dumps.len();
+    let active = state.dumps.active_index();
+    if wanted < len && wanted != active {
+        wanted
+    } else if len > 1 {
+        (active + 1) % len
+    } else {
+        0
+    }
+}
+
 /// Make `index` the active dump: the tree, the design's top hint and the LSP top
 /// follow it, and the module selection (which belonged to the old tree) is
-/// cleared.
+/// cleared. The split's right pane must keep showing *another* dump, so the
+/// indices are swapped when the left pane takes the right dump's place.
 fn activate_dump(state: &mut State, index: usize) {
     if state.dumps.is_empty() {
         return;
     }
+    let previous = state.dumps.active_index();
     state.dumps.active = index.min(state.dumps.len() - 1);
     // a fresh row version: the panes' `rows` subscription compares versions, and
     // two tabs can hold lists at the same per-entry version
@@ -483,6 +547,13 @@ fn activate_dump(state: &mut State, index: usize) {
     state.dumps.touch();
     // the active index is part of the shell's tab strip snapshot
     state.dumps.touch_tabs();
+    // the right pane follows the active dump: when the left pane took the right
+    // dump's place, the previous left dump becomes the right pane
+    if let Some(split) = state.split.as_mut() {
+        if split.right == state.dumps.active {
+            split.right = previous;
+        }
+    }
     sync_top_hint(state);
     refresh_tree(state);
 }
@@ -1835,6 +1906,75 @@ mod tests {
         // renders for one dump too)
         let single = crate::state::select::dump_tabs(&state);
         assert_eq!(single.len(), 1);
+    }
+    // --- Wave 10: the side-by-side split ----------------------------------
+
+    #[test]
+    fn the_split_needs_two_dumps_and_maps_its_right_index() {
+        let mut state = state();
+        // no dumps: opening is a no-op
+        reduce(&mut state, Action::SplitOpened { right: 0 });
+        assert!(state.split.is_none());
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("a.vcd"), Some(size));
+        // one dump: still no split
+        reduce(&mut state, Action::SplitOpened { right: 0 });
+        assert!(state.split.is_none());
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("b.vcd"), Some(size));
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("c.vcd"), Some(size));
+        // the right pane must be a dump other than the active one
+        reduce(&mut state, Action::SplitOpened { right: 2 });
+        let split = state.split.expect("the split opened");
+        assert_ne!(split.right, state.dumps.active_index());
+        assert!(split.linked);
+        // an explicit choice is honoured when it is another dump
+        reduce(&mut state, Action::SplitRightChanged { right: 0 });
+        assert_eq!(state.split.map(|split| split.right), Some(0));
+        // ...and refused (a different dump is picked) when it is the active one
+        reduce(&mut state, Action::SplitRightChanged { right: 2 });
+        let split = state.split.expect("the split stays open");
+        assert_ne!(split.right, state.dumps.active_index());
+        // the linked toggle flips the flag and keeps the right dump
+        let right = split.right;
+        reduce(&mut state, Action::SplitLinkedToggled);
+        assert_eq!(
+            state.split,
+            Some(crate::state::Split {
+                right,
+                linked: false
+            })
+        );
+        reduce(&mut state, Action::SplitClosed);
+        assert!(state.split.is_none());
+    }
+
+    #[test]
+    fn the_split_survives_tab_switches_and_closes_with_its_dump() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("a.vcd"), Some(size));
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("b.vcd"), Some(size));
+        reduce(&mut state, Action::SplitOpened { right: 0 });
+        assert_eq!(state.split.map(|split| split.right), Some(0));
+        // activating the dump shown on the right swaps the panes instead of
+        // letting both sides show the same dump
+        reduce(&mut state, Action::DumpTabActivated { index: 0 });
+        assert_eq!(state.dumps.active_index(), 0);
+        assert_eq!(state.split.map(|split| split.right), Some(1));
+        // closing the right dump remaps the split to the other dump
+        reduce(&mut state, Action::DumpClosed { index: 1 });
+        assert_eq!(state.dumps.len(), 1);
+        assert!(state.split.is_none(), "one dump cannot be split");
+        // and a split opened before a close is dropped when only one dump is left
+        let (handle, size) = wave_vcd();
+        open_dump(&mut state, handle, Some("c.vcd"), Some(size));
+        reduce(&mut state, Action::SplitOpened { right: 0 });
+        assert!(state.split.is_some());
+        reduce(&mut state, Action::DumpClosed { index: 1 });
+        assert!(state.split.is_none());
     }
     #[test]
     fn the_viewport_and_focus_are_per_dump() {

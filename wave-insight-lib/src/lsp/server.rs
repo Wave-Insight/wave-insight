@@ -15,7 +15,7 @@
 //! | `textDocument/references` | declaration (optional) + every driver/load span, or every instantiation of a module |
 //! | `textDocument/hover` | short markdown/plaintext card: declaration, module, width, direction, driver/load counts |
 //! | `textDocument/documentSymbol` | modules with parameter/port/signal/instance children |
-//! | `textDocument/completion` | identifiers visible at the cursor: ports, signals (generate-scoped too), parameters/localparams, genvars, instances and every module name (locals sort before modules) |
+//! | `textDocument/completion` | identifiers visible at the cursor: ports, signals (generate-scoped too), parameters/localparams, genvars, instances and every module name; a prefix filters case-insensitively and `instance.`/`a.b.` returns that module's members |
 //!
 //! Client notifications: `initialized`, `textDocument/didOpen`, `didChange`,
 //! `didSave`, `didClose`.  After every document notification the server queues a
@@ -691,16 +691,30 @@ impl LspServer {
     ///
     /// The document and position resolve exactly like hover/definition; the
     /// enclosing module is found from the per-file module list (the same index
-    /// documentSymbol uses) by comparing line ranges, so no elaboration is
-    /// needed and a big design is O(log n + k) in the number of modules of the
-    /// file plus the items of the enclosing module.  The item set is: ports,
-    /// signals (including generate-scoped ones), module parameters/localparams,
-    /// genvars, instance names and every module name of the database (for
-    /// instantiation).  Locals sort before modules.
+    /// documentSymbol uses) with a binary search, so no elaboration is needed
+    /// and a big design is O(log n + k).
+    ///
+    /// Two modes, chosen from the text before the caret
+    /// ([`Document::dotted_prefix_before`]):
+    ///
+    /// * **plain name** (`pc`, or nothing after a space/operator): the
+    ///   enclosing module's ports, signals (including generate-scoped ones),
+    ///   parameters/localparams, genvars and instance names, plus every module
+    ///   name of the database for instantiation;
+    /// * **member access** (`u_cpu.`, `u_cpu.pc`, `u_mid.u_leaf.`): the target
+    ///   module is resolved by walking instance names (a module name is accepted
+    ///   as the first qualifier too) and only that module's ports, signals,
+    ///   parameters, genvars and instances are returned.  An unknown qualifier
+    ///   yields an empty list.
+    ///
+    /// In both modes the partial last segment filters labels case-insensitively
+    /// (`U_CPU` matches `u_cpu`).  Locals sort before module names.
     fn completion(&mut self, params: &Json) -> Result<Json, RpcError> {
         let Some(query) = self.resolve_position(params)? else {
             return Ok(Json::Array(Vec::new()));
         };
+        let prefix = completion_prefix(self, params);
+        let (qualifier, last_segment) = split_completion_prefix(&prefix);
         let modules = self.db.modules_in_file(&query.path);
         let Some(module) = module_at_position(&modules, query.line) else {
             // Before the first module (file header comment etc.): nothing is
@@ -708,9 +722,69 @@ impl LspServer {
             return Ok(Json::Array(Vec::new()));
         };
 
+        let filter = last_segment.to_ascii_lowercase();
+        let target = if qualifier.is_empty() {
+            Some(module)
+        } else {
+            let segments: Vec<&str> = qualifier
+                .split('.')
+                .filter(|segment| !segment.is_empty())
+                .collect();
+            self.resolve_member_module(module, &segments)
+        };
+        let Some(target) = target else {
+            return Ok(Json::Array(Vec::new()));
+        };
+        let include_modules = qualifier.is_empty();
+        Ok(Json::Array(self.module_completion_items(
+            target,
+            &filter,
+            include_modules,
+        )))
+    }
+
+    /// Walk instance names (or a leading module name) to the module a dotted
+    /// prefix refers to.
+    ///
+    /// Nested access is only possible through instances the design models; a
+    /// qualifier that is not an instance (or module) returns None.
+    fn resolve_member_module<'a>(
+        &'a self,
+        start: &'a ModuleDef,
+        segments: &[&str],
+    ) -> Option<&'a ModuleDef> {
+        let mut current = start;
+        for (index, segment) in segments.iter().enumerate() {
+            if let Some(instance) = current
+                .instances
+                .iter()
+                .find(|instance| instance.name == *segment && instance.array.is_empty())
+            {
+                current = self.db.module(&instance.module)?;
+            } else if index == 0 {
+                current = self.db.module(segment)?;
+            } else {
+                return None;
+            }
+        }
+        Some(current)
+    }
+
+    /// The completion items of one module, case-insensitively filtered by
+    /// `filter` (empty = everything).  Module names are only included for the
+    /// plain-name mode.
+    fn module_completion_items(
+        &self,
+        module: &ModuleDef,
+        filter: &str,
+        include_modules: bool,
+    ) -> Vec<Json> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut items = Vec::new();
         let mut push = |label: &str, kind: i64, detail: String, group: &str| {
+            if !label.to_ascii_lowercase().starts_with(filter) {
+                return;
+            }
             if !seen.insert(label.to_owned()) {
                 return;
             }
@@ -768,17 +842,18 @@ impl LspServer {
             }
             push(&instance.name, COMPLETION_REFERENCE, detail, "0");
         }
-        // Every module of the database: Module kind, sorted after the locals.
-        for definition in self.db.modules() {
-            push(
-                &definition.name,
-                COMPLETION_MODULE,
-                "module".to_owned(),
-                "1",
-            );
+        if include_modules {
+            // Every module of the database: Module kind, sorted after locals.
+            for definition in self.db.modules() {
+                push(
+                    &definition.name,
+                    COMPLETION_MODULE,
+                    "module".to_owned(),
+                    "1",
+                );
+            }
         }
-
-        Ok(Json::Array(items))
+        items
     }
 
     fn hover(&mut self, params: &Json) -> Result<Json, RpcError> {
@@ -1194,6 +1269,38 @@ fn completion_item(label: &str, kind: i64, detail: String, sort_text: &str) -> J
 /// order); the last module runs to the end of the file.  Modules cannot nest in
 /// the SystemVerilog subset the front end supports, so this is the innermost
 /// module as well.
+/// The text typed before the caret (see [`Document::dotted_prefix_before`]).
+fn completion_prefix(server: &LspServer, params: &Json) -> String {
+    let Some(uri) = params
+        .get("textDocument")
+        .and_then(|text_document| text_document.get_str("uri"))
+    else {
+        return String::new();
+    };
+    let Some(position) = params.get("position").and_then(Position::from_json) else {
+        return String::new();
+    };
+    server
+        .document(uri)
+        .map(|document| document.dotted_prefix_before(position))
+        .unwrap_or_default()
+}
+
+/// Split `u_mid.u_leaf.` into (`u_mid.u_leaf`, ``) and `u_cpu.pc` into
+/// (`u_cpu`, `pc`); a plain name has an empty qualifier.
+fn split_completion_prefix(prefix: &str) -> (&str, &str) {
+    if prefix.is_empty() {
+        return ("", "");
+    }
+    if let Some(without_dot) = prefix.strip_suffix('.') {
+        return (without_dot, "");
+    }
+    match prefix.rsplit_once('.') {
+        Some((qualifier, last_segment)) => (qualifier, last_segment),
+        None => ("", prefix),
+    }
+}
+
 fn module_at_position<'a>(modules: &[&'a ModuleDef], line: u32) -> Option<&'a ModuleDef> {
     // The per-file list is in declaration order (ascending start lines), so a
     // binary search finds the last module that starts at or before the cursor.
@@ -2393,6 +2500,159 @@ mod tests {
             Some(0),
             "unknown document: {reply:?}"
         );
+    }
+
+    // -- completion v2: prefix filtering and member access ----------------
+
+    fn advance(position: Position, characters: u32) -> Position {
+        Position::new(position.line, position.character + characters)
+    }
+
+    #[test]
+    fn member_completion_after_an_instance_dot() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("completion_members.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "completion_members.sv");
+        let source = fixture_text("completion_members.sv");
+        // "assign out = u_mid.u_leaf.q;": the first u_mid. occurrence.
+        let position = advance(position_of(&source, "u_mid."), "u_mid.".len() as u32);
+        let reply = request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&uri, position),
+        );
+        let labels = completion_labels(&reply);
+        for expected in ["a", "b", "u_leaf"] {
+            assert!(
+                labels.iter().any(|label| label == expected),
+                "member of member_mid missing {expected}: {labels:?}"
+            );
+        }
+        // Members only: no module names and no names from the outer module.
+        assert!(
+            !labels.iter().any(|label| label == "member_top"),
+            "{labels:?}"
+        );
+        assert!(!labels.iter().any(|label| label == "clk"), "{labels:?}");
+    }
+
+    #[test]
+    fn nested_member_completion_and_member_prefix_filtering() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("completion_members.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "completion_members.sv");
+        let source = fixture_text("completion_members.sv");
+
+        // u_mid.u_leaf. -> member_leaf members.
+        let position = advance(
+            position_of(&source, "u_mid.u_leaf."),
+            "u_mid.u_leaf.".len() as u32,
+        );
+        let labels = completion_labels(&request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&uri, position),
+        ));
+        assert_eq!(labels, vec!["clk", "d", "q"], "{labels:?}");
+
+        // u_mid.u_l -> only the nested instance that starts with "u_l".
+        let position = advance(position_of(&source, "u_mid.u_l "), "u_mid.u_l".len() as u32);
+        let labels = completion_labels(&request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&uri, position),
+        ));
+        assert_eq!(labels, vec!["u_leaf"], "{labels:?}");
+
+        // Case-insensitive member prefix: u_mid.U_L matches u_leaf.
+        let position = advance(position_of(&source, "u_mid.U_L"), "u_mid.U_L".len() as u32);
+        let labels = completion_labels(&request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&uri, position),
+        ));
+        assert_eq!(labels, vec!["u_leaf"], "{labels:?}");
+    }
+
+    #[test]
+    fn member_completion_accepts_a_module_name_and_rejects_unknown_qualifiers() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("completion_members.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "completion_members.sv");
+        let source = fixture_text("completion_members.sv");
+
+        // A module name works as the first qualifier even without an instance.
+        let position = advance(
+            position_of(&source, "member_leaf."),
+            "member_leaf.".len() as u32,
+        );
+        let labels = completion_labels(&request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&uri, position),
+        ));
+        assert_eq!(labels, vec!["clk", "d", "q"], "{labels:?}");
+
+        // An unknown qualifier is an empty list, not an error.
+        let position = advance(position_of(&source, "nope."), "nope.".len() as u32);
+        let reply = request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&uri, position),
+        );
+        assert_eq!(reply.as_array().map(<[Json]>::len), Some(0), "{reply:?}");
+    }
+
+    #[test]
+    fn plain_prefix_completion_is_case_insensitive_and_module_scoped() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("completion_members.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "completion_members.sv");
+        let source = fixture_text("completion_members.sv");
+
+        // "member_mid u_mid(": cursor right after "u_mid".
+        let position = advance(position_of(&source, "u_mid("), "u_mid".len() as u32);
+        let labels = completion_labels(&request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&uri, position),
+        ));
+        assert_eq!(labels, vec!["u_mid"], "{labels:?}");
+
+        // U_LEAF in the probe comment matches the u_leaf instance.
+        let position = advance(position_of(&source, "U_LEAF"), "U_LEAF".len() as u32);
+        let labels = completion_labels(&request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&uri, position),
+        ));
+        assert_eq!(labels, vec!["u_leaf"], "{labels:?}");
+    }
+
+    #[test]
+    fn member_completion_keeps_the_detail_of_the_member() {
+        let mut server =
+            LspServer::with_db(DesignDb::load_files([fixture("completion_members.sv")]));
+        initialize(&mut server);
+        let uri = open_fixture(&mut server, "completion_members.sv");
+        let source = fixture_text("completion_members.sv");
+        let position = advance(
+            position_of(&source, "u_mid.u_leaf."),
+            "u_mid.u_leaf.".len() as u32,
+        );
+        let reply = request(
+            &mut server,
+            "textDocument/completion",
+            position_params(&uri, position),
+        );
+        let d = completion_item_named(&reply, "d");
+        assert_eq!(d.get_str("detail"), Some("input logic [7:0]"), "{d:?}");
+        let q = completion_item_named(&reply, "q");
+        assert_eq!(q.get_str("detail"), Some("output logic [7:0]"), "{q:?}");
     }
 
     // -- protocol and lifecycle --------------------------------------------

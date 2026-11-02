@@ -8,9 +8,9 @@ use crate::module_struct::ModuleStruct;
 use crate::nav::{match_dump_candidates, PathPicker, SidebarTree, SignalInspector, SourceClick};
 use crate::state::{
     self, Action, Cursors, DumpHandle, DumpId, DumpsTabsSlice, Effect, Focus, Goto, Layout, Picker,
-    RowsSlice, SourcesSlice, Status, Store, Subscription,
+    RowsSlice, SourcesSlice, Split, Status, Store, Subscription,
 };
-use crate::wave_show::WaveShow;
+use crate::wave_show::{SplitPane, WaveShow};
 
 use crate::top_bar::TopBar;
 
@@ -57,6 +57,14 @@ pub enum Msg {
     DumpClose(usize),
     /// A key press inside the dump tab strip (Ctrl+W closes the active dump).
     DumpTabsKey(KeyboardEvent),
+    /// The store's split slice changed (open/closed, right dump, linked).
+    SplitChanged(Option<Split>),
+    /// The split toggle button.
+    SplitToggled,
+    /// The right pane should show this dump index.
+    SplitRight(usize),
+    /// Linked time axis toggled.
+    SplitLinkedToggled,
     /// A module-tree row was clicked: the sidebar selection moved.
     InstanceSelected(String),
     /// The editor buffer changed; the store re-syncs the document and the LSP.
@@ -199,6 +207,9 @@ pub struct App {
     /// the shell.
     dump_tabs: DumpsTabsSlice,
     _dumps_sub: Subscription,
+    /// The split view (right pane dump + linked flag), mirrored from the store.
+    split: Option<Split>,
+    _split_sub: Subscription,
     /// The language server client the source editor talks to.
     lsp: LspBridge,
     /// Cursor/dump subscriptions for the editor inlay hints; they update the
@@ -361,6 +372,9 @@ impl Component for App {
         let dump_tabs = store.select(state::select::dump_tabs);
         let dumps_sub =
             store.subscribe(state::select::dump_tabs, ctx.link().callback(Msg::DumpTabs));
+        let split = store.select(state::select::split);
+        let split_sub =
+            store.subscribe(state::select::split, ctx.link().callback(Msg::SplitChanged));
         let mut this = Self {
             store,
             layout,
@@ -374,6 +388,8 @@ impl Component for App {
             _tree_sub: tree_sub,
             dump_tabs,
             _dumps_sub: dumps_sub,
+            split,
+            _split_sub: split_sub,
             lsp,
             _cursors_sub: cursors_sub,
             _rows_sub: rows_sub,
@@ -570,13 +586,85 @@ impl Component for App {
                                     {"Drivers / loads"}
                                 </button>
                             </div>
+                            {if self.dump_tabs.len() >= 2 {
+                                let split_open = self.split.is_some();
+                                let linked = self.split.map(|split| split.linked).unwrap_or(true);
+                                let right = self.split.map(|split| split.right).unwrap_or(0);
+                                let active = self.dump_tabs.active_index();
+                                html!{
+                                <div class="split-toolbar" role="toolbar" aria-label="Split view">
+                                    <button type="button"
+                                        class={if split_open {"split-btn active"} else {"split-btn"}}
+                                        aria-label="Split view"
+                                        aria-pressed={if split_open {"true"} else {"false"}}
+                                        title="Show a second dump side by side"
+                                        onclick={link.callback(|_| Msg::SplitToggled)}>
+                                        {"Split view"}
+                                    </button>
+                                    {if split_open {
+                                        html!{
+                                        <>
+                                            { for self.dump_tabs.items.iter().enumerate()
+                                                .filter(|(index, _)| *index != active)
+                                                .map(|(index, tab)| {
+                                                    let label = if tab.name.is_empty() {
+                                                        "dump".to_string()
+                                                    } else {
+                                                        tab.name.clone()
+                                                    };
+                                                    let class = if index == right {
+                                                        "split-btn split-right-choice active"
+                                                    } else {
+                                                        "split-btn split-right-choice"
+                                                    };
+                                                    html!{
+                                                        <button type="button" class={class}
+                                                            aria-label={format!("Show {label} on the right")}
+                                                            title={format!("Show {label} on the right")}
+                                                            onclick={link.callback(move |_| Msg::SplitRight(index))}>
+                                                            {label}
+                                                        </button>
+                                                    }
+                                                })}
+                                            <button type="button"
+                                                class={if linked {"split-btn active"} else {"split-btn"}}
+                                                aria-label="Linked time axis"
+                                                aria-pressed={if linked {"true"} else {"false"}}
+                                                title="Show the same slice of both traces"
+                                                onclick={link.callback(|_| Msg::SplitLinkedToggled)}>
+                                                {"Linked"}
+                                            </button>
+                                            <button type="button" class="split-btn split-close"
+                                                aria-label="Close split view"
+                                                title="Close the second pane"
+                                                onclick={link.callback(|_| Msg::SplitToggled)}>
+                                                {"Close split"}
+                                            </button>
+                                        </>
+                                        }
+                                    }else {
+                                        html!{}
+                                    }}
+                                </div>
+                                }
+                            }else {
+                                html!{}
+                            }}
                             <div class="dock-body">
-                                <WaveShow
-                                    hidden={self.wave_tab != WaveFrameTab::Waveform}
-                                    store={self.store.clone()}
-                                    onselect={link.callback(Msg::WaveSelect)}
-                                    onjump={link.callback(Msg::WaveJump)}
-                                    onlocate={link.callback(Msg::Locate)} />
+                                {if let Some(split) = self.split {
+                                    html!{
+                                    <div class="split-view">
+                                        {self.wave_pane(link)}
+                                        <SplitPane
+                                            key={format!("{}-{}", split.right, split.linked)}
+                                            store={self.store.clone()}
+                                            dump={split.right}
+                                            linked={split.linked} />
+                                    </div>
+                                    }
+                                }else {
+                                    self.wave_pane(link)
+                                }}
                                 <SignalInspector
                                     hidden={self.wave_tab != WaveFrameTab::LoadDrive}
                                     store={self.store.clone()}
@@ -811,6 +899,27 @@ impl App {
                     let index = self.dump_tabs.active_index();
                     self.apply(Action::DumpClosed { index });
                 }
+                false
+            }
+            Msg::SplitChanged(split) => {
+                self.split = split;
+                true
+            }
+            Msg::SplitToggled => {
+                if self.split.is_some() {
+                    self.apply(Action::SplitClosed);
+                } else {
+                    let right = self.split_default_right();
+                    self.apply(Action::SplitOpened { right });
+                }
+                false
+            }
+            Msg::SplitRight(right) => {
+                self.apply(Action::SplitRightChanged { right });
+                false
+            }
+            Msg::SplitLinkedToggled => {
+                self.apply(Action::SplitLinkedToggled);
                 false
             }
             Msg::InstanceSelected(path) => {
@@ -1236,6 +1345,28 @@ impl App {
                 );
             }
         }
+    }
+
+    /// The interactive wave pane (today's DOM); the split view puts it next to
+    /// the read-only [`SplitPane`].
+    fn wave_pane(&self, link: &yew::html::Scope<Self>) -> Html {
+        html! {
+            <WaveShow
+                hidden={self.wave_tab != WaveFrameTab::Waveform}
+                store={self.store.clone()}
+                onselect={link.callback(Msg::WaveSelect)}
+                onjump={link.callback(Msg::WaveJump)}
+                onlocate={link.callback(Msg::Locate)} />
+        }
+    }
+
+    /// The dump a fresh split should show on the right: the first one that is
+    /// not the active dump.
+    fn split_default_right(&self) -> usize {
+        let active = self.dump_tabs.active_index();
+        (0..self.dump_tabs.len())
+            .find(|index| *index != active)
+            .unwrap_or(active)
     }
 
     /// The opened dump, read from the store (the store owns the only handle).

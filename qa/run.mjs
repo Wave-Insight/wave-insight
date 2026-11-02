@@ -21,7 +21,11 @@ import { fileURLToPath } from 'node:url';
 
 const QA = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.dirname(QA);
-const STAGE = path.join(QA, '.stage');
+// Per-run stage dir under the gitignored qa/.stage: two runs (the Lead's full
+// matrix and a scenario run) must not fight over one directory - a concurrent
+// run used to fail with EPERM removing the other's chrome profile.
+const STAGE_ROOT = path.join(QA, '.stage');
+const STAGE = path.join(STAGE_ROOT, String(process.pid));
 const SHOTS = path.join(QA, 'artifacts');
 const FIXTURES = path.join(QA, 'fixtures');
 
@@ -225,7 +229,11 @@ async function main() {
     return code;
   } finally {
     stop();
-    if (!args.keep) { try { fs.rmSync(path.join(STAGE, 'chrome-profile'), { recursive: true, force: true }); } catch {} }
+    if (!args.keep) {
+      try { fs.rmSync(STAGE, { recursive: true, force: true }); } catch {}
+      // only succeeds when no other run is still staging
+      try { fs.rmdirSync(STAGE_ROOT); } catch {}
+    }
     await sleep(200);
   }
 }
