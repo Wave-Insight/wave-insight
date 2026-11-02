@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     #the toolchain version lives in rust-toolchain.toml, do not repeat it here:
     #`rustup show` downloads it and every later cargo call uses it
@@ -55,7 +55,7 @@ jobs:
     #`html_reports` writes the plots and the summary table under target/criterion
     - name: Upload the criterion report
       if: always() && github.event_name == 'workflow_dispatch'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: criterion-report
         path: target/criterion
