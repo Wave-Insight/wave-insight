@@ -128,9 +128,15 @@ Implementation result (Wave 14), the foundation:
   honest.
 - **Desktop: native dump registry + IPC queries.** `src-tauri/src/dumps.rs`
   keeps a registry of natively opened dumps (monotonic ids, 32-dump cap) and
-  answers five commands over Tauri IPC:
-  `open_dump(path) -> DumpSummary` (format/time range/signal+scope counts,
-  retained/mapped bytes, open time), `dump_hierarchy(id, offset, limit) ->
+  answers five commands over Tauri IPC (plus the dialog-parts variant of the
+  open):
+  `open_dump(path) -> DumpSummary` (absolute path - drag-and-drop and launch
+  arguments; format/time range/signal+scope counts, retained/mapped bytes, open
+  time), `open_dump_parts(parts) -> DumpSummary` (the in-app dialog's navigation
+  parts, resolved against the dialog's base directory with the same rules as the
+  other dialog commands - `open_dump` resolves against the process cwd, so the
+  parts variant is what makes a dialog-opened large dump stay native),
+  `dump_hierarchy(id, offset, limit) ->
   HierarchyPage` (pre-order flattened scope/signal rows, pages of at most 4096),
   `dump_window(id, signals, start, end, maxChangesPerSignal?, show?) ->
   [WindowDto]` (values already rendered to text, per-signal cap, `before`
@@ -152,10 +158,12 @@ Implementation result (Wave 14), the foundation:
   turns the paged hierarchy into the same `SidebarTree` the sidebar always draws,
   plus a path -> signal index so rows resolve without the wasm waveform. In the
   desktop build a dump **larger than 64 MiB** (`NATIVE_THRESHOLD_BYTES`) opens
-  through `open_dump` and is drawn read-only from bounded `dump_window` queries
-  over IPC (`dump_value_at` is wired in the protocol; the MVP does not yet use
-  it for the ruler); smaller files and every native error fall back to the wasm
-  path, so normal dumps behave exactly as before. The mode is visible: a
+  through the native backend - drag-and-drop passes the absolute path to
+  `open_dump`, the in-app dialog its navigation parts to `open_dump_parts` - and
+  is drawn read-only from bounded `dump_window` queries over IPC
+  (`dump_value_at` is wired in the protocol; the MVP does not yet use it for the
+  ruler); smaller files and every native error fall back to the wasm path, so
+  normal dumps behave exactly as before. The mode is visible: a
   `.dock-tab.native-badge` chip ("native (read-only, mmap)", with a
   path/size/signals/scopes/mapped tooltip) and the status line
   `waveform loaded (native read-only, mmap) — <FMT> <N> MB, range <start>..<end>
@@ -175,9 +183,11 @@ Implementation result (Wave 14), the foundation:
   byte source described in section 4.
 - **Runtime status.** The desktop path is compile-verified in this repository
   (there is no desktop GUI here): real IPC round trips, drag-and-drop of a large
-  file, the file dialog's relative-path resolution, the mmap open/lock/close
-  lifecycle, `dump_window` latency and zoom smoothness on huge dumps must be
-  validated on a desktop machine (the release checklist for the desktop build).
+  file, the in-app dialog's part resolution against its base directory (host
+  tested for `open_dump_parts`, but the full GUI path is unverified), the mmap
+  open/lock/close lifecycle, `dump_window` latency and zoom smoothness on huge
+  dumps must be validated on a desktop machine (the release checklist for the
+  desktop build).
 
 ## 4. Browser: worker + lazy byte source (mmap-like)
 

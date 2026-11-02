@@ -367,9 +367,33 @@ pub fn native_active() -> bool {
     NATIVE_ACTIVE.with(|flag| flag.get())
 }
 
-/// `true` when a file of `bytes` bytes should use the native path.
+/// \`true\` when a file of `bytes` bytes should use the native path.
 pub fn needs_native(bytes: u64) -> bool {
     bytes > NATIVE_THRESHOLD_BYTES
+}
+
+/// Which mode a dump of `bytes` bytes is opened in.
+///
+/// The desktop build keeps large dumps native (mmap, windowed IPC) and reads
+/// small ones through wasm, where the extra copy is cheap and the whole existing
+/// UI (find/export/split/multi-dump) keeps working. The decision is a pure
+/// function so both open paths ([`ipc::try_open`] for drag&drop and
+/// [`ipc::try_open_parts`] for the file dialog) share it and it is host tested.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenDecision {
+    /// Keep the dump open natively and draw it read-only.
+    Native,
+    /// Close the native dump and read the file through the wasm path.
+    Wasm,
+}
+
+/// The mode decision for a dump of `bytes` bytes.
+pub fn open_decision(bytes: u64) -> OpenDecision {
+    if needs_native(bytes) {
+        OpenDecision::Native
+    } else {
+        OpenDecision::Wasm
+    }
 }
 
 /// Parse one value the backend rendered to text back into the bit pattern the
@@ -533,6 +557,19 @@ mod ipc {
         call("open_dump", &args).await
     }
 
+    /// Open the path the in-app dialog collected (`parts` relative to the
+    /// backend's base directory, e.g. ["Downloads", "run.fst"]).
+    ///
+    /// The dialog only knows the navigation parts, not an absolute path: the
+    /// backend resolves them against its own base directory, which is the same
+    /// directory the listing came from. The command is `open_dump_parts` and the
+    /// argument is `parts`.
+    pub async fn open_parts(parts: &[String]) -> Result<DumpSummaryDto, String> {
+        let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "parts": parts }))
+            .map_err(|error| error.to_string())?;
+        call("open_dump_parts", &args).await
+    }
+
     /// One page of the flattened hierarchy.
     pub async fn hierarchy(
         id: u64,
@@ -601,8 +638,28 @@ mod ipc {
     /// rows) and the tree is built once; [`MAX_HIERARCHY_ROWS`] bounds it.
     pub async fn try_open(path: &str) -> Result<Option<RemoteSession>, String> {
         let summary = open(path).await?;
+        finish_open(summary).await
+    }
+
+    /// [`try_open`] for the in-app file dialog: the path arrives as the
+    /// navigation parts the dialog collected, resolved by the backend against its
+    /// own base directory (the directory the listing came from). Same threshold
+    /// and fallback semantics as [`try_open`].
+    pub async fn try_open_parts(parts: &[String]) -> Result<Option<RemoteSession>, String> {
+        let summary = open_parts(parts).await?;
+        finish_open(summary).await
+    }
+
+    /// Apply the mode decision to an opened dump and load its hierarchy into a
+    /// session.
+    ///
+    /// `Ok(Some)` = keep it native (big dump), `Ok(None)` = it was small, so the
+    /// dump is closed again and the caller uses the wasm path; an error means the
+    /// hierarchy could not be fetched (the dump is closed too, so no mapping is
+    /// leaked).
+    async fn finish_open(summary: DumpSummaryDto) -> Result<Option<RemoteSession>, String> {
         let dump = RemoteDump::from_dto(summary);
-        if !needs_native(dump.bytes) {
+        if open_decision(dump.bytes) == OpenDecision::Wasm {
             let _ = close(dump.id).await;
             return Ok(None);
         }
@@ -630,7 +687,7 @@ mod ipc {
 
 #[allow(unused_imports)]
 #[cfg(feature = "tauri")]
-pub use ipc::{close, hierarchy, open, try_open, value_at, window};
+pub use ipc::{close, hierarchy, open, open_parts, try_open, try_open_parts, value_at, window};
 
 #[cfg(not(feature = "tauri"))]
 mod browser {
@@ -669,7 +726,13 @@ mod browser {
     pub async fn close(_id: u64) -> Result<(), String> {
         Ok(())
     }
+    pub async fn open_parts(_parts: &[String]) -> Result<DumpSummaryDto, String> {
+        Err("native dumps need the desktop build".to_string())
+    }
     pub async fn try_open(_path: &str) -> Result<Option<RemoteSession>, String> {
+        Err("native dumps need the desktop build".to_string())
+    }
+    pub async fn try_open_parts(_parts: &[String]) -> Result<Option<RemoteSession>, String> {
         Err("native dumps need the desktop build".to_string())
     }
 }
@@ -678,7 +741,7 @@ mod browser {
 // call sites compile in both builds, and nothing calls them here
 #[cfg(not(feature = "tauri"))]
 #[allow(unused_imports)]
-pub use browser::{close, hierarchy, open, try_open, value_at, window};
+pub use browser::{close, hierarchy, open, open_parts, try_open, try_open_parts, value_at, window};
 
 #[cfg(test)]
 mod tests {
@@ -725,6 +788,28 @@ mod tests {
             retained_bytes: 0,
             mapped_bytes: 102_000_000,
             open_ms: 9.4,
+        }
+    }
+
+    #[test]
+    fn the_open_decision_is_shared_by_both_open_paths() {
+        // drag&drop (absolute path) and the file dialog (parts) must agree
+        assert_eq!(open_decision(0), OpenDecision::Wasm);
+        assert_eq!(open_decision(64 * 1024 * 1024), OpenDecision::Wasm);
+        assert_eq!(open_decision(64 * 1024 * 1024 + 1), OpenDecision::Native);
+        assert_eq!(open_decision(4 * 1024 * 1024 * 1024), OpenDecision::Native);
+        // and it agrees with the bool helper the older code used
+        for bytes in [
+            0u64,
+            1,
+            NATIVE_THRESHOLD_BYTES,
+            NATIVE_THRESHOLD_BYTES + 1,
+            500_000_000,
+        ] {
+            assert_eq!(
+                open_decision(bytes) == OpenDecision::Native,
+                needs_native(bytes)
+            );
         }
     }
 

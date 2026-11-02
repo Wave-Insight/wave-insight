@@ -230,16 +230,23 @@ The **native large-file foundation**: the host library opens a dump through a
 read-only `memmap2` mapping (`Waveform::open_path_mmap`; the mapping retains 0
 heap bytes, and on the real 97.5 MiB FST it opens in 9.27 ms versus 10.18 ms
 through the file reader and 30.31 ms reading the file into memory), and the
-desktop shell keeps a registry of natively opened dumps answering five IPC
+desktop shell keeps a registry of natively opened dumps answering its IPC
 queries - `open_dump`, `dump_hierarchy` (pages of at most 4096 rows),
 `dump_window` (rendered values for a time window), `dump_value_at` and
 `close_dump` - with monotonic ids and a 32-dump cap; the file bytes never cross
-IPC. The backend is covered by the new `test-app` CI job.
+IPC. `open_dump` takes an absolute path (drag-and-drop, launch arguments), while
+the in-app file dialog's navigation parts go through `open_dump_parts`, which
+resolves them against the dialog's base directory exactly like the other dialog
+commands. The backend is covered by the new `test-app` CI job.
 
 The **desktop large-file mode (MVP)** draws that backend. Opening a dump larger
 than 64 MiB in the desktop build goes through `open_dump` and is rendered
 read-only from bounded `dump_window` queries; smaller files, and every native
-error, keep the wasm path, so normal dumps behave exactly as before. The mode
+error, keep the wasm path, so normal dumps behave exactly as before. Both entry
+points reach the native mode: drag-and-drop passes the absolute path to
+`open_dump`, and the in-app file dialog passes its navigation parts to
+`open_dump_parts`, which resolves them against the dialog's base directory (the
+dialog never has an absolute path of its own). The mode
 announces itself: a `.dock-tab.native-badge` chip reading **native (read-only,
 mmap)** (tooltip: path, size, signal/scope counts and mapped MB) and a status
 line of the form

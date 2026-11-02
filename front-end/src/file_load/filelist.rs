@@ -145,9 +145,11 @@ impl Component for FileList {
             Msg::Open(name) => {
                 let mut choose = self.path.clone();
                 choose.push(name.clone());
-                // the native backend takes one path string; the dialog's listing is
-                // relative to the backend's working directory
-                let native_path = choose.join("/");
+                // the native backend resolves the dialog's navigation parts against
+                // its own base directory (the directory the listing came from), so
+                // the parts are passed as-is: a joined string would be relative to
+                // the process working directory instead and would not open
+                let native_parts = choose.clone();
                 let args = match to_value(&GetFileListArgs { name: choose }) {
                     Ok(args) => args,
                     Err(_) => {
@@ -168,7 +170,7 @@ impl Component for FileList {
                             // IPC). Large dumps stay native and read-only; small
                             // ones, and every native error, take the wasm path so
                             // the dialog keeps working everywhere.
-                            match crate::remote::try_open(&native_path).await {
+                            match crate::remote::try_open_parts(&native_parts).await {
                                 Ok(Some(session)) => {
                                     if crate::remote::deliver_open(session) {
                                         exit.emit(());

@@ -10,6 +10,25 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.18.1] - 2026-11-03
+
+### Fixed
+
+- Desktop in-app file dialog: a dump over 64 MiB opened through the dialog was
+  passed to the native `open_dump` as a path relative to the dialog's base
+  directory (`USERPROFILE`/`HOME`), but `open_dump` resolves paths against the
+  app's working directory - so the native open failed and the app silently fell
+  back to the wasm byte path, which is exactly the memory problem the native mode
+  exists to avoid (drag-and-drop passed an absolute path and worked). Added the
+  `open_dump_parts(parts)` Tauri command, which resolves the dialog's navigation
+  parts with the same base-directory rules as the other dialog commands;
+  `open_dump(path)` stays absolute-only for drag-and-drop and launch arguments,
+  and the front end now calls `remote::try_open_parts(parts)`. Five native tests
+  cover the parts resolver (joining, ignored empty/separator-bearing components,
+  the absolute result, the clean error for empty parts) and a temp-file open
+  through the registry.
+
+
 ## [0.18.0] - 2026-11-03
 
 ### Added
@@ -914,4 +933,3 @@ full run is green: **330 passed, 0 failed** with the R2 layout rules required.
 - Initial release: a VCD waveform viewer with a module/signal tree, two cursors,
   zoom/pan, per-signal display formats, waveform colouring and reordering, a
   monaco-based source view that jumps to declarations, and a Tauri desktop
-  shell backed by a websocket demo server.

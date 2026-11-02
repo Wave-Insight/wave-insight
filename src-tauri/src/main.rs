@@ -58,9 +58,15 @@ fn base_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Join the path components the dialog collected onto [`base_dir`].
-fn resolve(parts: &[String]) -> std::io::Result<PathBuf> {
-    let mut path = base_dir();
+/// Join the path components the dialog collected onto `base`.
+///
+/// This is the dialog's containment rule: a component that is empty or
+/// contains a separator is ignored, so a pick can only ever walk down from the
+/// base directory. Pure on purpose: [`resolve`] feeds it [`base_dir`], the
+/// native open command feeds it the same way, and the unit tests feed it a
+/// temporary base.
+fn resolve_from(base: &Path, parts: &[String]) -> PathBuf {
+    let mut path = base.to_path_buf();
     for part in parts {
         // a component with a separator would jump out of the navigation the
         // dialog collected; the dialog never produces one
@@ -69,7 +75,12 @@ fn resolve(parts: &[String]) -> std::io::Result<PathBuf> {
         }
         path.push(part);
     }
-    Ok(path)
+    path
+}
+
+/// Join the path components the dialog collected onto [`base_dir`].
+fn resolve(parts: &[String]) -> std::io::Result<PathBuf> {
+    Ok(resolve_from(&base_dir(), parts))
 }
 
 #[tauri::command]
@@ -170,12 +181,41 @@ fn read_text(path: &Path) -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 /// Open a dump natively; returns the tab summary (id, size, format, range, ...).
+///
+/// `path` must be absolute (drag and drop, launch arguments). A path picked in
+/// the in-app dialog is relative to [`base_dir`]; use [`open_dump_parts`] for
+/// that one, otherwise the path would resolve against the process working
+/// directory (System32 / the app directory on Windows) and the native open
+/// would fail.
 #[tauri::command]
 fn open_dump(
     registry: tauri::State<'_, DumpRegistry>,
     path: String,
 ) -> Result<DumpSummary, String> {
     registry.open(&path)
+}
+
+/// Resolve the in-app dialog's path parts for a native open.
+///
+/// Same rules as the byte-returning dialog commands ([`resolve`]): the parts
+/// are joined onto [`base_dir`] and empty/separator-containing components are
+/// ignored. An empty pick is an error here because there is no dump to open.
+fn resolve_dump_parts(parts: &[String]) -> Result<PathBuf, String> {
+    if parts.iter().all(|part| part.trim().is_empty()) {
+        return Err("open_dump_parts: no path components given".to_string());
+    }
+    resolve(parts).map_err(|error| format!("open_dump_parts: {error}"))
+}
+
+/// Open a dump the in-app dialog picked, by its path parts relative to the
+/// dialog's base directory (USERPROFILE/HOME).
+#[tauri::command]
+fn open_dump_parts(
+    registry: tauri::State<'_, DumpRegistry>,
+    parts: Vec<String>,
+) -> Result<DumpSummary, String> {
+    let path = resolve_dump_parts(&parts)?;
+    registry.open(&path.display().to_string())
 }
 
 /// One page of the flattened hierarchy (scopes and signals) for the sidebar.
@@ -238,6 +278,7 @@ fn main() {
             choose_verilog,
             choose_verilog_absolute,
             open_dump,
+            open_dump_parts,
             dump_hierarchy,
             dump_window,
             dump_value_at,
@@ -245,4 +286,87 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    const SMALL_VCD: &str = "$date dialog test $end\n$version wave-insight dialog parts $end\n$timescale 1ns $end\n$scope module top $end\n$var wire 1 ! clk $end\n$upscope $end\n$enddefinitions $end\n$dumpvars\n0!\n$end\n#10\n1!\n";
+
+    #[test]
+    fn resolve_from_joins_the_dialog_parts() {
+        let base = Path::new("C:/Users/tester");
+        let parts = ["Downloads".to_string(), "foo.fst".to_string()];
+        assert_eq!(
+            resolve_from(base, &parts),
+            PathBuf::from("C:/Users/tester/Downloads/foo.fst")
+        );
+    }
+
+    #[test]
+    fn resolve_from_ignores_empty_and_separator_parts() {
+        let base = Path::new("C:/Users/tester");
+        let parts = [
+            String::new(),
+            "Downloads".to_string(),
+            "..\\evil".to_string(),
+            "a/b".to_string(),
+            "C:\\Windows".to_string(),
+            "foo.fst".to_string(),
+        ];
+        assert_eq!(
+            resolve_from(base, &parts),
+            PathBuf::from("C:/Users/tester/Downloads/foo.fst")
+        );
+        assert_eq!(resolve_from(base, &[]), base);
+    }
+
+    #[test]
+    fn resolve_is_absolute_and_keeps_the_parts() {
+        let resolved = resolve(&["Downloads".to_string(), "foo.fst".to_string()])
+            .expect("resolve the dialog parts");
+        assert!(resolved.is_absolute(), "{}", resolved.display());
+        assert!(
+            resolved.ends_with("Downloads/foo.fst") || resolved.ends_with("Downloads\\foo.fst"),
+            "{}",
+            resolved.display()
+        );
+        assert!(base_dir().is_dir(), "the dialog base is a directory");
+    }
+
+    #[test]
+    fn empty_parts_are_a_clean_error_for_the_native_open() {
+        let error = resolve_dump_parts(&[]).expect_err("empty pick");
+        assert!(error.contains("no path components"), "{error}");
+        let error = resolve_dump_parts(&[String::new(), " ".to_string()]).expect_err("blank pick");
+        assert!(error.contains("no path components"), "{error}");
+    }
+
+    #[test]
+    fn dialog_parts_resolve_to_a_file_the_registry_can_open() {
+        // the command's core: join the parts onto a base, then open the
+        // resolved file through the same registry path as open_dump
+        let base = std::env::temp_dir().join(format!("wi-dialog-parts-{}", std::process::id()));
+        let downloads = base.join("Downloads");
+        std::fs::create_dir_all(&downloads).expect("create the temp dialog dir");
+        let picked = downloads.join("picked.vcd");
+        let mut file = std::fs::File::create(&picked).expect("create picked.vcd");
+        file.write_all(SMALL_VCD.as_bytes())
+            .expect("write picked.vcd");
+
+        let parts = ["Downloads".to_string(), "picked.vcd".to_string()];
+        let path = resolve_from(&base, &parts);
+        assert_eq!(path, picked);
+
+        let registry = DumpRegistry::new();
+        let summary = registry
+            .open(&path.display().to_string())
+            .expect("open the resolved dump natively");
+        assert_eq!(summary.name, "picked.vcd");
+        assert_eq!(summary.format, "VCD");
+        assert_eq!(summary.signal_count, 1);
+        registry.close(summary.id).expect("close");
+    }
 }
