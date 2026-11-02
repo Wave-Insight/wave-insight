@@ -212,6 +212,10 @@ function __wbg_get_imports() {
             const ret = arg0.clientX;
             return ret;
         },
+        __wbg_clientY_3371139730cd6f74: function(arg0) {
+            const ret = arg0.clientY;
+            return ret;
+        },
         __wbg_cloneNode_36b90700fd8dbbb0: function() { return handleError(function (arg0) {
             const ret = arg0.cloneNode();
             return ret;
@@ -254,6 +258,10 @@ function __wbg_get_imports() {
         __wbg_ctrlKey_b7978e4cf78dc62b: function(arg0) {
             const ret = arg0.ctrlKey;
             return ret;
+        },
+        __wbg_currentTarget_ed5964b1e5e730f0: function(arg0) {
+            const ret = arg0.currentTarget;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
         __wbg_dataTransfer_3f478a3e477952f6: function(arg0) {
             const ret = arg0.dataTransfer;
@@ -480,6 +488,10 @@ function __wbg_get_imports() {
                 result = false;
             }
             const ret = result;
+            return ret;
+        },
+        __wbg_isSameNode_1eda96b84821596e: function(arg0, arg1) {
+            const ret = arg0.isSameNode(arg1);
             return ret;
         },
         __wbg_is_2248ff2b575d60c7: function(arg0, arg1) {
@@ -957,7 +969,7 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000009: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Ref(NamedExternref("Event"))], shim_idx: 187, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Ref(NamedExternref("Event"))], shim_idx: 191, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
             const ret = makeClosure(arg0, arg1, wasm_bindgen_f2c1512c3b4dceab___convert__closures________invoke___web_sys_bf24651e16002035___features__gen_Event__Event______true_);
             return ret;
         },
