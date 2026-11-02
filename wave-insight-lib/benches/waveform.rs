@@ -497,6 +497,111 @@ fn bench_window_many(c: &mut Criterion) {
     group.finish();
 }
 
+/// Native memory-mapped source vs the read-path and the memory source: open
+/// time and the retained/mapped byte accounting.  The synthetic dump is written
+/// to a temp file so the file and mmap sources read the same bytes.
+fn bench_mmap(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mmap");
+    let small = Synthetic::new(SMALL_STEPS);
+    let path = std::env::temp_dir().join(format!(
+        "wave-insight-bench-{}-{}.vcd",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::write(&path, &small.bytes).expect("temp bench dump is writable");
+
+    group.throughput(Throughput::Bytes(small.bytes.len() as u64));
+    group.bench_function("open_path_file", |b| {
+        b.iter(|| Waveform::open_path(&path).expect("file source opens"))
+    });
+    group.bench_function("open_path_mmap", |b| {
+        b.iter(|| Waveform::open_path_mmap(&path).expect("mmap source opens"))
+    });
+    group.bench_function("open_bytes_memory", |b| {
+        b.iter_batched(
+            || small.bytes.clone(),
+            Waveform::open_bytes,
+            BatchSize::LargeInput,
+        )
+    });
+    // Open plus the first header read (the mmap path faults pages in lazily).
+    group.bench_function("open_and_hint_file", |b| {
+        b.iter(|| {
+            let waveform = Waveform::open_path(&path).expect("file source opens");
+            black_box(waveform.time_range_hint().expect("hint"))
+        })
+    });
+    group.bench_function("open_and_hint_mmap", |b| {
+        b.iter(|| {
+            let waveform = Waveform::open_path_mmap(&path).expect("mmap source opens");
+            black_box(waveform.time_range_hint().expect("hint"))
+        })
+    });
+
+    let file = Waveform::open_path(&path).expect("file source opens");
+    let mapped = Waveform::open_path_mmap(&path).expect("mmap source opens");
+    let memory = Waveform::open_bytes(small.bytes.clone()).expect("memory source opens");
+    eprintln!(
+        "mmap bench dump {} bytes: file retained={} mapped={} | mmap retained={} mapped={} | memory retained={} mapped={}",
+        small.bytes.len(),
+        file.memory_stats().source_retained_bytes,
+        file.memory_stats().source_mapped_bytes,
+        mapped.memory_stats().source_retained_bytes,
+        mapped.memory_stats().source_mapped_bytes,
+        memory.memory_stats().source_retained_bytes,
+        memory.memory_stats().source_mapped_bytes,
+    );
+    drop(mapped);
+    let _ = std::fs::remove_file(&path);
+
+    // The real large FST, if the machine has it (the CI images may not):
+    // open time and retained-vs-mapped bytes for the three sources.
+    let large = std::env::temp_dir().join("wi-fst").join("large.fst");
+    if large.exists() {
+        let len = std::fs::metadata(&large)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let large_bytes = std::fs::read(&large).expect("the large FST is readable");
+        group.throughput(Throughput::Bytes(len));
+        group.sample_size(10);
+        group.bench_function("large_open_path_file", |b| {
+            b.iter(|| Waveform::open_path(&large).expect("file source opens"))
+        });
+        group.bench_function("large_open_path_mmap", |b| {
+            b.iter(|| Waveform::open_path_mmap(&large).expect("mmap source opens"))
+        });
+        group.bench_function("large_open_bytes_memory", |b| {
+            b.iter_batched(
+                || large_bytes.clone(),
+                Waveform::open_bytes,
+                BatchSize::LargeInput,
+            )
+        });
+        let file = Waveform::open_path(&large).expect("file source opens");
+        let mapped = Waveform::open_path_mmap(&large).expect("mmap source opens");
+        let memory = Waveform::open_bytes(large_bytes.clone()).expect("memory source opens");
+        eprintln!(
+            "large FST {} bytes: file retained={} mapped={} | mmap retained={} mapped={} | memory retained={} mapped={}",
+            len,
+            file.memory_stats().source_retained_bytes,
+            file.memory_stats().source_mapped_bytes,
+            mapped.memory_stats().source_retained_bytes,
+            mapped.memory_stats().source_mapped_bytes,
+            memory.memory_stats().source_retained_bytes,
+            memory.memory_stats().source_mapped_bytes,
+        );
+    } else {
+        eprintln!(
+            "skipping large FST bench: {} is not present",
+            large.display()
+        );
+    }
+    group.finish();
+}
+
 /// Formatting values for the view: `WaveValue::render` (the public seam onto
 /// the `waveform::render` helpers, which are crate private).
 fn bench_render(c: &mut Criterion) {
@@ -540,6 +645,7 @@ criterion_group!(
     bench_value_at,
     bench_window,
     bench_window_many,
+    bench_mmap,
     bench_render
 );
 criterion_main!(waveform_benches);

@@ -4920,6 +4920,7 @@ version = "0.17.0"
 dependencies = [
  "criterion",
  "linked-hash-map",
+ "memmap2",
  "num",
  "serde",
  "serde_json",

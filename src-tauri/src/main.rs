@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 
 use tauri::ipc::Response;
 
+mod dumps;
+
+use dumps::{DumpRegistry, DumpSummary, HierarchyPage, WindowDto};
+
 /// One row of the directory listing the open-file dialog shows.
 #[derive(serde::Serialize)]
 struct FileEntry {
@@ -156,14 +160,88 @@ fn read_text(path: &Path) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| format!("{}: not utf-8", path.display()))
 }
 
+// ---------------------------------------------------------------------------
+// Native dump backend (Wave14-B).
+//
+// The desktop build opens dumps natively (memory mapped when the platform
+// allows it) and serves only the rendered windows over IPC, so the file bytes
+// never go through the webview. The byte-returning commands above stay
+// untouched until the front end switches to the remote renderer.
+// ---------------------------------------------------------------------------
+
+/// Open a dump natively; returns the tab summary (id, size, format, range, ...).
+#[tauri::command]
+fn open_dump(
+    registry: tauri::State<'_, DumpRegistry>,
+    path: String,
+) -> Result<DumpSummary, String> {
+    registry.open(&path)
+}
+
+/// One page of the flattened hierarchy (scopes and signals) for the sidebar.
+#[tauri::command]
+fn dump_hierarchy(
+    registry: tauri::State<'_, DumpRegistry>,
+    id: u64,
+    offset: usize,
+    limit: usize,
+) -> Result<HierarchyPage, String> {
+    registry.hierarchy(id, offset, limit)
+}
+
+/// The bounded value window of the requested signals, rendered to text.
+#[tauri::command]
+fn dump_window(
+    registry: tauri::State<'_, DumpRegistry>,
+    id: u64,
+    signals: Vec<usize>,
+    start: u64,
+    end: Option<u64>,
+    max_changes_per_signal: Option<usize>,
+    show: Option<String>,
+) -> Result<Vec<WindowDto>, String> {
+    registry.window(
+        id,
+        &signals,
+        start,
+        end,
+        max_changes_per_signal,
+        show.as_deref(),
+    )
+}
+
+/// The rendered value of one signal at one time.
+#[tauri::command]
+fn dump_value_at(
+    registry: tauri::State<'_, DumpRegistry>,
+    id: u64,
+    signal: usize,
+    time: u64,
+    show: Option<String>,
+) -> Result<Option<String>, String> {
+    registry.value_at(id, signal, time, show.as_deref())
+}
+
+/// Close one native dump and free its mapping.
+#[tauri::command]
+fn close_dump(registry: tauri::State<'_, DumpRegistry>, id: u64) -> Result<(), String> {
+    registry.close(id)
+}
+
 fn main() {
     tauri::Builder::default()
+        .manage(DumpRegistry::new())
         .invoke_handler(tauri::generate_handler![
             get_file_list,
             choose_vcd,
             choose_vcd_absolute,
             choose_verilog,
-            choose_verilog_absolute
+            choose_verilog_absolute,
+            open_dump,
+            dump_hierarchy,
+            dump_window,
+            dump_value_at,
+            close_dump
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

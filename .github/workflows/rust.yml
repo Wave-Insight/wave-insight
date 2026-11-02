@@ -88,6 +88,37 @@ jobs:
     - name: Test the crates that build on the host (release profile)
       run: cargo test --workspace --exclude front-end --exclude app --release --locked
 
+  #the desktop shell owns the native (mmap) dump backend and its registry/query
+  #tests; the host-only `test` job excludes `app` because it needs the GTK
+  #prerequisites, so this job reuses the clippy job's runner and lint setup
+  test-app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+    - name: Install dependencies (ubuntu only)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+
+    - uses: actions/checkout@v4
+
+    - name: Install the pinned toolchain
+      run: rustup show
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: app-tests
+
+    #tauri::generate_context! validates frontendDist at compile time; the real
+    #bundle is not needed for the registry/query unit tests
+    - name: Create the front-end/dist placeholder
+      run: |
+        mkdir -p front-end/dist
+        printf '<!doctype html><title>test placeholder</title>\n' > front-end/dist/index.html
+
+    - name: Test the native desktop backend
+      run: cargo test -p app --locked
+
   fmt:
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -140,10 +140,16 @@
 //! [`MemoryStats::source_retained_bytes`] reports the whole file.  A
 //! [`WaveformSource::Path`] keeps no bytes: streaming queries and the FST body
 //! reader open the file fresh through [`ByteSource`], and the VCD/GHW bodies
-//! are decoded into wellen's own in-memory representation.  All parsing goes
-//! through the [`ByteSource`] trait (file and in-memory implementations only for
-//! now), so a desktop memory-mapped source can be added as another
-//! [`WaveformSource`] variant without touching the parser path.
+//! are decoded into wellen's own in-memory representation.
+//!
+//! On native builds [`WaveformSource::Mmap`] / [`Waveform::open_path_mmap`] map
+//! the file with memmap2 instead: readers serve pages straight from the mapping,
+//! [`MemoryStats::source_retained_bytes`] stays 0 and
+//! [`MemoryStats::source_mapped_bytes`] reports the file length (the OS page
+//! cache, not the heap, holds it).  The mapping keeps the file handle open, so
+//! on Windows the dump cannot be deleted or renamed until the waveform is
+//! dropped; the mmap module is not compiled for the wasm build at all, which
+//! keeps the browser path byte-identical.
 //!
 //! # Limitations
 //!
@@ -190,6 +196,8 @@ pub use query::ValueQuery;
 // R3: the display preference lives with the waveform types now (the render API
 // needs it); the legacy shared-types module it used to live in is gone.
 pub use show_type::ShowType;
+#[cfg(not(target_arch = "wasm32"))]
+pub use source::MmapSource;
 pub use source::{ByteReader, ByteSource, WaveformSource};
 pub use value::{BitValue, Bits, WaveValue};
 
@@ -286,6 +294,27 @@ impl Waveform {
         Self::open_source(WaveformSource::from_path(path.as_ref().to_path_buf()))
     }
 
+    /// Open a waveform from a memory mapped file (native builds only).
+    ///
+    /// This is the desktop path for multi-GB dumps: the file is mapped instead
+    /// of read into the heap, so [`MemoryStats::source_retained_bytes`] stays 0
+    /// (the pages are in the OS page cache, backed by the file) and
+    /// [`MemoryStats::source_mapped_bytes`] reports the mapping size.  All
+    /// validation and value queries read through the same [`ByteSource`]
+    /// interface, so a corrupt dump still answers Corrupt.
+    ///
+    /// Fails with [`WaveformError::Io`] when the map cannot be created (missing
+    /// file, empty file, unsupported filesystem); callers can fall back to
+    /// [`Waveform::open_path`].
+    ///
+    /// On Windows the mapping keeps the file handle open for the lifetime of the
+    /// waveform, so the dump cannot be deleted or renamed until the
+    /// [`Waveform`] is dropped.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_path_mmap(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_source(WaveformSource::from_path_mmap(path)?)
+    }
+
     /// Open a waveform that is already in memory.
     ///
     /// Useful for `include_bytes!` fixtures, for files that were read by the
@@ -358,9 +387,18 @@ impl Waveform {
         &self.source
     }
 
-    /// Path of the file, if it was opened from disk.
+    /// Path of the file, if it was opened from disk (mapped or not).
     pub fn path(&self) -> Option<&Path> {
         self.source.path()
+    }
+
+    /// Number of bytes memory mapped by this waveform (native builds only);
+    /// 0 for the file and memory sources.  See
+    /// [`MemoryStats::source_mapped_bytes`] for the same number in the full
+    /// accounting.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn mapped_bytes(&self) -> usize {
+        self.source.mapped_len()
     }
 
     /// Detected file format.
@@ -604,21 +642,25 @@ impl Waveform {
 
     /// Library-side memory accounting of this waveform.
     ///
-    /// Sums the retained source bytes (only for [`WaveformSource::Memory`]; a
-    /// file source keeps no bytes), the resolved hierarchy (names, paths,
-    /// lookup tables) and the random access cache (time table, wellen packed
-    /// decodes, decoded histories including bus payloads).
+    /// Sums the retained source bytes (only for [`WaveformSource::Memory`]; file
+    /// and memory-mapped sources keep no heap bytes), the mapped length (native
+    /// mmap source only), the resolved hierarchy (names, paths, lookup tables)
+    /// and the random access cache (time table, wellen packed decodes, decoded
+    /// histories including bus payloads).
     ///
-    /// The account is a heap estimate, not RSS: allocator overhead and wellen's
-    /// own copy of the hierarchy inside [`EagerBody`] are not counted.
+    /// The account is a heap estimate, not RSS: allocator overhead, the OS page
+    /// cache behind a mapping and wellen's own copy of the hierarchy inside
+    /// [`EagerBody`] are not counted.
     pub fn memory_stats(&self) -> MemoryStats {
         let hierarchy = self.hierarchy.memory_stats();
-        let source_retained_bytes = match &self.source {
-            WaveformSource::Memory(bytes) => bytes.len(),
-            WaveformSource::Path(_) => 0,
-        };
+        let source_retained_bytes = self.source.retained_bytes();
+        #[cfg(not(target_arch = "wasm32"))]
+        let source_mapped_bytes = self.source.mapped_len();
+        #[cfg(target_arch = "wasm32")]
+        let source_mapped_bytes = 0;
         let mut stats = MemoryStats {
             source_retained_bytes,
+            source_mapped_bytes,
             hierarchy_bytes: hierarchy.total_bytes(),
             hierarchy,
             ..MemoryStats::default()
@@ -1060,8 +1102,14 @@ impl CacheStats {
 /// [`CacheStats::total_bytes`] over every open waveform).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemoryStats {
-    /// Source bytes kept alive by [`WaveformSource::Memory`] (0 for a file source).
+    /// Source bytes kept alive on the application heap by
+    /// [`WaveformSource::Memory`] (0 for file and memory-mapped sources; the OS
+    /// page cache is not counted).
     pub source_retained_bytes: usize,
+    /// Length of the memory mapping for a native [`WaveformSource::Mmap`]
+    /// source, 0 for the other sources.  This is the "mapped but not retained on
+    /// the heap" proof for the desktop build.
+    pub source_mapped_bytes: usize,
     /// Hierarchy accounting, broken down by category.
     pub hierarchy: HierarchyStats,
     /// Sum of the hierarchy categories.

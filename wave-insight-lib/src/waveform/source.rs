@@ -6,9 +6,10 @@
 //! query, which keeps [`super::Waveform`] `Send + Sync` and allows queries to run
 //! from `&self`.
 //!
-//! The trait is the byte-source seam: today only a file (read on demand) and an
-//! owned memory buffer implement it; a desktop memory-mapped backend can add an
-//! implementation and a [`WaveformSource`] variant without touching the parser.
+//! The trait is the byte-source seam: a file (read on demand), an owned memory
+//! buffer and, on native builds only, a memory-mapped file implement it.  The
+//! wasm build does not compile the mmap module at all (no memmap2 in its dep
+//! graph) and keeps the file/memory paths as before.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
@@ -23,6 +24,12 @@ pub enum WaveformSource {
     /// Bytes already in memory, e.g. `include_bytes!` in tests or a file that
     /// was read by the caller (Tauri dialog, HTTP body, ...).
     Memory(Arc<[u8]>),
+    /// A memory mapped file (native builds only).  The OS page cache holds the
+    /// bytes, not the Rust/wasm heap; the mapping keeps the file handle open for
+    /// the lifetime of the source (on Windows that means the dump cannot be
+    /// deleted or renamed until the [`super::Waveform`] is dropped).
+    #[cfg(not(target_arch = "wasm32"))]
+    Mmap(Arc<MmapSource>),
 }
 
 impl WaveformSource {
@@ -36,11 +43,23 @@ impl WaveformSource {
         WaveformSource::Memory(bytes.into())
     }
 
-    /// Path if the source is a file.
+    /// Memory map a file (native builds only).
+    ///
+    /// Fails with an I/O error for a missing/unreadable/empty file or when the
+    /// filesystem cannot map it; the caller can fall back to
+    /// [`WaveformSource::from_path`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_path_mmap(path: impl AsRef<Path>) -> io::Result<Self> {
+        Ok(WaveformSource::Mmap(Arc::new(MmapSource::open(path)?)))
+    }
+
+    /// Path if the source is a file (mapped or not).
     pub fn path(&self) -> Option<&Path> {
         match self {
             WaveformSource::Path(path) => Some(path),
             WaveformSource::Memory(_) => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            WaveformSource::Mmap(source) => Some(source.path()),
         }
     }
 
@@ -49,6 +68,8 @@ impl WaveformSource {
         match self {
             WaveformSource::Path(_) => None,
             WaveformSource::Memory(bytes) => Some(bytes.len()),
+            #[cfg(not(target_arch = "wasm32"))]
+            WaveformSource::Mmap(source) => Some(source.len()),
         }
     }
 
@@ -57,14 +78,36 @@ impl WaveformSource {
         match self {
             WaveformSource::Path(path) => path.open(),
             WaveformSource::Memory(bytes) => bytes.open(),
+            #[cfg(not(target_arch = "wasm32"))]
+            WaveformSource::Mmap(source) => source.open(),
+        }
+    }
+
+    /// True for a memory-mapped source (native builds only).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn is_mmap(&self) -> bool {
+        matches!(self, WaveformSource::Mmap(_))
+    }
+
+    /// Mapped byte length for a [`WaveformSource::Mmap`], otherwise 0.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn mapped_len(&self) -> usize {
+        match self {
+            WaveformSource::Mmap(source) => source.len(),
+            _ => 0,
         }
     }
 
     /// Source bytes kept alive by this handle (only for the memory variant).
+    ///
+    /// A mapped file reports 0: its pages live in the OS page cache and are
+    /// backed by the file, not retained on the application heap.
     pub fn retained_bytes(&self) -> usize {
         match self {
             WaveformSource::Path(_) => 0,
             WaveformSource::Memory(bytes) => bytes.len(),
+            #[cfg(not(target_arch = "wasm32"))]
+            WaveformSource::Mmap(_) => 0,
         }
     }
 }
@@ -123,6 +166,159 @@ impl BufRead for ByteReader {
 impl Seek for ByteReader {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.inner.seek(pos)
+    }
+}
+
+/// A memory mapped waveform file (native builds only).
+///
+/// The mapping is shared (Arc) by every reader opened from the source and by the
+/// WaveformSource itself; it is unmapped when the last of them is dropped
+/// (normally when the Waveform is dropped).  On Windows the mapping keeps the
+/// file handle open, so the dump cannot be deleted or renamed while a waveform
+/// is open - the Tauri backend should drop the waveform before replacing a file.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct MmapSource {
+    mmap: Arc<memmap2::Mmap>,
+    path: PathBuf,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MmapSource {
+    /// Memory map path read-only.
+    ///
+    /// The map is unsafe in memmap2 because the file must not be mutated or
+    /// truncated by another process while it is mapped (that would make reads
+    /// fault).  The viewer never writes waveform dumps; the caller owns that
+    /// contract.
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let file = File::open(&path)?;
+        let len = file.metadata()?.len();
+        if len == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot memory map an empty file",
+            ));
+        }
+        // SAFETY: the file is opened read-only and the viewer never writes it;
+        // external truncation is documented as caller responsibility.
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        Ok(Self {
+            mmap: Arc::new(mmap),
+            path,
+        })
+    }
+
+    /// Path of the mapped file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Length of the mapping in bytes.
+    pub fn len(&self) -> usize {
+        self.mmap.len()
+    }
+
+    /// True if the mapping is empty (it cannot be: empty files are rejected).
+    pub fn is_empty(&self) -> bool {
+        self.mmap.is_empty()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Clone for MmapSource {
+    fn clone(&self) -> Self {
+        Self {
+            mmap: Arc::clone(&self.mmap),
+            path: self.path.clone(),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for MmapSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MmapSource")
+            .field("path", &self.path)
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+/// A Read + BufRead + Seek cursor directly over a shared memory map.
+///
+/// Cursor<Arc<Mmap>> does not give us the AsRef<[u8]> it needs, and wellen wants
+/// BufRead + Seek + Send + Sync + 'static; this type implements exactly those
+/// traits over the mapped slice without copying it.
+#[cfg(not(target_arch = "wasm32"))]
+struct MmapReader {
+    mmap: Arc<memmap2::Mmap>,
+    position: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MmapReader {
+    fn new(mmap: Arc<memmap2::Mmap>) -> Self {
+        Self { mmap, position: 0 }
+    }
+
+    fn remaining(&self) -> &[u8] {
+        let end = self.position.min(self.mmap.len());
+        &self.mmap[end..]
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Read for MmapReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.remaining();
+        let amount = remaining.len().min(buf.len());
+        buf[..amount].copy_from_slice(&remaining[..amount]);
+        self.position += amount;
+        Ok(amount)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BufRead for MmapReader {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        Ok(self.remaining())
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.position = self.position.saturating_add(amount).min(self.mmap.len());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Seek for MmapReader {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        let base = match position {
+            SeekFrom::Start(offset) => i128::from(offset),
+            SeekFrom::End(offset) => self.mmap.len() as i128 + i128::from(offset),
+            SeekFrom::Current(offset) => self.position as i128 + i128::from(offset),
+        };
+        if base < 0 || base > self.mmap.len() as i128 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek outside the memory map",
+            ));
+        }
+        self.position = base as usize;
+        Ok(self.position as u64)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ByteSource for MmapSource {
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.len() as u64)
+    }
+
+    fn open(&self) -> io::Result<ByteReader> {
+        Ok(ByteReader::new(Box::new(MmapReader::new(Arc::clone(
+            &self.mmap,
+        )))))
     }
 }
 
