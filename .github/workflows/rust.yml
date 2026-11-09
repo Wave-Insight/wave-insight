@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     #the toolchain version lives in rust-toolchain.toml, do not repeat it here:
     #`rustup show` downloads it and every later cargo call uses it
@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install the pinned toolchain
       run: rustup show
@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install the pinned toolchain
       run: rustup show
@@ -100,7 +100,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
 
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install the pinned toolchain
       run: rustup show
@@ -123,7 +123,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install the pinned toolchain
       run: rustup show
@@ -147,7 +147,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
 
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install the pinned toolchain
       run: rustup show
@@ -175,7 +175,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Install the pinned toolchain
       run: rustup show
@@ -217,7 +217,7 @@ jobs:
     #urls are absolute and the browser matrix (which serves the bundle at /)
     #cannot use it
     - name: Upload the web bundle
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: web-dist
         path: front-end/dist
@@ -230,7 +230,7 @@ jobs:
           trunk build --no-default-features --features wasm --release --dist dist-qa
 
     - name: Upload the matrix web bundle
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: web-dist-qa
         path: front-end/dist-qa
@@ -249,10 +249,10 @@ jobs:
     permissions:
       contents: write
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Download the built web bundle
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: web-dist
         path: front-end/dist
@@ -277,17 +277,17 @@ jobs:
     timeout-minutes: 25
     continue-on-error: true
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     #node >= 21 for the global WebSocket the CDP client uses (node 20 has it
     #only behind a flag, which made this job fail with 'WebSocket is not
     #defined' before it even reached the browser)
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: 22
 
     - name: Download the built web bundle
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: web-dist-qa
         path: front-end/dist
@@ -300,7 +300,7 @@ jobs:
     #(qa/artifacts is gitignored, so they only exist as a workflow artifact)
     - name: Upload the QA screenshots
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: qa-artifacts
         path: qa/artifacts
