@@ -497,6 +497,229 @@ fn bench_window_many(c: &mut Criterion) {
     group.finish();
 }
 
+/// Batch streaming lookup: one pass for a screen full of rows at the same time.
+fn bench_values_before(c: &mut Criterion) {
+    let mut group = c.benchmark_group("values_before_batch");
+    group.sample_size(10);
+
+    let small = Synthetic::new(SMALL_STEPS);
+    let waveform = small.open();
+    let screen: Vec<usize> = std::iter::once(small.clock)
+        .chain(std::iter::once(small.data))
+        .chain(small.buses.iter().copied())
+        .collect();
+    let mid = small.end_time / 2;
+    group.bench_function("vcd_cached", |b| {
+        b.iter(|| waveform.values_before(&screen, mid).expect("batch"))
+    });
+    group.bench_function("vcd_cold", |b| {
+        b.iter_batched(
+            || small.open(),
+            |waveform| waveform.values_before(&screen, mid).expect("batch"),
+            BatchSize::LargeInput,
+        )
+    });
+
+    let probe = small.open();
+    let _ = probe.values_before(&screen, mid).expect("batch");
+    let memory = probe.memory_stats();
+    eprintln!(
+        "values_before_batch VCD after a cold batch: lookup entries={} bytes={} cache_bytes={}",
+        memory.lookup_cache_entries, memory.lookup_cache_bytes, memory.cache_bytes
+    );
+
+    let large = std::env::temp_dir().join("wi-fst").join("large.fst");
+    if large.exists() {
+        let waveform = Waveform::open_path_mmap(&large).expect("large FST opens");
+        let hint = waveform
+            .time_range_hint()
+            .expect("hint")
+            .expect("non-empty large FST");
+        let time = hint.start + (hint.end.saturating_sub(hint.start)) / 2;
+        let screen: Vec<usize> = waveform
+            .signals()
+            .iter()
+            .take(16)
+            .map(|signal| signal.index())
+            .collect();
+        group.bench_function("large_fst_cached", |b| {
+            b.iter(|| waveform.values_before(&screen, time).expect("batch"))
+        });
+        group.bench_function("large_fst_cold", |b| {
+            b.iter_batched(
+                || Waveform::open_path_mmap(&large).expect("large FST opens"),
+                |waveform| waveform.values_before(&screen, time).expect("batch"),
+                BatchSize::LargeInput,
+            )
+        });
+        let probe = Waveform::open_path_mmap(&large).expect("large FST opens");
+        let hint = probe
+            .time_range_hint()
+            .expect("hint")
+            .expect("non-empty large FST");
+        let time = hint.start + (hint.end.saturating_sub(hint.start)) / 2;
+        let screen: Vec<usize> = probe
+            .signals()
+            .iter()
+            .take(16)
+            .map(|signal| signal.index())
+            .collect();
+        let begin = std::time::Instant::now();
+        let _ = probe.values_before(&screen, time).expect("batch");
+        let batch_elapsed = begin.elapsed();
+        let sequential = Waveform::open_path_mmap(&large).expect("large FST opens");
+        let hint = sequential
+            .time_range_hint()
+            .expect("hint")
+            .expect("non-empty large FST");
+        let time = hint.start + (hint.end.saturating_sub(hint.start)) / 2;
+        let begin = std::time::Instant::now();
+        for signal in &screen {
+            let _ = sequential
+                .stream_value_before(*signal, time)
+                .expect("single lookup");
+        }
+        let sequential_elapsed = begin.elapsed();
+        let cache = probe.cache_stats();
+        let memory = probe.memory_stats();
+        eprintln!(
+            "values_before_batch large FST: batch 16 signals {:?} vs 16 single lookups {:?}; time_table_bytes={} packed_bytes={} cache_bytes={} lookup entries={} bytes={}",
+            batch_elapsed,
+            sequential_elapsed,
+            cache.time_table_bytes,
+            cache.packed_bytes,
+            memory.cache_bytes,
+            memory.lookup_cache_entries,
+            memory.lookup_cache_bytes
+        );
+    } else {
+        eprintln!(
+            "skipping large FST values_before_batch bench: {} is not present",
+            large.display()
+        );
+    }
+
+    group.finish();
+}
+
+/// Memory-flat value lookup: stream_value_before vs the body-materialising
+/// value_at.  Also prints the retained-accounting counters so the "no time
+/// table / no packed decode" claim is visible next to the timings.
+fn bench_value_before(c: &mut Criterion) {
+    let mut group = c.benchmark_group("value_before");
+    group.sample_size(10);
+
+    let small = Synthetic::new(SMALL_STEPS);
+    let waveform = small.open();
+    let mid = small.end_time / 2;
+
+    group.bench_function("stream_value_before_vcd_cached", |b| {
+        b.iter(|| {
+            waveform
+                .stream_value_before(small.clock, mid)
+                .expect("streaming lookup")
+        })
+    });
+    group.bench_function("stream_value_before_vcd_cold", |b| {
+        b.iter_batched(
+            || small.open(),
+            |waveform| {
+                waveform
+                    .stream_value_before(small.clock, mid)
+                    .expect("streaming lookup")
+            },
+            BatchSize::LargeInput,
+        )
+    });
+    group.bench_function("value_at_vcd_body", |b| {
+        b.iter_batched(
+            || small.open(),
+            |waveform| waveform.value_at(small.clock, mid).expect("value_at"),
+            BatchSize::LargeInput,
+        )
+    });
+
+    let probe = small.open();
+    let _ = probe
+        .stream_value_before(small.clock, mid)
+        .expect("streaming lookup");
+    let cache = probe.cache_stats();
+    let memory = probe.memory_stats();
+    eprintln!(
+        "value_before VCD after a cold streaming lookup: time_steps={} time_table_bytes={} packed_bytes={} decoded_struct_bytes={} cache_bytes={} lookup_cache_entries={} lookup_cache_bytes={}",
+        cache.time_steps,
+        cache.time_table_bytes,
+        cache.packed_bytes,
+        cache.decoded_struct_bytes,
+        memory.cache_bytes,
+        memory.lookup_cache_entries,
+        memory.lookup_cache_bytes
+    );
+
+    let large = std::env::temp_dir().join("wi-fst").join("large.fst");
+    if large.exists() {
+        let waveform = Waveform::open_path_mmap(&large).expect("large FST opens");
+        let hint = waveform
+            .time_range_hint()
+            .expect("hint")
+            .expect("non-empty large FST");
+        let time = hint.start + (hint.end.saturating_sub(hint.start)) / 2;
+        let signal = waveform.signals()[0].index();
+        group.bench_function("stream_value_before_large_fst_cached", |b| {
+            b.iter(|| {
+                waveform
+                    .stream_value_before(signal, time)
+                    .expect("streaming lookup")
+            })
+        });
+        group.bench_function("stream_value_before_large_fst_cold", |b| {
+            b.iter_batched(
+                || Waveform::open_path_mmap(&large).expect("large FST opens"),
+                |waveform| {
+                    waveform
+                        .stream_value_before(signal, time)
+                        .expect("streaming lookup")
+                },
+                BatchSize::LargeInput,
+            )
+        });
+        group.bench_function("value_at_large_fst_body", |b| {
+            b.iter_batched(
+                || Waveform::open_path_mmap(&large).expect("large FST opens"),
+                |waveform| waveform.value_at(signal, time).expect("value_at"),
+                BatchSize::LargeInput,
+            )
+        });
+        let probe = Waveform::open_path_mmap(&large).expect("large FST opens");
+        let hint = probe
+            .time_range_hint()
+            .expect("hint")
+            .expect("non-empty large FST");
+        let time = hint.start + (hint.end.saturating_sub(hint.start)) / 2;
+        let _ = probe
+            .stream_value_before(signal, time)
+            .expect("streaming lookup");
+        let cache = probe.cache_stats();
+        let memory = probe.memory_stats();
+        eprintln!(
+            "value_before large FST after open summary + cold streaming lookup: time_steps={} time_table_bytes={} packed_bytes={} cache_bytes={} lookup_cache_entries={} lookup_cache_bytes={}",
+            cache.time_steps,
+            cache.time_table_bytes,
+            cache.packed_bytes,
+            memory.cache_bytes,
+            memory.lookup_cache_entries,
+            memory.lookup_cache_bytes
+        );
+    } else {
+        eprintln!(
+            "skipping large FST value_before bench: {} is not present",
+            large.display()
+        );
+    }
+
+    group.finish();
+}
+
 /// Native memory-mapped source vs the read-path and the memory source: open
 /// time and the retained/mapped byte accounting.  The synthetic dump is written
 /// to a temp file so the file and mmap sources read the same bytes.
@@ -645,6 +868,8 @@ criterion_group!(
     bench_value_at,
     bench_window,
     bench_window_many,
+    bench_value_before,
+    bench_values_before,
     bench_mmap,
     bench_render
 );

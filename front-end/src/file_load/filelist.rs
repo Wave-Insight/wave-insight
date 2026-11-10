@@ -166,18 +166,40 @@ impl Component for FileList {
                         let exit = ctx.props().onexit.clone();
                         let file = name.clone();
                         spawn_local(async move {
-                            // Wave 15: try the native backend first (mmap, windowed
-                            // IPC). Large dumps stay native and read-only; small
-                            // ones, and every native error, take the wasm path so
-                            // the dialog keeps working everywhere.
+                            // Wave 15/17: try the native backend first (mmap,
+                            // windowed IPC). Large dumps stay native and read-only.
+                            // A dump the backend proved small (the >64 MiB
+                            // threshold) keeps the wasm reader; a native ERROR does
+                            // not fall back, because copying a possibly huge file
+                            // into wasm to retry is the multi-GB peak we avoid.
                             match crate::remote::try_open_parts(&native_parts).await {
                                 Ok(Some(session)) => {
-                                    if crate::remote::deliver_open(session) {
+                                    if crate::remote::deliver_open(session.clone()) {
                                         exit.emit(());
                                         return;
                                     }
+                                    // no listener (the app is not ready): close it
+                                    // again instead of leaking the mapping
+                                    let id = session.id();
+                                    spawn_local(async move {
+                                        let _ = crate::remote::close(id).await;
+                                    });
+                                    onerror.emit(format!(
+                                        "{file}: the native dump was opened but the app could not display it; it was closed again"
+                                    ));
+                                    return;
                                 }
-                                Ok(None) | Err(_) => {}
+                                // proven small -> fall through to the wasm reader
+                                Ok(None) => {}
+                                Err(error) => match crate::remote::native_fallback(false) {
+                                    crate::remote::NativeFallback::Wasm => {}
+                                    crate::remote::NativeFallback::Report => {
+                                        onerror.emit(crate::remote::native_error_status(
+                                            &file, &error,
+                                        ));
+                                        return;
+                                    }
+                                },
                             }
                             // The command returns the whole file as a *raw* IPC
                             // body (tauri::ipc::Response): invoke resolves to an

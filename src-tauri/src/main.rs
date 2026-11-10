@@ -17,8 +17,12 @@ use std::path::{Path, PathBuf};
 use tauri::ipc::Response;
 
 mod dumps;
+mod process_memory;
 
-use dumps::{DumpRegistry, DumpSummary, FoundValue, HierarchyPage, WindowDto};
+use dumps::{
+    DumpMemoryStats, DumpRegistry, DumpSummary, FoundValue, HierarchyPage, ValueAtDto, WindowDto,
+};
+use process_memory::ProcessMemory;
 use wave_insight_lib::waveform::ShowType;
 
 /// One row of the directory listing the open-file dialog shows.
@@ -251,7 +255,31 @@ fn dump_window(
     )
 }
 
+/// The rendered values of several signals at one time, in one batch pass.
+///
+/// This is the per-redraw call for the native renderer: one value per requested
+/// signal (request order, duplicates repeated, null when the signal had no
+/// change at or before `time`), backed by Waveform::values_before. It never
+/// materialises the body (no time table, no packed decodes); the answers also
+/// refresh the per-signal last-lookup cache, so a following dump_value_at is
+/// free. The doc on DumpRegistry::values_at has the details.
+#[tauri::command]
+fn dump_values_at(
+    registry: tauri::State<'_, DumpRegistry>,
+    id: u64,
+    signals: Vec<usize>,
+    time: u64,
+    show: Option<String>,
+) -> Result<Vec<Option<ValueAtDto>>, String> {
+    registry.values_at(id, &signals, time, show.as_deref())
+}
+
 /// The rendered value of one signal at one time.
+///
+/// Memory-flat: the backend streams the source (stream_value_before) and keeps
+/// only a small per-dump last-lookup cache, so a cursor readout never
+/// materialises the FST time table or packed decodes. See
+/// DumpRegistry::value_at for the cache rules and worst cases.
 #[tauri::command]
 fn dump_value_at(
     registry: tauri::State<'_, DumpRegistry>,
@@ -284,6 +312,29 @@ fn dump_find(
     registry.find(id, signal, &query, from, backwards, &show)
 }
 
+/// Per-dump memory accounting for diagnostics (the desktop memory badge).
+///
+/// Works for open native dumps only; cheap (cached counters, never
+/// materialises the body) so the front end may poll it.
+#[tauri::command]
+fn dump_memory_stats(
+    registry: tauri::State<'_, DumpRegistry>,
+    id: u64,
+) -> Result<DumpMemoryStats, String> {
+    registry.memory_stats(id)
+}
+
+/// The app process's own memory (current and peak working set).
+///
+/// The library accounting from dump_memory_stats covers the native backend;
+/// this covers the whole process (including the WebView2/JS heap), so a user or
+/// QA can tell which side a peak comes from. Fields are null on platforms that
+/// cannot report them.
+#[tauri::command]
+fn process_memory() -> ProcessMemory {
+    process_memory::process_memory()
+}
+
 /// Close one native dump and free its mapping.
 #[tauri::command]
 fn close_dump(registry: tauri::State<'_, DumpRegistry>, id: u64) -> Result<(), String> {
@@ -304,7 +355,10 @@ fn main() {
             dump_hierarchy,
             dump_window,
             dump_value_at,
+            dump_values_at,
             dump_find,
+            dump_memory_stats,
+            process_memory,
             close_dump
         ])
         .run(tauri::generate_context!())

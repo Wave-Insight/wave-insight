@@ -10,6 +10,56 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.20.0] - 2026-11-10
+
+### Added
+
+- A streaming value lookup: `Waveform::stream_value_before(signal, time)` (and
+  the batch form `values_before`) returns the last change at or before a time
+  with O(1) retained memory. FST uses capped exponentially growing backward
+  probes through the streaming path, VCD does one forward scan, GHW keeps a
+  documented materialised fallback; answers are memoised in a 64-entry LRU keyed
+  by `(signal, time)` and reported as `lookup_cache_entries` /
+  `lookup_cache_bytes` in `MemoryStats`.
+- Native memory diagnostics: the Tauri commands `dump_memory_stats(id)` (the
+  library accounting for the open native dump, including the lookup cache) and
+  `process_memory()` (`{ current_bytes, peak_bytes }` from
+  `GetProcessMemoryInfo` on Windows / `VmHWM` on Linux). The front end publishes
+  the library counters in `__waveDebug.memory` and the native accounting plus
+  the process working set under `memory.native` (`processCurrentBytes`,
+  `processPeakBytes`); the readouts are published in the debug hook (the badge
+  tooltip and status strings are unchanged for the QA contract).
+- Editor inlay hints and native cursor readouts now use the streaming lookup, and
+  the native backend keeps a per-signal last-answer cache instead of calling
+  `value_at`. Native open/hierarchy errors no longer silently fall back to the
+  wasm byte path when the file may be large (small dumps still do), because the
+  fallback reproduces the peak the native mode exists to avoid.
+
+### Changed
+
+- The FST dump summary reads its time range from the FST header block, so the
+  body counters (time table, packed decodes) stay 0 after open; the random-access
+  body is only materialised on demand by queries that need it.
+- The native backend's value readout path is memory-flat: `stream_value_before`
+  with a per-signal cache, bounded per redraw, and the same accounting visible in
+  `dump_memory_stats`.
+
+### Fixed
+
+- The multi-GB memory peak on large FST dumps: `Waveform::time_range_hint()`
+  materialised the random-access body (an 8-bytes-per-time-step table plus packed
+  decodes) just to fill the dump summary, and `Waveform::value_at` did the same
+  for cursor readouts and editor inlay hints. A 20M-time-step FST allocated
+  160 MB of time table and 100 MB of packed data and peaked at ~623 MB; a 100+ MB
+  FST with many steps could reach multiple gigabytes this way. Fixed at the
+  library (`time_range_hint` reads the FST header; lookups stream with O(1)
+  retained memory) and wired through the native backend, inlay hints and the
+  memory readouts. Measured on a 20M-time-step fixture: retained heap after one
+  lookup 260,019,306 B -> 15,876-19,235 B and process peak 623 MB -> 196 MB
+  (including the 120 MB mapped file); on the 1M-step `large.fst` `value_at`
+  812 ms -> 241-345 ms, peak 36.5 MB -> 16.4-18 MB, retained after open
+  13.6 MB -> 0, and the open summary no longer allocates the 8 MB time table.
+
 ## [0.19.0] - 2026-11-03
 
 ### Added

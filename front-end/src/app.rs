@@ -1027,14 +1027,24 @@ impl App {
                                     Msg::RemoteReady(session)
                                 });
                         let onfallback = ctx.link().callback(Msg::RemoteFallback);
+                        let onerror = ctx.link().callback(Msg::Error);
                         spawn_local(async move {
-                            // Wave 15: the desktop backend maps the file instead
-                            // of copying it into wasm memory. Big dumps stay
-                            // native (read-only); small ones, and every native
-                            // error, take the wasm path so nothing regresses.
+                            // Wave 15/17: the desktop backend maps the file instead
+                            // of copying it into wasm memory. A dump the backend
+                            // proved small (the >64 MiB threshold) still takes the
+                            // wasm path; a native ERROR does not, because copying a
+                            // possibly huge file into wasm to retry is exactly the
+                            // multi-GB peak this path avoids.
                             match crate::remote::try_open(&file).await {
                                 Ok(Some(session)) => onready.emit(Box::new(session)),
-                                Ok(None) | Err(_) => onfallback.emit(file),
+                                Ok(None) => onfallback.emit(file),
+                                Err(error) => match crate::remote::native_fallback(false) {
+                                    crate::remote::NativeFallback::Wasm => {
+                                        onfallback.emit(file.clone())
+                                    }
+                                    crate::remote::NativeFallback::Report => onerror
+                                        .emit(crate::remote::native_error_status(&file, &error)),
+                                },
                             }
                         });
                     } else if lower.ends_with(".v") || lower.ends_with(".sv") {
@@ -2272,8 +2282,20 @@ impl App {
             });
         }
         let status = session.status_text();
+        let id = session.id();
         self.remote = Some(session);
         crate::remote::set_native_active(true);
+        // the backend accounting (checkable in __waveDebug.memory.native)
+        spawn_local(async move {
+            let dump = crate::remote::memory_stats(id).await.ok();
+            let process = crate::remote::process_memory().await.ok();
+            if dump.is_some() || process.is_some() {
+                crate::remote::set_native_memory(Some(crate::remote::NativeMemorySnapshot {
+                    dump,
+                    process,
+                }));
+            }
+        });
         // the selection held paths of the previous tree
         self.apply(Action::TreeSelectionCleared);
         self.note(Status::info(status));
@@ -2284,6 +2306,8 @@ impl App {
     fn close_remote(&mut self) {
         #[cfg(feature = "tauri")]
         crate::remote::set_native_active(false);
+        #[cfg(feature = "tauri")]
+        crate::remote::set_native_memory(None);
         #[cfg(feature = "tauri")]
         if let Some(session) = self.remote.take() {
             let id = session.id();

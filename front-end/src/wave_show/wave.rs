@@ -1957,6 +1957,12 @@ impl WaveShow {
             self.values_need_render = true;
         }
         self.trim_cache(draw.clone());
+        // native mode: refresh the backend memory snapshot for the debug hook
+        // (throttled to 1/s; the command only reads cached counters)
+        #[cfg(feature = "tauri")]
+        if let Some(session) = &self.remote {
+            crate::remote::maybe_refresh_native_memory(session.id());
+        }
         // native mode: fill the value column for cursors outside the fetched
         // windows (batched + cached, never per row per frame)
         #[cfg(feature = "tauri")]

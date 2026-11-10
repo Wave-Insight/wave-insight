@@ -17,15 +17,16 @@ find-value flow, indexed LSP/design queries, the R3 legacy deletion, the Tauri 2
 desktop shell, the waveform hardening, multi-dump tabs, the Yew 0.21 front end,
 the split view (polished), inspector bit ranges, bulk add, the memory-first
 large-dump work, the bounded windowed renderer, the desktop native backend
-foundation and the desktop native renderer MVP. **Wave 16** lands in this wave:
-native-mode parity - the ruler find box streams `dump_find` over IPC (measured
-98.8 ms forward near the start and 198.1 ms near the end of the real 97.5 MB FST,
-debug), rows fetch `dump_window` per display-format group so row formats change
-the drawn values and value column, and cursor values outside the fetched window
-come from batched/cached `dump_value_at` calls. The remaining native gaps are
-export, split/multi-dump and the eager hierarchy. The `Unreleased` section of
-[`CHANGELOG.md`](../CHANGELOG.md) is the authoritative list of what is on
-`main` beyond 0.19.0.
+foundation, the native renderer MVP and native-mode parity. **Wave 17** lands in
+this wave: the memory root-cause fix - FST `time_range_hint` reads the header
+instead of materialising the random-access body, and cursor readouts/inlay hints
+use the streaming `stream_value_before` lookup (O(1) retained memory: FST capped
+backward probes, VCD forward scan, documented GHW fallback; 64-entry LRU), wired
+through the native backend, plus `dump_memory_stats`/`process_memory` and the
+library/native/process counters in `__waveDebug.memory`. The remaining native
+gaps are export, split/multi-dump, the eager hierarchy and a batched values API.
+The `Unreleased` section of [`CHANGELOG.md`](../CHANGELOG.md) is the authoritative
+list of what is on `main` beyond 0.19.0.
 
 ## How a wave works
 
@@ -63,21 +64,22 @@ cut when the accumulated waves are coherent for users; no wave promises a date.
 | **13** | released in 0.17.0 | CI green again (clippy placeholder, root-relative `dist-qa` bundle + Node 22 for QA, FST internal-count validation); bounded windowed rendering (`window_changes_many`/`WindowedSignal`, the 3+ GB dense-row crash fixed); desktop raw IPC; bulk-add discoverability; `denseDump`/`bulkAdd` QA -> 58 scenarios / 524 assertions |
 | **14** | released in 0.18.0 | native mmap backend foundation: host-only `memmap2` byte source (`Waveform::open_path_mmap`/`WaveformSource::Mmap`, `mapped_bytes`, `MemoryStats::source_mapped_bytes`, 0 retained heap bytes; 9.27 ms vs 10.18/30.31 ms on the 97.5 MiB FST; equivalence/corrupt/drop tests + `mmap` bench group) and the Tauri native dump registry + IPC queries (`open_dump`/`dump_hierarchy`/`dump_window`/`dump_value_at`/`close_dump`; monotonic ids, 32-dump cap, files never cross IPC; hierarchy page 4096 rows 1.82 ms, 10 dense signals 139 ms debug, value_at 690/175 ms; native tests) plus the `test-app` CI job |
 | **15** | released in 0.18.0 | desktop native renderer MVP: dumps over 64 MiB open through the native backend and are drawn read-only from bounded `dump_window` IPC queries (wasm fallback for smaller files and native errors); badge/status line, component reuse, single and bulk add, eager paged hierarchy (400k cap), one native dump, no split/multi-dump, export refused; 0.18.1 fixed the in-app dialog path so it reaches native mode too |
-| **16** | shipped in this wave | native-mode parity: `dump_find` streaming value search (0x/0b/0o, case-insensitive, x/z as text; 98.8 ms forward near the start / 198.1 ms near the end of the 97.5 MB FST debug; no match = full scan, not cancellable), native find box wiring (jump + `found …`/`no match` status), per-display-format `dump_window` groups so row formats change drawn values and the value column, and batched/cached `dump_value_at` cursor readout outside the window (<=64 requests per batch, 512-entry cache) |
-| **17** | chosen for the next wave, not started | the rest of native parity: export, split and multi-dump on the native path, lazy hierarchy loading; then the browser worker + OPFS lazy byte source (the browser's mmap analogue) and completion packages as qualifiers |
-| **18** | later candidates | signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
+| **16** | released in 0.19.0 | native-mode parity: `dump_find` streaming value search (0x/0b/0o, case-insensitive, x/z as text; 98.8 ms forward near the start / 198.1 ms near the end of the 97.5 MB FST debug; no match = full scan, not cancellable), native find box wiring (jump + `found …`/`no match` status), per-display-format `dump_window` groups so row formats change drawn values and the value column, and batched/cached `dump_value_at` cursor readout outside the window (<=64 requests per batch, 512-entry cache) |
+| **17** | shipped in this wave | memory root-cause fix: FST `time_range_hint` reads the time range from the header block (body counters stay 0), `stream_value_before` (and batch `values_before`) answers cursor/inlay/native lookups with O(1) retained memory (FST capped backward probes, VCD forward scan, GHW documented fallback; 64-entry LRU reported in `MemoryStats`), `dump_memory_stats` + `process_memory` and the library/native/process counters in `__waveDebug.memory`; measured 20M-step retained 260,019,306 B -> 15,876-19,235 B, peak 623 -> 196 MB (incl. 120 MB mapped), large.fst 1M-step value_at 812 -> 241-345 ms, peak 36.5 -> 16.4-18 MB; native backend streams lookups with a per-signal cache and no longer silently falls back for possibly-large files |
+| **18** | chosen for the next wave, not started | remaining native parity: export, split and multi-dump on the native path, lazy hierarchy loading, and a batched values API for native/inlay readouts; then the browser worker + OPFS lazy byte source (the browser's mmap analogue) and completion packages as qualifiers |
+| **19** | later candidates | signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
 
 Statuses are honest: *released* means a tagged release, *shipped in this wave*
 means committed on `main` and waiting for the next release, *chosen* means the
 next wave's agreed top items (not started), and *later candidates* are unordered.
 Items can move between waves when the tree says a wave should be smaller.
 
-Wave 17 completes the desktop native mode (export, split/multi-dump, lazy
-hierarchy) and then takes the browser worker/OPFS lazy byte source plus
-completion packages. The design note
-[`docs/design/large-files.md`](design/large-files.md) records the native protocol,
-the measured timings and the remaining limits; the multi-dump note covers the
-split-view remainder.
+Wave 18 completes the desktop native mode (export, split/multi-dump, lazy
+hierarchy, batched values) and then takes the browser worker/OPFS lazy byte
+source plus completion packages. The design note
+[`docs/design/large-files.md`](design/large-files.md) records the root cause, the
+streaming lookup, the measured numbers and the remaining limits; the multi-dump
+note covers the split-view remainder.
 
 ## Invariants every wave keeps
 

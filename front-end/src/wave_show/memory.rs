@@ -130,6 +130,12 @@ pub fn mb(bytes: u64) -> u64 {
 }
 
 /// The memory readout published as `window.__waveDebug.memory`.
+///
+/// Wave 17: besides the front end's own budget fields this reports the *library's*
+/// cache accounting, so a QA run can see whether the backend materialised a
+/// random-access body (the multi-GB peak): `bodyMaterialised` is the cheap flag
+/// (the body time table has steps) and `timeTableBytes` / `packedBytes` /
+/// `decodedStructBytes` / `decodedPayloadBytes` are the pieces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MemoryStats {
     /// Linear memory the wasm module currently owns.
@@ -146,6 +152,73 @@ pub struct MemoryStats {
     pub unloaded: usize,
     /// Dumps whose parsed body this trim gave back (re-parsed on the next look).
     pub released: usize,
+    /// Library accounting, summed over the open dumps (Wave 17).
+    pub lib: LibAccounting,
+}
+
+/// The library's own memory accounting, summed over the open dumps.
+///
+/// All fields come from `Waveform::memory_stats` (see the library docs); the
+/// numbers are heap estimates and deliberately exclude the allocator and the
+/// wellen copy inside the body cache. `lookup_cache_*` counts the streaming
+/// value lookups' small LRU (the memory-flat inlay path).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LibAccounting {
+    /// Source bytes kept alive on the application heap (0 for file/mmap sources).
+    pub source_retained_bytes: usize,
+    /// Length of a native memory mapping (0 in the browser build).
+    pub source_mapped_bytes: usize,
+    /// Parsed hierarchy bytes.
+    pub hierarchy_bytes: usize,
+    /// Signals decoded into wellen's packed representation.
+    pub packed_signals: usize,
+    /// Bytes of those packed decodes.
+    pub packed_bytes: usize,
+    /// Signals with a decoded history.
+    pub decoded_signals: usize,
+    /// Changes in all decoded histories.
+    pub decoded_changes: usize,
+    /// Bytes of the decoded change arrays.
+    pub decoded_struct_bytes: usize,
+    /// Heap payload of the decoded values (bit vectors, strings).
+    pub decoded_payload_bytes: usize,
+    /// Bytes of the body time table (0 when no body was materialised).
+    pub time_table_bytes: usize,
+    /// Sum of the random access cache categories.
+    pub cache_bytes: usize,
+    /// Everything above: hierarchy + retained source + cache.
+    pub total_bytes: usize,
+    /// Entries of the streaming value lookup LRU (memory-flat lookups).
+    pub lookup_cache_entries: usize,
+    /// Bytes of that LRU.
+    pub lookup_cache_bytes: usize,
+}
+
+impl LibAccounting {
+    /// Add one open dump's library accounting.
+    pub fn absorb(&mut self, stats: &wave_insight_lib::waveform::MemoryStats) {
+        self.source_retained_bytes += stats.source_retained_bytes;
+        self.source_mapped_bytes += stats.source_mapped_bytes;
+        self.hierarchy_bytes += stats.hierarchy_bytes;
+        self.packed_signals += stats.packed_signals;
+        self.packed_bytes += stats.packed_bytes;
+        self.decoded_signals += stats.decoded_signals;
+        self.decoded_changes += stats.decoded_changes;
+        self.decoded_struct_bytes += stats.decoded_struct_bytes;
+        self.decoded_payload_bytes += stats.decoded_payload_bytes;
+        self.time_table_bytes += stats.time_table_bytes;
+        self.cache_bytes += stats.cache_bytes;
+        self.total_bytes += stats.total_bytes;
+        self.lookup_cache_entries += stats.lookup_cache_entries;
+        self.lookup_cache_bytes += stats.lookup_cache_bytes;
+    }
+
+    /// Whether any open dump materialised a random-access body: the time table
+    /// has steps (see `CacheStats::time_steps`). This is the flag the Wave 17
+    /// investigation turns on: a windowed/lazy dump must keep it false.
+    pub fn body_materialised(&self) -> bool {
+        self.time_table_bytes > 0 || self.packed_bytes > 0
+    }
 }
 
 impl MemoryStats {
@@ -153,6 +226,11 @@ impl MemoryStats {
     /// the visible rows themselves need more than the budget, which is a soft cap).
     pub fn over_budget(&self) -> bool {
         self.decoded_bytes > self.budget
+    }
+
+    /// Fold one open dump's library accounting into the readout.
+    pub fn absorb(&mut self, stats: &wave_insight_lib::waveform::MemoryStats) {
+        self.lib.absorb(stats);
     }
 }
 
@@ -285,7 +363,7 @@ pub fn per_dump_share(dumps: usize) -> usize {
 pub fn stats(store: &Store) -> MemoryStats {
     let tabs = store.select(select::dump_tabs);
     let handles = dump_handles(store);
-    MemoryStats {
+    let mut readout = MemoryStats {
         wasm_bytes: wasm_bytes(),
         file_bytes: tabs.total_bytes,
         decoded_bytes: handles.iter().map(decoded_of).sum(),
@@ -293,7 +371,12 @@ pub fn stats(store: &Store) -> MemoryStats {
         dumps: handles.len(),
         unloaded: 0,
         released: 0,
+        lib: LibAccounting::default(),
+    };
+    for handle in &handles {
+        readout.absorb(&handle.waveform().memory_stats());
     }
+    readout
 }
 
 /// Enforce the budget: give back what no pane draws, then report.
@@ -321,7 +404,7 @@ pub fn trim(store: &Store) -> MemoryStats {
     for &id in &plan.release_body {
         handles[id].waveform().release_cache();
     }
-    MemoryStats {
+    let mut readout = MemoryStats {
         wasm_bytes: wasm_bytes(),
         file_bytes: tabs.total_bytes,
         decoded_bytes: handles.iter().map(decoded_of).sum(),
@@ -329,7 +412,12 @@ pub fn trim(store: &Store) -> MemoryStats {
         dumps: handles.len(),
         unloaded: plan.unload_decoded.len(),
         released: plan.release_body.len(),
+        lib: LibAccounting::default(),
+    };
+    for handle in &handles {
+        readout.absorb(&handle.waveform().memory_stats());
     }
+    readout
 }
 
 #[cfg(test)]
@@ -506,5 +594,74 @@ mod tests {
         assert_eq!(mb(0), 1);
         assert_eq!(mb(1024 * 1024 - 1), 1);
         assert_eq!(mb(1024 * 1024), 1);
+    }
+
+    #[test]
+    fn the_library_accounting_sums_over_dumps_and_flags_materialisation() {
+        use wave_insight_lib::waveform::MemoryStats as LibStats;
+        let mut accounting = LibAccounting::default();
+        assert!(!accounting.body_materialised());
+        // a lazily streamed dump: hierarchy + a tiny lookup cache only
+        accounting.absorb(&LibStats {
+            source_retained_bytes: 0,
+            source_mapped_bytes: 0,
+            hierarchy_bytes: 120_000,
+            packed_signals: 0,
+            packed_bytes: 0,
+            decoded_signals: 0,
+            decoded_changes: 0,
+            decoded_struct_bytes: 0,
+            decoded_payload_bytes: 0,
+            time_table_bytes: 0,
+            cache_bytes: 0,
+            total_bytes: 120_000,
+            ..LibStats::default()
+        });
+        assert_eq!(accounting.hierarchy_bytes, 120_000);
+        assert!(!accounting.body_materialised());
+        // a materialised dump: the body time table and packed decodes appear
+        accounting.absorb(&LibStats {
+            hierarchy_bytes: 80_000,
+            packed_signals: 12,
+            packed_bytes: 400_000,
+            decoded_signals: 2,
+            decoded_changes: 1_000,
+            decoded_struct_bytes: 32_000,
+            decoded_payload_bytes: 1_000,
+            time_table_bytes: 64_000,
+            cache_bytes: 497_000,
+            total_bytes: 577_000,
+            ..LibStats::default()
+        });
+        assert_eq!(accounting.hierarchy_bytes, 200_000);
+        assert_eq!(accounting.time_table_bytes, 64_000);
+        assert_eq!(accounting.packed_bytes, 400_000);
+        assert_eq!(accounting.cache_bytes, 497_000);
+        assert_eq!(accounting.total_bytes, 697_000);
+        assert!(accounting.body_materialised());
+    }
+
+    #[test]
+    fn the_readout_absorbs_library_stats() {
+        let mut readout = MemoryStats {
+            wasm_bytes: 500,
+            file_bytes: 100 * 1024 * 1024,
+            decoded_bytes: 10,
+            budget: DECODE_BUDGET_BYTES,
+            dumps: 1,
+            unloaded: 0,
+            released: 0,
+            lib: LibAccounting::default(),
+        };
+        readout.absorb(&wave_insight_lib::waveform::MemoryStats {
+            hierarchy_bytes: 4096,
+            total_bytes: 4096,
+            ..wave_insight_lib::waveform::MemoryStats::default()
+        });
+        assert_eq!(readout.lib.hierarchy_bytes, 4096);
+        // the old budget fields are untouched by the library accounting
+        assert_eq!(readout.decoded_bytes, 10);
+        assert_eq!(readout.file_bytes, 100 * 1024 * 1024);
+        assert!(!readout.lib.body_materialised());
     }
 }

@@ -3,15 +3,16 @@
 Engineers open waveform dumps that are routinely hundreds of megabytes and
 sometimes several gigabytes. Memory is the first-order constraint of a wave
 viewer: a tool that crashes on a large dump is not usable for the job it exists
-for. This note records the current model, what Waves 12-13 change (the footprint work
-and the bounded windowed renderer), and the two honest paths to true
-memory-mapped access (desktop native backend, browser worker with a lazy byte
-source).
+for. This note records the current model, what Waves 12-17 change (the footprint work,
+the bounded windowed renderer, the native mmap backend and renderer, and the
+streaming value lookup), and the two honest paths to true memory-mapped access
+(desktop native backend, browser worker with a lazy byte source).
 
 Status: **current model documented; footprint work (Wave 12), bounded windowed
-rendering (Wave 13), the native mmap backend foundation (Wave 14) and the desktop
-native renderer MVP (Wave 15) are in. Next: native parity (find/export,
-split/multi-dump, lazy hierarchy, `dump_value_at` wiring) and the browser
+rendering (Wave 13), the native mmap backend foundation (Wave 14), the desktop
+native renderer MVP (Wave 15), native parity (Wave 16) and the streaming
+value-lookup root-cause fix (Wave 17) are in. Next: the remaining native parity
+(export, split/multi-dump, lazy hierarchy), a batched values API, and the browser
 worker/OPFS lazy byte source.**
 
 ## 1. Why it is hard in this architecture
@@ -62,11 +63,15 @@ The desktop build embeds exactly the same wasm bundle in a Tauri webview.
    stream pass for all visible rows, a fair per-row cap of roughly one change per
    pixel, early exit) and keeps the windows in a per-row cache inside the global
    64 MiB budget.
+7. **Streaming value lookup (Wave 17)**: cursor readouts, inlay hints and the
+   native backend ask `stream_value_before` for one change with O(1) retained
+   memory instead of materialising the random-access body; the FST summary reads
+   its time range from the header block.
 
 These make today's large-but-finite dumps work and turn the cliff into a
 message. They do not remove the fundamental limit: the browser build still keeps
-the whole file in wasm memory - but a drawn row costs a window now, not a full
-history.
+the whole file in wasm memory - but a drawn row costs a window and a readout
+costs one change, not a full history.
 
 ### 2b. Why windowing was the real fix
 
@@ -80,6 +85,57 @@ only the changes in the visible time window plus a small `before` prefix, so the
 cost is bounded by the pixels on screen. The `window_many` benchmark shows the
 difference: 2.33 ms for eight rows over the full trace, against 99.6 ms for the
 full-history decode of the same rows (which also materialises them).
+
+### 2c. The root cause of the value-readout peak (Wave 17)
+
+The windowed renderer fixed drawing, but two other paths still went through the
+random-access body: `Waveform::time_range_hint()` (called to fill a dump
+summary) and `Waveform::value_at()` (called for cursor readouts and editor inlay
+hints). For FST both silently materialised the body just to answer: an
+8-bytes-per-time-step time table plus wellen's packed decodes. A 20M-time-step
+FST allocated 160 MB of time table and 100 MB of packed data and peaked at
+~623 MB merely to show its summary; a real 100+ MB FST with many steps could
+reach multiple gigabytes, and the native backend's `value_at` path had the same
+shape.
+
+The fix is in the library:
+
+- **`time_range_hint` for FST reads start/end from the header block**, so the
+  body counters (time table, packed decodes) stay 0 after open. Only gzip-wrapped
+  or incomplete files fall back to reading the body.
+- **`stream_value_before(signal, time)`** returns the last change at or before
+  `time` with O(1) retained memory: FST probes exponentially growing backward
+  windows through `stream_changes` (capped probe list; a sparse signal degrades
+  to one prefix scan), VCD does one forward scan (the format cannot seek), and
+  GHW keeps an honest materialised fallback (wellen cannot stream GHW). Answers
+  are memoised in a 64-entry LRU keyed by `(signal, time)`; the batch form
+  `values_before` shares one stream pass for a screen full of rows. The LRU is
+  visible as `lookup_cache_entries`/`lookup_cache_bytes` in `MemoryStats`.
+- **`MemoryStats`** gained `time_table_bytes`, `packed_bytes`,
+  `decoded_struct_bytes`, `decoded_payload_bytes` and the lookup-cache counters,
+  so "did this action materialise the body?" is visible instead of inferred.
+- **Native diagnostics:** `dump_memory_stats(id)` returns that accounting for
+  the open native dump and `process_memory()` returns
+  `{ current_bytes, peak_bytes }` from the OS (GetProcessMemoryInfo on Windows,
+  `/proc/self/status` VmHWM on Linux); the front end publishes both under
+  `__waveDebug.memory` (`memory.native` in the desktop build), and the native
+  backend now uses `stream_value_before` with a per-signal last-answer cache
+  instead of `value_at`. Editor inlay hints use the streaming lookup too, in a
+  bounded per-pass loop.
+
+Measured (release-relevant, from the task reports): on a 20M-time-step fixture
+the retained heap after one lookup dropped from 260,019,306 B to
+15,876-19,235 B and the process peak from 623 MB to 196 MB (including the
+120 MB mapped file); on the 1M-step `large.fst` `value_at` went from 812 ms to
+241-345 ms, the peak from 36.5 MB to 16.4-18 MB, retained after open from
+13.6 MB to 0, and the open summary no longer allocates the 8 MB time table.
+
+Residual costs, recorded so nobody promises more than this: a sparse FST lookup
+can still take hundreds of milliseconds (the probe list is capped, so the worst
+case is one full prefix scan); a VCD lookup is O(prefix); the GHW lookup is not
+memory-flat; and each FST streaming call allocates a small transient buffer. The
+body is still materialised on demand by the queries that genuinely need it
+(export, the eager value path, GHW).
 
 ## 3. Desktop: native backend with a memory map
 
@@ -128,8 +184,8 @@ Implementation result (Wave 14), the foundation:
   honest.
 - **Desktop: native dump registry + IPC queries.** `src-tauri/src/dumps.rs`
   keeps a registry of natively opened dumps (monotonic ids, 32-dump cap) and
-  answers six commands over Tauri IPC (plus the dialog-parts variant of the
-  open):
+  answers the dump/query commands over Tauri IPC (plus the dialog-parts variant
+  of the open and two diagnostics commands):
   `open_dump(path) -> DumpSummary` (absolute path - drag-and-drop and launch
   arguments; format/time range/signal+scope counts, retained/mapped bytes, open
   time), `open_dump_parts(parts) -> DumpSummary` (the in-app dialog's navigation
@@ -145,7 +201,12 @@ Implementation result (Wave 14), the foundation:
   null` (a streaming value search: one pass with early exit, rendered-text
   matching, `0x`/`0b`/`0o` radix prefixes, case-insensitive, x/z as text; a
   backwards search keeps the last match and the worst case is a full trace scan,
-  not cancellable) and `close_dump(id)`. The file bytes never cross IPC; the
+  not cancellable) and `close_dump(id)`. Two diagnostics commands expose the
+  native accounting: `dump_memory_stats(id)` (the library `MemoryStats` for the
+  open dump, including the lookup cache) and `process_memory()`
+  (`{ current_bytes, peak_bytes }` from the OS). `dump_value_at` is backed by the
+  streaming lookup plus a per-signal last-answer cache (Wave 17), so a cursor
+  readout no longer materialises the body. The file bytes never cross IPC; the
   webview receives only rendered windows. `close_dump` drops the mapping, and `open_dump` falls back
   to the read path when a map cannot be created. Measured: a 4096-row hierarchy
   page 1.82 ms; 10 dense signals over the full trace 139 ms (debug build); first
@@ -175,7 +236,14 @@ Implementation result (Wave 14), the foundation:
   format (hex/uint/sint/oct/bin/ascii), so row format settings change the drawn
   values and the value column; and a cursor outside the fetched window gets its
   value from batched, cached `dump_value_at` calls (at most 64 requests per
-  redraw, a 512-entry (row, time) cache) instead of a per-row-per-frame call. The mode is visible: a
+  redraw, a 512-entry (row, time) cache) instead of a per-row-per-frame call. Wave 17 made the readouts memory-flat: the
+  backend's cursor values and the editor inlay hints use `stream_value_before`
+  (the backend keeps a per-signal last-answer cache), and the debug hook publishes
+  the library accounting and the process working set under
+  `__waveDebug.memory` (`memory.native` in the desktop build). Native
+  open/hierarchy errors for possibly-large files no longer fall back to the wasm
+  byte path (that copy would reproduce the peak the mode avoids); small dumps
+  still fall back. The mode is visible: a
   `.dock-tab.native-badge` chip ("native (read-only, mmap)", with a
   path/size/signals/scopes/mapped tooltip) and the status line
   `waveform loaded (native read-only, mmap) — <FMT> <N> MB, range <start>..<end>
@@ -242,6 +310,14 @@ first.
 - The native renderer is compile-verified and host-tested where possible
   (`front-end/src/remote/` and the wave-pane window path); the runtime checks are
   listed in the section 3 "Runtime status" note.
+- The streaming-lookup tests (`wave-insight-lib/tests/waveform_stream_value.rs`):
+  FST answers match `value_at` at the same positions, the VCD forward scan and
+  the GHW fallback answer correctly, the LRU accounting moves, and
+  `time_range_hint` leaves the body counters at 0; the 20M-step fixture
+  reproduces the retained-heap and peak numbers above.
+- The native process-memory command has a host test (a positive working set and
+  no invented peak), and the native backend's `dump_memory_stats` path is covered
+  by the registry tests.
 - The native backend tests: mmap/file/memory answer equivalence, corrupt input
   through the mapping, mapping release on drop (library) and the Tauri registry
   round-trip/arguments/ids/cap/close (src-tauri), run by the new `test-app` CI job

@@ -57,7 +57,8 @@
 //! | drawing the visible rows (recommended) | [`Waveform::window_changes_many`] | one pass, fair per-row cap, O(rows * cap) memory |
 //! | drawing after a cached decode | [`Waveform::decoded_changes_many`], then [`DecodedSignal::window`] per row | one pass over the body, full histories in memory |
 //! | drawing one row | [`Waveform::decoded_changes`] + [`DecodedSignal::window`] | decode once per signal, then binary search |
-//! | cursor readout, tooltips | [`Waveform::value_at`] | one value, no history |
+//! | cursor readout, tooltips | [`Waveform::stream_value_before`] | one change, O(1) retained memory (FST seeks; VCD forward scan) |
+//! | value when the body is already warm | [`Waveform::value_at`] | one value out of the random-access cache |
 //! | one-off query over a huge signal | [`Waveform::changes_in_window`] | re-reads the body, `O(window)` memory |
 //! | export / tests / small dumps | [`Waveform::all_changes`] | converts the history on every call |
 //!
@@ -269,6 +270,9 @@ pub struct Waveform {
     body: Mutex<Option<EagerBody>>,
     /// Cached answer of [`Waveform::time_range_hint`]: `None` = not asked yet.
     time_hint: Mutex<Option<Option<TimeRange>>>,
+    /// Tiny LRU of recent [`Waveform::stream_value_before`] answers, so a cursor
+    /// readout or inlay hint for the same (signal, time) does not rescan.
+    lookups: Mutex<LookupCache>,
 }
 
 impl fmt::Debug for Waveform {
@@ -379,6 +383,7 @@ impl Waveform {
             timescale,
             body: Mutex::new(None),
             time_hint: Mutex::new(None),
+            lookups: Mutex::new(LookupCache::new()),
         })
     }
 
@@ -451,6 +456,44 @@ impl Waveform {
         self.hierarchy.signal_by_path(path)
     }
 
+    /// First/last time stamp from the FST header block, without opening the
+    /// random-access body.
+    ///
+    /// The FST header block is [type][section length][HEADER_LENGTH][start][end]
+    /// (the section length equals HEADER_LENGTH, 329).  Returns None for a gzip
+    /// wrapped stream (the inner blocks are opaque) and for incomplete files
+    /// whose header stamps are unset; the caller falls back to the body there.
+    fn fst_header_time_range(&self) -> Result<Option<TimeRange>> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let mut reader = self.source.reader()?;
+        reader.seek(SeekFrom::Start(0))?;
+        let mut block_header = [0u8; 9];
+        if reader.read_exact(&mut block_header).is_err() {
+            return Ok(None);
+        }
+        if block_header[0] != 0 {
+            // GZipWrapper (254) or an unknown first block: need the body.
+            return Ok(None);
+        }
+        let mut block_len_bytes = [0u8; 8];
+        block_len_bytes.copy_from_slice(&block_header[1..9]);
+        let block_len = u64::from_be_bytes(block_len_bytes);
+        // The block length equals the header section length (fst-reader asserts
+        // 329).  The first u64 at the payload start is that same section length
+        // (read_header re-reads it); start_time and end_time follow.
+        let mut payload = [0u8; 16];
+        if block_len < 24 || reader.read_exact(&mut payload).is_err() {
+            return Ok(None);
+        }
+        let start = u64::from_be_bytes(payload[0..8].try_into().expect("8 bytes"));
+        let end = u64::from_be_bytes(payload[8..16].try_into().expect("8 bytes"));
+        if start == 0 && end == 0 {
+            return Ok(None); // incomplete FST: the body infers the range
+        }
+        Ok(Some(TimeRange { start, end }))
+    }
+
     /// The trace's start and end without reading the body, when that is cheap.
     ///
     /// This is what a viewer needs to draw its first frame: the ruler and the
@@ -463,9 +506,9 @@ impl Waveform {
     ///   `$comment` blocks are skipped (they are free text and may contain
     ///   anything); if the bounded scans cannot decide, the exhaustive scan is
     ///   used instead.
-    /// * **FST**: the header carries the time table, so the body handle is
-    ///   opened (hierarchy + time table, no signal data) and kept; later value
-    ///   queries reuse it.
+    /// * **FST**: start and end time are read from the header block without
+    ///   opening the body (no time table allocation); only gzip-wrapped or
+    ///   incomplete files fall back to materialising the body.
     /// * **GHW**: `None`. wellen only knows the range after reading the body;
     ///   fall back to [`Waveform::end_time`] and accept the cost.
     ///
@@ -487,13 +530,20 @@ impl Waveform {
                 timescan::scan_vcd_time_range(&mut reader)?
             }
             WaveFormat::Fst => {
-                //the FST header contains the time table; opening the body
-                //handle reads no signal data and is kept for later queries
-                let mut guard = self.lock_body();
-                let body = self.ensure_body(&mut guard)?;
-                let start = body.time_table.first().copied();
-                let end = body.time_table.last().copied();
-                start.zip(end).map(|(start, end)| TimeRange { start, end })
+                // The FST header block carries the first and last time stamp;
+                // read them without opening the body, so a dump tab summary
+                // does not materialise the whole time table (8 B per step).
+                // Gzip-wrapped or incomplete files fall back to the body.
+                match self.fst_header_time_range()? {
+                    Some(range) => Some(range),
+                    None => {
+                        let mut guard = self.lock_body();
+                        let body = self.ensure_body(&mut guard)?;
+                        let start = body.time_table.first().copied();
+                        let end = body.time_table.last().copied();
+                        start.zip(end).map(|(start, end)| TimeRange { start, end })
+                    }
+                }
             }
             WaveFormat::Ghw => None,
         };
@@ -677,7 +727,18 @@ impl Waveform {
             stats.time_table_bytes = cache.time_table_bytes;
             stats.cache_bytes = cache.total_bytes();
         }
-        stats.total_bytes = stats.hierarchy_bytes + stats.source_retained_bytes + stats.cache_bytes;
+        {
+            let cache = self
+                .lookups
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            stats.lookup_cache_entries = cache.entries.len();
+            stats.lookup_cache_bytes = cache.memory_bytes();
+        }
+        stats.total_bytes = stats.hierarchy_bytes
+            + stats.source_retained_bytes
+            + stats.cache_bytes
+            + stats.lookup_cache_bytes;
         stats
     }
 
@@ -693,6 +754,235 @@ impl Waveform {
         let mut guard = self.lock_body();
         let body = self.ensure_body(&mut guard)?;
         body.value_at(signal_ref, time)
+    }
+
+    /// The last value change at or before \`time\`, without materialising the
+    /// random-access body.
+    ///
+    /// This is the memory-flat lookup for cursor readouts and editor inlay
+    /// hints: unlike [\`Waveform::value_at\`] it never calls \`ensure_body\`, so no
+    /// FST time table (8 bytes per time step) and no packed signal decodes are
+    /// retained.  It streams the source:
+    ///
+    /// * FST: exponentially growing backward windows through
+    ///   [\`Waveform::stream_changes\`], which uses the FST time table to seek.
+    ///   Dense signals are answered by the first small window; a signal that
+    ///   never changed degrades to a full prefix scan, still O(1) memory.
+    /// * VCD: one forward scan from 0 to \`time\` (the format cannot seek): O(time)
+    ///   decode time but O(1) memory.
+    /// * GHW: wellen cannot stream GHW; the honest fallback materialises the
+    ///   requested signal like [\`Waveform::value_at\`] does (correct, but not
+    ///   memory-flat).  Callers that care should keep GHW rows on the body path.
+    ///
+    /// The returned pair is (change time, value); a change exactly at \`time\` is
+    /// returned, and \`None\` means the signal has no change at or before \`time\`.
+    /// Answers are memoised in a small per-waveform LRU (see
+    /// [\`MemoryStats::lookup_cache_bytes\`]), so asking the same (signal, time)
+    /// again - the usual case for a cursor readout redraw - costs nothing.
+    pub fn stream_value_before(
+        &self,
+        signal: usize,
+        time: Time,
+    ) -> Result<Option<(Time, WaveValue)>> {
+        // Validate the index even when the answer is cached: an unknown signal
+        // must stay an error.
+        let _ = self.signal_ref(signal)?;
+        {
+            let cache = self
+                .lookups
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(cached) = cache.get(signal, time) {
+                return Ok(cached);
+            }
+        }
+        let result = if self.format == WaveFormat::Ghw {
+            // wellen cannot stream GHW: the materialised fallback is the same
+            // path value_at uses (documented in the method docs).
+            self.stream_last_change(signal, 0, time)?
+        } else if self.format == WaveFormat::Vcd {
+            // Forward-only format: one scan from the beginning to the requested
+            // time, keeping only the last value (O(1) memory).
+            self.stream_last_change(signal, 0, time)?
+        } else {
+            // Seekable format (FST): probe a few exponentially growing backward
+            // windows; each wellen stream call re-reads the relevant section's
+            // time table, so the probe list is capped and one prefix scan is the
+            // final answer for sparse/constant signals.
+            let mut result = None;
+            for span in [1u64, 1024, 1_048_576] {
+                let start = time.saturating_sub(span.saturating_sub(1));
+                result = self.stream_last_change(signal, start, time)?;
+                if result.is_some() || start == 0 {
+                    break;
+                }
+            }
+            if result.is_none() {
+                result = self.stream_last_change(signal, 0, time)?;
+            }
+            result
+        };
+        {
+            let mut cache = self
+                .lookups
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.insert(signal, time, result.clone());
+        }
+        Ok(result)
+    }
+
+    /// Batch form of [Waveform::stream_value_before] for a screen full of rows.
+    ///
+    /// Returns one entry per unique requested signal, in request order (duplicates
+    /// collapse like [Waveform::window_changes_many]).  All signals share the same
+    /// requested time, so the backward search runs as one stream pass with a signal
+    /// filter instead of one pass per signal - on FST the relevant section time
+    /// table is then read once per probe for the whole batch.  The probe strategy,
+    /// the per-signal LRU and the accounting are the same as for the single-signal
+    /// call; every answer is also stored in the LRU, so an identical batch (or a
+    /// single [Waveform::stream_value_before] for one of the rows) is free.
+    ///
+    /// GHW cannot be streamed by wellen and falls back to materialising the
+    /// requested signals, as documented on [Waveform::stream_value_before].
+    pub fn values_before(
+        &self,
+        signals: &[usize],
+        time: Time,
+    ) -> Result<Vec<Option<(Time, WaveValue)>>> {
+        let mut unique: Vec<usize> = Vec::with_capacity(signals.len());
+        let mut slot_by_signal: Vec<Option<usize>> = vec![None; self.hierarchy.len()];
+        for &signal in signals {
+            let Some(slot) = slot_by_signal.get(signal).copied() else {
+                return Err(WaveformError::UnknownSignal(format!("#{signal}")));
+            };
+            if slot.is_some() {
+                continue;
+            }
+            let _ = self.signal_ref(signal)?;
+            slot_by_signal[signal] = Some(unique.len());
+            unique.push(signal);
+        }
+        let mut answers: Vec<Option<Option<(Time, WaveValue)>>> = vec![None; unique.len()];
+        if unique.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Answers already memoised (per signal LRU) are free.
+        {
+            let cache = self
+                .lookups
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for (slot, &signal) in unique.iter().enumerate() {
+                if let Some(cached) = cache.get(signal, time) {
+                    answers[slot] = Some(cached);
+                }
+            }
+        }
+
+        // Signals whose answer is still unknown.
+        let mut pending: Vec<usize> = unique
+            .iter()
+            .enumerate()
+            .filter(|(slot, _)| answers[*slot].is_none())
+            .map(|(_, &signal)| signal)
+            .collect();
+        if !pending.is_empty() {
+            if self.format == WaveFormat::Ghw || self.format == WaveFormat::Vcd {
+                // Forward-only / non-streamable: one pass from 0 to time.
+                let results = self.stream_last_changes(&pending, 0, time)?;
+                for (&signal, result) in pending.iter().zip(results) {
+                    answers[slot_by_signal[signal].expect("requested signal")] = Some(result);
+                }
+                pending.clear();
+            } else {
+                // Seekable (FST): the same capped probes as the single lookup, but
+                // one stream pass for all still-missing signals at a time.
+                for span in [1u64, 1024, 1_048_576] {
+                    let start = time.saturating_sub(span.saturating_sub(1));
+                    let results = self.stream_last_changes(&pending, start, time)?;
+                    let mut still_missing = Vec::new();
+                    for (&signal, result) in pending.iter().zip(results) {
+                        let slot = slot_by_signal[signal].expect("requested signal");
+                        if result.is_some() || start == 0 {
+                            answers[slot] = Some(result);
+                        } else {
+                            still_missing.push(signal);
+                        }
+                    }
+                    pending = still_missing;
+                    if pending.is_empty() {
+                        break;
+                    }
+                }
+                if !pending.is_empty() {
+                    let results = self.stream_last_changes(&pending, 0, time)?;
+                    for (&signal, result) in pending.iter().zip(results) {
+                        answers[slot_by_signal[signal].expect("requested signal")] = Some(result);
+                    }
+                }
+            }
+        }
+
+        // Memoise everything (including None answers) and return request order.
+        {
+            let mut cache = self
+                .lookups
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for (slot, &signal) in unique.iter().enumerate() {
+                if let Some(result) = answers[slot].as_ref() {
+                    cache.insert(signal, time, result.clone());
+                }
+            }
+        }
+        Ok(answers
+            .into_iter()
+            .map(|answer| answer.unwrap_or(None))
+            .collect())
+    }
+
+    /// Streaming primitive for the batch lookup: the last change of each signal
+    /// inside [start, end], in the order of signals.
+    fn stream_last_changes(
+        &self,
+        signals: &[usize],
+        start: Time,
+        end: Time,
+    ) -> Result<Vec<Option<(Time, WaveValue)>>> {
+        let mut lasts: Vec<Option<(Time, WaveValue)>> = vec![None; signals.len()];
+        if signals.is_empty() {
+            return Ok(lasts);
+        }
+        let mut slot_by_variable: Vec<Option<usize>> = vec![None; self.hierarchy.len()];
+        for (slot, &signal) in signals.iter().enumerate() {
+            slot_by_variable[signal] = Some(slot);
+        }
+        let query = ValueQuery::for_signals(signals.iter().copied()).between(start, Some(end));
+        self.stream_changes(&query, |variable, time, value| {
+            if let Some(slot) = slot_by_variable.get(variable).copied().flatten() {
+                lasts[slot] = Some((time, value));
+            }
+            true
+        })?;
+        Ok(lasts)
+    }
+    /// Last change of one signal inside [start, end]; the streaming primitive
+    /// behind [Waveform::stream_value_before].
+    fn stream_last_change(
+        &self,
+        signal: usize,
+        start: Time,
+        end: Time,
+    ) -> Result<Option<(Time, WaveValue)>> {
+        let query = ValueQuery::window(signal, start, Some(end));
+        let mut last = None;
+        self.stream_changes(&query, |_, time, value| {
+            last = Some((time, value));
+            true
+        })?;
+        Ok(last)
     }
 
     /// Drop the decoded data of one variable from the random access cache.
@@ -1047,6 +1337,69 @@ impl Waveform {
     }
 }
 
+/// Number of entries in the streaming-lookup LRU (bounded so the cache is
+/// O(1)-ish and visible in [MemoryStats::lookup_cache_entries]).
+const LOOKUP_CACHE_CAPACITY: usize = 64;
+
+/// One cached [Waveform::stream_value_before] answer.
+struct LookupEntry {
+    signal: usize,
+    time: Time,
+    /// The change at or before the requested time, or None when the signal has
+    /// no change before it.
+    result: Option<(Time, WaveValue)>,
+}
+
+/// Bounded LRU for the memory-flat value lookup.
+struct LookupCache {
+    entries: std::collections::VecDeque<LookupEntry>,
+}
+
+impl LookupCache {
+    fn new() -> Self {
+        Self {
+            // Lazily allocated: a waveform that never asks for a streaming
+            // lookup must not pay a cache allocation up front.
+            entries: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn get(&self, signal: usize, time: Time) -> Option<Option<(Time, WaveValue)>> {
+        self.entries
+            .iter()
+            .find(|entry| entry.signal == signal && entry.time == time)
+            .map(|entry| entry.result.clone())
+    }
+
+    fn insert(&mut self, signal: usize, time: Time, result: Option<(Time, WaveValue)>) {
+        if let Some(position) = self
+            .entries
+            .iter()
+            .position(|entry| entry.signal == signal && entry.time == time)
+        {
+            self.entries.remove(position);
+        } else if self.entries.len() >= LOOKUP_CACHE_CAPACITY {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(LookupEntry {
+            signal,
+            time,
+            result,
+        });
+    }
+
+    /// Heap bytes held by the cache (struct entries plus value payloads).
+    fn memory_bytes(&self) -> usize {
+        self.entries.capacity() * std::mem::size_of::<LookupEntry>()
+            + self
+                .entries
+                .iter()
+                .filter_map(|entry| entry.result.as_ref())
+                .map(|(_, value)| value.heap_bytes())
+                .sum::<usize>()
+    }
+}
+
 /// What [`Waveform::cache_stats`] found in the per signal cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CacheStats {
@@ -1130,7 +1483,12 @@ pub struct MemoryStats {
     pub time_table_bytes: usize,
     /// Sum of the random access cache categories (see [`CacheStats::total_bytes`]).
     pub cache_bytes: usize,
-    /// Everything above: hierarchy + retained source + cache.
+    /// Entries in the streaming-lookup LRU (see
+    /// [`Waveform::stream_value_before`]).
+    pub lookup_cache_entries: usize,
+    /// Heap bytes of that LRU, including value payloads.
+    pub lookup_cache_bytes: usize,
+    /// Everything above: hierarchy + retained source + cache + lookup LRU.
     pub total_bytes: usize,
 }
 

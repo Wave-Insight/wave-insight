@@ -9,7 +9,13 @@
 //! anything when the cursor moves. `App` updates the [`Context`] when the dump or
 //! the cursor changes, and the provider fires `onDidChangeInlayHints`, which makes
 //! monaco ask again for the visible lines (no round trip per keystroke; the
-//! values come from the same decoded waveform the canvas uses).
+//! values come from the same waveform the canvas uses, through the library's
+//! **memory-flat** [`Waveform::stream_value_before`]: a hint lookup never
+//! materialises the random-access body (FST time table + packed decodes), which
+//! used to cost hundreds of MB — or GB — on a large dump the first time the
+//! editor asked for a value. The per-pass lookup budget ([`LOOKUP_BUDGET`]) and
+//! the small (signal, time) cache ([`HintValueCache`]) bound the work: a scroll
+//! cannot run dozens of scans.
 //!
 //! # Which signal does a word mean?
 //!
@@ -28,8 +34,7 @@ use js_sys::{Array, Function, Object, Reflect};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
-use wave_insight_lib::waveform::ShowType;
-use wave_insight_lib::waveform::Waveform;
+use wave_insight_lib::waveform::{ShowType, WaveValue, Waveform};
 
 use crate::code_reader::monaco_glue::model_uri;
 use crate::nav::{value_text, ValueFormat};
@@ -42,6 +47,27 @@ use super::bridge::file_of_uri;
 const MAX_HINTS: usize = 300;
 /// Never scan more lines than this, whatever range monaco asks for.
 const MAX_LINES: u32 = 400;
+/// Value lookups one provider call may do.
+///
+/// Each miss streams the source once (memory-flat but not free: an FST probe or
+/// a VCD prefix scan), so a hint pass is bounded instead of turning a scroll
+/// into dozens of scans. The provider is re-run for the visible range, and the
+/// (signal, time) cache makes the next passes cheap; a lookup over the budget
+/// simply leaves the label out.
+const LOOKUP_BUDGET: usize = 16;
+/// Time one provider call may spend on value lookups, in milliseconds.
+///
+/// The FST lookup is usually quick (streaming windows), but a VCD lookup is one
+/// forward scan from the start of the trace: a cursor deep inside a large VCD can
+/// cost seconds *per signal*. The provider is synchronous on monaco's UI thread,
+/// so a scroll must not freeze the editor: after this wall-clock budget no new
+/// lookup starts (the remaining hints simply have no label). The count budget
+/// (`LOOKUP_BUDGET`) bounds the FST case, this bounds the VCD case.
+const LOOKUP_TIME_BUDGET_MS: f64 = 250.0;
+/// Entries of the (signal, time) -> value cache. The library keeps its own
+/// 64-entry LRU of the same answers; this one also saves the formatting work
+/// and makes the budget meaningful across provider calls.
+const LOOKUP_CACHE_ENTRIES: usize = 64;
 
 /// Page-wide state the provider reads.
 struct Context {
@@ -49,6 +75,8 @@ struct Context {
     waveform: Option<DumpHandle>,
     /// Cursor 1, in wave time units; `None` means no hints at all.
     cursor: Option<i64>,
+    /// Values by (signal, time): the inlay hints' bounded cache.
+    values: RefCell<HintValueCache>,
     emitter: Emitter,
 }
 
@@ -65,6 +93,7 @@ pub fn init(store: Store) {
                 store,
                 waveform: None,
                 cursor: None,
+                values: RefCell::new(HintValueCache::new(LOOKUP_CACHE_ENTRIES)),
                 emitter: Emitter::new(),
             });
         }
@@ -76,6 +105,8 @@ pub fn set_waveform(waveform: Option<DumpHandle>) {
     CONTEXT.with(|context| {
         if let Some(context) = context.borrow_mut().as_mut() {
             context.waveform = waveform;
+            // signal indices are per dump: a different dump invalidates the cache
+            context.values.borrow_mut().clear();
             context.emitter.fire();
         }
     });
@@ -125,6 +156,16 @@ struct Counters {
     dumps: usize,
     /// chosen signals with a value at the cursor
     values: usize,
+    /// memory-flat lookups attempted against the library
+    lookups: usize,
+    /// lookups answered by the (signal, time) cache
+    cache_hits: usize,
+    /// hints left without a label because the budget was gone
+    budget_skips: usize,
+    /// lookups the library refused (a bad signal index or a decode error)
+    lookup_errors: usize,
+    /// entries in the cache when the provider call ended
+    cache_entries: usize,
 }
 
 /// `provideInlayHints(model, range, token)` → `{ hints, dispose }`.
@@ -173,6 +214,10 @@ fn fill_hints(
         return (true, Some(cursor), last - first + 1);
     };
 
+    // one budget for the whole provider call: a scroll cannot run dozens of
+    // streaming scans
+    let mut budget =
+        LookupBudget::with_time_limit(LOOKUP_BUDGET, js_sys::Date::now(), LOOKUP_TIME_BUDGET_MS);
     // The row formats (base format + fixed-point scale) and the row paths (used
     // to disambiguate a shared module body) are read once per request, never per
     // identifier.
@@ -203,11 +248,19 @@ fn fill_hints(
                 &word,
                 cursor,
                 counters,
+                &mut budget,
             ) {
                 hints.push(&hint);
             }
         }
     }
+    counters.cache_entries = CONTEXT.with(|context| {
+        context
+            .borrow()
+            .as_ref()
+            .map(|context| context.values.borrow().len())
+            .unwrap_or(0)
+    });
     (true, Some(cursor), last - first + 1)
 }
 
@@ -225,6 +278,7 @@ fn hint_at(
     word: &str,
     cursor: i64,
     counters: &mut Counters,
+    budget: &mut LookupBudget,
 ) -> Option<JsValue> {
     if word.is_empty() || cursor < 0 {
         return None;
@@ -253,10 +307,9 @@ fn hint_at(
     let info = waveform.signal_by_path(dump_path)?;
     counters.dumps += 1;
     let width = info.width().max(1) as usize;
-    let value = waveform
-        .value_at(info.index(), cursor as u64)
-        .ok()
-        .flatten()?;
+    // memory-flat: the library streams the source instead of materialising the
+    // random-access body; the budget + (signal, time) cache bound the passes
+    let value = lookup_value(waveform, info.index(), cursor, counters, budget)?;
     counters.values += 1;
     let format = formats
         .get(dump_path.as_str())
@@ -276,6 +329,135 @@ fn hint_at(
     set_f64(&hint, "kind", 1.0);
     set(&hint, "paddingLeft", JsValue::TRUE);
     Some(hint.into())
+}
+
+/// The next value of one signal at one cursor time, or `None` when the lookup
+/// budget is exhausted (the hint then has no label).
+fn lookup_value(
+    waveform: &Waveform,
+    signal: usize,
+    cursor: i64,
+    counters: &mut Counters,
+    budget: &mut LookupBudget,
+) -> Option<WaveValue> {
+    let key = (signal, cursor);
+    let cached = CONTEXT.with(|context| {
+        context
+            .borrow()
+            .as_ref()
+            .and_then(|context| context.values.borrow().get(key))
+    });
+    if let Some(cached) = cached {
+        counters.cache_hits += 1;
+        return cached;
+    }
+    if !budget.take() {
+        counters.budget_skips += 1;
+        return None;
+    }
+    counters.lookups += 1;
+    let answer = match waveform.stream_value_before(signal, cursor.max(0) as u64) {
+        Ok(found) => found.map(|(_time, value)| value),
+        Err(_error) => {
+            counters.lookup_errors += 1;
+            None
+        }
+    };
+    CONTEXT.with(|context| {
+        if let Some(context) = context.borrow().as_ref() {
+            context.values.borrow_mut().insert(key, answer.clone());
+        }
+    });
+    answer
+}
+
+/// One provider call's value lookup allowance.
+struct LookupBudget {
+    limit: usize,
+    used: usize,
+    /// Wall-clock instant (ms, Date::now) after which no lookup may start.
+    deadline_ms: f64,
+}
+
+impl LookupBudget {
+    /// The production budget: at most `limit` lookups and at most `budget_ms` of
+    /// wall clock for this provider call.
+    fn with_time_limit(limit: usize, now_ms: f64, budget_ms: f64) -> Self {
+        Self {
+            limit,
+            used: 0,
+            deadline_ms: now_ms + budget_ms,
+        }
+    }
+
+    /// Take one lookup; `false` once the count or the time allowance is gone.
+    fn take_at(&mut self, now_ms: f64) -> bool {
+        if self.used >= self.limit || now_ms > self.deadline_ms {
+            return false;
+        }
+        self.used += 1;
+        true
+    }
+
+    fn take(&mut self) -> bool {
+        self.take_at(js_sys::Date::now())
+    }
+
+    #[cfg(test)]
+    fn used(&self) -> usize {
+        self.used
+    }
+
+    #[cfg(test)]
+    fn limit(&self) -> usize {
+        self.limit
+    }
+}
+
+/// A tiny (signal, time) -> value cache with insertion-order eviction.
+///
+/// The library memoises the streaming answers too, but this cache keeps the
+/// formatting work cheap across provider calls and is what makes the per-pass
+/// budget usable on the next pass (a scroll re-asks for the same hints).
+struct HintValueCache {
+    entries: HashMap<(usize, i64), Option<WaveValue>>,
+    order: std::collections::VecDeque<(usize, i64)>,
+    cap: usize,
+}
+
+impl HintValueCache {
+    fn new(cap: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    fn get(&self, key: (usize, i64)) -> Option<Option<WaveValue>> {
+        self.entries.get(&key).cloned()
+    }
+
+    fn insert(&mut self, key: (usize, i64), value: Option<WaveValue>) {
+        if self.entries.insert(key, value).is_none() {
+            self.order.push_back(key);
+        }
+        while self.entries.len() > self.cap {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
 }
 
 /// Which candidate a source position means.
@@ -332,6 +514,11 @@ fn publish_debug(
     set_f64(&debug, "chosen", counters.chosen as f64);
     set_f64(&debug, "dumps", counters.dumps as f64);
     set_f64(&debug, "values", counters.values as f64);
+    set_f64(&debug, "lookups", counters.lookups as f64);
+    set_f64(&debug, "cacheHits", counters.cache_hits as f64);
+    set_f64(&debug, "budgetSkips", counters.budget_skips as f64);
+    set_f64(&debug, "lookupErrors", counters.lookup_errors as f64);
+    set_f64(&debug, "cacheEntries", counters.cache_entries as f64);
     set_f64(&debug, "hints", hints as f64);
     let _ = Reflect::set(&window, &JsValue::from_str("__waveInlayDebug"), &debug);
 }
@@ -483,7 +670,7 @@ fn set_f64(object: &Object, key: &str, value: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::identifiers;
+    use super::{identifiers, HintValueCache, LookupBudget};
 
     #[test]
     fn identifiers_are_found_with_their_columns() {
@@ -510,5 +697,54 @@ mod tests {
         let clk = found.last().unwrap();
         assert_eq!(clk.0, 13);
         assert_eq!(clk.1, 16);
+    }
+
+    #[test]
+    fn the_lookup_budget_allows_exactly_its_limit_per_pass() {
+        // no time limit for the count test (INFINITY deadline)
+        let mut budget = LookupBudget::with_time_limit(16, 0.0, f64::INFINITY);
+        assert_eq!(budget.limit(), 16);
+        for _ in 0..16 {
+            assert!(budget.take_at(0.0), "the allowance is per provider call");
+        }
+        assert!(!budget.take_at(0.0), "the 17th lookup must be refused");
+        assert!(!budget.take_at(0.0));
+        assert_eq!(budget.used(), 16);
+        // a budget of zero never permits a scan
+        let mut none = LookupBudget::with_time_limit(0, 0.0, f64::INFINITY);
+        assert!(!none.take_at(0.0));
+    }
+
+    #[test]
+    fn the_lookup_budget_stops_starting_lookups_after_the_time_budget() {
+        // 16 lookups allowed, but only within the first 250 ms of the call
+        let mut budget = LookupBudget::with_time_limit(16, 1_000.0, 250.0);
+        assert!(budget.take_at(1_010.0));
+        assert!(budget.take_at(1_100.0));
+        assert!(budget.take_at(1_250.0));
+        // the deadline is exclusive: a lookup starting after it is refused
+        assert!(!budget.take_at(1_250.1));
+        assert_eq!(budget.used(), 3);
+        // a slow first lookup (a VCD prefix scan) can use the whole allowance
+        let mut slow = LookupBudget::with_time_limit(16, 0.0, 250.0);
+        assert!(slow.take_at(0.0));
+        assert!(!slow.take_at(3_000.0), "a VCD scan must not allow 15 more");
+    }
+
+    #[test]
+    fn the_hint_value_cache_is_bounded_and_keyed_by_signal_and_time() {
+        let mut cache = HintValueCache::new(4);
+        assert_eq!(cache.get((1, 10)), None);
+        cache.insert((1, 10), None);
+        // a miss is cached too: "no value yet" must not be re-streamed
+        assert_eq!(cache.get((1, 10)), Some(None));
+        for index in 0..10 {
+            cache.insert((index, 10), None);
+        }
+        assert_eq!(cache.len(), 4, "the cache is capped");
+        // the oldest keys went first
+        assert_eq!(cache.get((0, 10)), None);
+        cache.clear();
+        assert_eq!(cache.len(), 0);
     }
 }

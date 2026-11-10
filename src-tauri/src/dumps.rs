@@ -33,6 +33,12 @@
 //! dump_value_at(id, signal, time, show?) -> String | null
 //!   null = the signal had not changed yet.
 //!
+//! dump_values_at(id, signals: [usize], time, show?) -> [ { signal, time, value } | null ]
+//!   One batch pass for the visible rows (Waveform::values_before): one entry
+//!   per requested signal in request order (duplicates repeated), null when the
+//!   signal had no change at or before time. Same rendered text/cache rules as
+//!   dump_value_at; one FST section read per redraw instead of one per row.
+//!
 //! close_dump(id) -> null
 //!   errors for an unknown id.
 //!
@@ -168,15 +174,91 @@ pub struct FoundValue {
     pub value: String,
 }
 
+/// One row of a batch value readout (dump_values_at).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ValueAtDto {
+    /// The requested signal index.
+    pub signal: usize,
+    /// Time of the change the value comes from (<= the requested time).
+    pub time: u64,
+    /// The change's value, rendered with the requested ShowType.
+    pub value: String,
+}
+
+/// Per-dump memory accounting for diagnostics (dump_memory_stats).
+///
+/// The first block is the registry's view (file size, mapped/retained source
+/// bytes); the rest is the library's `MemoryStats` for the open waveform. The
+/// body counters (time_table_bytes, packed_*, decoded_*, cache_bytes) are the
+/// ones that must stay 0 on the native streaming path.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DumpMemoryStats {
+    pub id: DumpId,
+    /// File name (no directory).
+    pub name: String,
+    /// File size on disk.
+    pub bytes: u64,
+    /// Heap bytes of the file content kept by the backend (0 for mmap).
+    pub retained_bytes: usize,
+    /// Bytes mapped into the process (0 when the read fallback was used).
+    pub mapped_bytes: usize,
+    /// Library: source bytes alive on the application heap.
+    pub source_retained_bytes: usize,
+    /// Library: memory-mapped source length.
+    pub source_mapped_bytes: usize,
+    /// Library: hierarchy accounting, flat sum.
+    pub hierarchy_bytes: usize,
+    /// Library: signals decoded into wellen's packed representation.
+    pub packed_signals: usize,
+    /// Library: bytes of those packed decodes.
+    pub packed_bytes: usize,
+    /// Library: signals with a decoded history.
+    pub decoded_signals: usize,
+    /// Library: changes in all decoded histories.
+    pub decoded_changes: usize,
+    /// Library: bytes of the decoded change arrays.
+    pub decoded_struct_bytes: usize,
+    /// Library: heap payload of the decoded values.
+    pub decoded_payload_bytes: usize,
+    /// Library: bytes of the body time table.
+    pub time_table_bytes: usize,
+    /// Library: entries of the stream_value_before lookup cache.
+    pub lookup_cache_entries: usize,
+    /// Library: heap bytes of that lookup cache.
+    pub lookup_cache_bytes: usize,
+    /// Library: random access cache bytes (time table + packed + decoded).
+    pub cache_bytes: usize,
+    /// Library: hierarchy + retained source + cache.
+    pub total_bytes: usize,
+}
+
 /// A dump opened natively. Only the hierarchy is parsed; values are streamed on
 /// demand, so the retained heap cost is the hierarchy, not the file.
 struct NativeDump {
+    name: String,
+    bytes: u64,
     /// Pre-flattened hierarchy, so a page is a slice instead of a tree walk.
     flat: Vec<FlatEntry>,
     /// Scope path/name pairs referenced by the scope rows.
     scopes: Vec<(String, String)>,
+    /// Last stream_value_before answer per signal (dump_value_at cache).
+    last_lookup: Mutex<HashMap<usize, CachedLookup>>,
     waveform: Waveform,
 }
+
+/// One cached stream_value_before answer (per dump, per signal).
+#[derive(Clone, Debug)]
+struct CachedLookup {
+    /// Time of the last change at (or before) the cached requested time.
+    change_time: u64,
+    /// The value in effect from `change_time` on.
+    value: WaveValue,
+    /// The requested time that produced this entry.
+    requested_time: u64,
+}
+
+/// Upper bound of the per-dump last-lookup cache (one entry per signal).
+const LOOKUP_CACHE_SIGNALS: usize = 256;
 
 #[derive(Clone, Copy, Debug)]
 enum FlatEntry {
@@ -340,8 +422,11 @@ impl DumpRegistry {
             open_ms,
         };
         let dump = Arc::new(NativeDump {
+            name: summary.name.clone(),
+            bytes: summary.bytes,
             flat,
             scopes,
+            last_lookup: Mutex::new(HashMap::new()),
             waveform,
         });
         inner.dumps.insert(id, dump);
@@ -496,6 +581,23 @@ impl DumpRegistry {
     }
 
     /// The rendered value of one signal at time.
+    ///
+    /// This is the memory-flat native path: it never calls `Waveform::value_at`
+    /// (which materialises the random-access body - for FST that is the 8 B per
+    /// time-step time table plus packed decodes, the multi-GB peak old builds
+    /// showed). It uses `Waveform::stream_value_before` (O(1) retained memory)
+    /// plus a per-dump, per-signal last-lookup cache:
+    ///
+    /// * the same (signal, time) again is answered from the cache;
+    /// * a later time on the same signal streams only from the cached change
+    ///   time forward (FST seeks to that section; VCD still scans from the start
+    ///   internally because the format cannot seek - documented worst case);
+    /// * a backwards jump calls `stream_value_before` again and may scan (FST
+    ///   uses growing backward windows; GHW falls back to materialising the
+    ///   requested signal inside the library, as documented there).
+    ///
+    /// The rendered text is identical to the ShowType formatting used by
+    /// `dump_window`.
     pub fn value_at(
         &self,
         id: DumpId,
@@ -505,16 +607,144 @@ impl DumpRegistry {
     ) -> Result<Option<String>, String> {
         let dump = self.dump(id)?;
         let show = parse_show_type(show)?;
-        let value = dump
-            .waveform
-            .value_at(signal, time)
-            .map_err(|error| format!("dump_value_at: dump {id}: {}", error.message()))?;
         let width = dump
             .waveform
             .signal(signal)
             .map(|info| info.width())
             .unwrap_or(0);
-        Ok(value.map(|value| render_value(&value, width, &show)))
+        let cached = {
+            let cache = dump
+                .last_lookup
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.get(&signal).cloned()
+        };
+        if let Some(entry) = &cached {
+            if entry.requested_time == time || entry.change_time == time {
+                return Ok(Some(render_value(&entry.value, width, &show)));
+            }
+        }
+        let found: Option<(u64, WaveValue)> = match &cached {
+            Some(entry) if time > entry.change_time => {
+                // forward walk: only what changed after the cached change matters
+                let window = ValueQuery::window(signal, entry.change_time, Some(time));
+                let mut last: Option<(u64, WaveValue)> = None;
+                dump.waveform
+                    .stream_changes(&window, |_signal, change_time, value| {
+                        last = Some((change_time, value));
+                        true
+                    })
+                    .map_err(|error| format!("dump_value_at: dump {id}: {}", error.message()))?;
+                // nothing changed since the cached change: the cached value holds
+                last.or_else(|| Some((entry.change_time, entry.value.clone())))
+            }
+            _ => dump
+                .waveform
+                .stream_value_before(signal, time)
+                .map_err(|error| format!("dump_value_at: dump {id}: {}", error.message()))?,
+        };
+        let Some((change_time, value)) = found else {
+            return Ok(None);
+        };
+        let rendered = render_value(&value, width, &show);
+        {
+            let mut cache = dump
+                .last_lookup
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if cache.len() >= LOOKUP_CACHE_SIGNALS && !cache.contains_key(&signal) {
+                cache.clear();
+            }
+            cache.insert(
+                signal,
+                CachedLookup {
+                    change_time,
+                    value,
+                    requested_time: time,
+                },
+            );
+        }
+        Ok(Some(rendered))
+    }
+
+    /// The rendered values of several signals at one time, in ONE batch pass.
+    ///
+    /// This is the per-redraw call for the native renderer: it uses
+    /// `Waveform::values_before`, so the batch performs one stream pass (one FST
+    /// section time-table read for the whole visible row set instead of one per
+    /// row; measured 6-7x faster than per-signal lookups on a 20M-step FST).
+    /// Retained memory stays O(1): no body, no time table, no packed decodes.
+    ///
+    /// The answer has one entry per requested signal in request order (a
+    /// duplicate request repeats its answer), and None when that signal had no
+    /// change at or before `time`. Rendering and cache semantics are identical
+    /// to `value_at` (the answers also refresh the per-signal last-lookup
+    /// cache, so a following single `value_at` is free).
+    pub fn values_at(
+        &self,
+        id: DumpId,
+        signals: &[usize],
+        time: u64,
+        show: Option<&str>,
+    ) -> Result<Vec<Option<ValueAtDto>>, String> {
+        let dump = self.dump(id)?;
+        let show = parse_show_type(show)?;
+        // the library collapses duplicate requests and keeps request order;
+        // remember the slot of every request so the answer keeps them
+        let mut unique: Vec<usize> = Vec::with_capacity(signals.len());
+        let mut slots: Vec<(usize, usize)> = Vec::with_capacity(signals.len());
+        for (request, &signal) in signals.iter().enumerate() {
+            let slot = match unique.iter().position(|&existing| existing == signal) {
+                Some(slot) => slot,
+                None => {
+                    unique.push(signal);
+                    unique.len() - 1
+                }
+            };
+            slots.push((request, slot));
+        }
+        let answers = dump
+            .waveform
+            .values_before(&unique, time)
+            .map_err(|error| format!("dump_values_at: dump {id}: {}", error.message()))?;
+        let mut rendered: Vec<Option<ValueAtDto>> = (0..signals.len()).map(|_| None).collect();
+        let mut cache = dump
+            .last_lookup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (slot, answer) in answers.into_iter().enumerate() {
+            let Some((change_time, value)) = answer else {
+                continue;
+            };
+            let signal = unique[slot];
+            let width = dump
+                .waveform
+                .signal(signal)
+                .map(|info| info.width())
+                .unwrap_or(0);
+            let text = render_value(&value, width, &show);
+            if cache.len() >= LOOKUP_CACHE_SIGNALS && !cache.contains_key(&signal) {
+                cache.clear();
+            }
+            cache.insert(
+                signal,
+                CachedLookup {
+                    change_time,
+                    value: value.clone(),
+                    requested_time: time,
+                },
+            );
+            for &(request, request_slot) in &slots {
+                if request_slot == slot {
+                    rendered[request] = Some(ValueAtDto {
+                        signal,
+                        time: change_time,
+                        value: text.clone(),
+                    });
+                }
+            }
+        }
+        Ok(rendered)
     }
 
     /// Close one dump, freeing its mapping and hierarchy.
@@ -523,6 +753,36 @@ impl DumpRegistry {
             Some(_) => Ok(()),
             None => Err(format!("close_dump: unknown dump id {id}")),
         }
+    }
+
+    /// Per-dump memory accounting for diagnostics.
+    ///
+    /// Pure bookkeeping: it reads the library's cached counters, so it never
+    /// materialises the body and is safe to poll from the front end.
+    pub fn memory_stats(&self, id: DumpId) -> Result<DumpMemoryStats, String> {
+        let dump = self.dump(id)?;
+        let stats = dump.waveform.memory_stats();
+        Ok(DumpMemoryStats {
+            id,
+            name: dump.name.clone(),
+            bytes: dump.bytes,
+            retained_bytes: stats.source_retained_bytes,
+            mapped_bytes: stats.source_mapped_bytes,
+            source_retained_bytes: stats.source_retained_bytes,
+            source_mapped_bytes: stats.source_mapped_bytes,
+            hierarchy_bytes: stats.hierarchy_bytes,
+            packed_signals: stats.packed_signals,
+            packed_bytes: stats.packed_bytes,
+            decoded_signals: stats.decoded_signals,
+            decoded_changes: stats.decoded_changes,
+            decoded_struct_bytes: stats.decoded_struct_bytes,
+            decoded_payload_bytes: stats.decoded_payload_bytes,
+            time_table_bytes: stats.time_table_bytes,
+            lookup_cache_entries: stats.lookup_cache_entries,
+            lookup_cache_bytes: stats.lookup_cache_bytes,
+            cache_bytes: stats.cache_bytes,
+            total_bytes: stats.total_bytes,
+        })
     }
 
     fn dump(&self, id: DumpId) -> Result<Arc<NativeDump>, String> {
@@ -1250,6 +1510,180 @@ mod tests {
             near_ms,
             hit.time
         );
+        registry.close(summary.id).expect("close");
+    }
+
+    #[test]
+    fn value_at_never_materialises_the_body() {
+        // small VCD: open and the lookups leave every body counter at zero
+        let path = write_small_vcd("streaming-value-at");
+        let registry = DumpRegistry::new();
+        let summary = registry.open(&path.display().to_string()).expect("open");
+        let clk = signal_index(&registry, summary.id, "top.clk");
+        let before = registry.memory_stats(summary.id).expect("stats");
+        assert_eq!(before.time_table_bytes, 0);
+        assert_eq!(before.packed_bytes, 0);
+        assert_eq!(before.decoded_struct_bytes, 0);
+        assert_eq!(before.cache_bytes, 0);
+        assert_eq!(
+            registry
+                .value_at(summary.id, clk, 15, None)
+                .expect("value")
+                .as_deref(),
+            Some("1")
+        );
+        // the same time again and a forward step must stay flat as well
+        assert_eq!(
+            registry
+                .value_at(summary.id, clk, 15, None)
+                .expect("repeat")
+                .as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            registry
+                .value_at(summary.id, clk, 18, None)
+                .expect("forward")
+                .as_deref(),
+            Some("1")
+        );
+        let after = registry.memory_stats(summary.id).expect("stats");
+        assert_eq!(after.time_table_bytes, 0);
+        assert_eq!(after.packed_bytes, 0);
+        assert_eq!(after.decoded_struct_bytes, 0);
+        assert_eq!(after.decoded_payload_bytes, 0);
+        assert_eq!(after.cache_bytes, 0);
+        registry.close(summary.id).expect("close");
+
+        // real large.fst when present: the open path (header time range) and
+        // the streaming lookups must keep the body counters at zero
+        let registry = DumpRegistry::new();
+        let Some(summary) = open_large_fst(&registry) else {
+            return;
+        };
+        let clk = signal_index(&registry, summary.id, "top.clk");
+        let before = registry.memory_stats(summary.id).expect("stats");
+        eprintln!(
+            "large.fst streaming before: time_table={} packed={} decoded={} cache={}",
+            before.time_table_bytes,
+            before.packed_bytes,
+            before.decoded_struct_bytes,
+            before.cache_bytes
+        );
+        assert_eq!(
+            registry
+                .value_at(summary.id, clk, 5_000_010, None)
+                .expect("value")
+                .as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            registry
+                .value_at(summary.id, clk, 5_000_020, None)
+                .expect("forward")
+                .as_deref(),
+            Some("0")
+        );
+        let after = registry.memory_stats(summary.id).expect("stats");
+        eprintln!(
+            "large.fst streaming after: time_table={} packed={} decoded={} cache={} lookup={}/{} bytes",
+            after.time_table_bytes, after.packed_bytes, after.decoded_struct_bytes, after.cache_bytes,
+            after.lookup_cache_entries, after.lookup_cache_bytes
+        );
+        assert_eq!(after.time_table_bytes, before.time_table_bytes);
+        assert_eq!(after.packed_bytes, before.packed_bytes);
+        assert_eq!(after.decoded_struct_bytes, before.decoded_struct_bytes);
+        assert_eq!(after.cache_bytes, before.cache_bytes);
+        assert_eq!(after.time_table_bytes, 0, "no body materialisation");
+        assert_eq!(after.packed_bytes, 0, "no packed decodes retained");
+        assert!(
+            after.lookup_cache_entries >= 1,
+            "the last-lookup cache is used"
+        );
+        registry.close(summary.id).expect("close");
+    }
+
+    #[test]
+    fn values_at_batch_matches_single_lookups_and_stays_flat() {
+        // small VCD: the batch equals the per-signal readout, duplicates repeat
+        let path = write_small_vcd("batch-values");
+        let registry = DumpRegistry::new();
+        let summary = registry.open(&path.display().to_string()).expect("open");
+        let clk = signal_index(&registry, summary.id, "top.clk");
+        let data = signal_index(&registry, summary.id, "top.data");
+        let batch = registry
+            .values_at(summary.id, &[clk, data, clk], 15, None)
+            .expect("batch");
+        assert_eq!(batch.len(), 3);
+        let single_clk = registry.value_at(summary.id, clk, 15, None).expect("clk");
+        let single_data = registry.value_at(summary.id, data, 15, None).expect("data");
+        assert_eq!(batch[0].as_ref().map(|row| row.value.clone()), single_clk);
+        assert_eq!(batch[1].as_ref().map(|row| row.value.clone()), single_data);
+        assert_eq!(batch[2].as_ref().map(|row| row.value.clone()), single_clk);
+        assert_eq!(batch[0].as_ref().expect("clk row").signal, clk);
+        assert_eq!(batch[1].as_ref().expect("data row").signal, data);
+        let stats = registry.memory_stats(summary.id).expect("stats");
+        assert_eq!(stats.time_table_bytes, 0);
+        assert_eq!(stats.packed_bytes, 0);
+        assert_eq!(stats.cache_bytes, 0);
+        registry.close(summary.id).expect("close");
+
+        // large.fst when present: a 16-signal batch matches dump_value_at and
+        // leaves every body counter at zero
+        let registry = DumpRegistry::new();
+        let Some(summary) = open_large_fst(&registry) else {
+            return;
+        };
+        let page = registry
+            .hierarchy(summary.id, 0, MAX_HIERARCHY_PAGE)
+            .expect("hierarchy");
+        let signals: Vec<usize> = page
+            .rows
+            .iter()
+            .filter(|row| row.kind == "signal")
+            .filter_map(|row| row.signal)
+            .take(16)
+            .collect();
+        assert_eq!(signals.len(), 16);
+        let time = 5_000_010;
+        let before = registry.memory_stats(summary.id).expect("stats");
+        let batch = registry
+            .values_at(summary.id, &signals, time, None)
+            .expect("batch");
+        assert_eq!(batch.len(), signals.len());
+        let mut matched = 0;
+        for (index, &signal) in signals.iter().enumerate() {
+            let single = registry
+                .value_at(summary.id, signal, time, None)
+                .expect("single value_at");
+            assert_eq!(
+                batch[index].as_ref().map(|row| row.value.clone()),
+                single,
+                "batch and single differ for signal {signal}"
+            );
+            if let Some(row) = &batch[index] {
+                assert_eq!(row.signal, signal);
+                assert!(
+                    row.time <= time,
+                    "the change time is at or before the request"
+                );
+                matched += 1;
+            }
+        }
+        assert!(matched >= 14, "only {matched} of 16 rows had a value");
+        let after = registry.memory_stats(summary.id).expect("stats");
+        eprintln!(
+            "large.fst batch: 16 rows, matched {matched}, before time_table={} packed={} cache={}, after time_table={} packed={} cache={} lookup={}/{}",
+            before.time_table_bytes, before.packed_bytes, before.cache_bytes,
+            after.time_table_bytes, after.packed_bytes, after.cache_bytes,
+            after.lookup_cache_entries, after.lookup_cache_bytes
+        );
+        assert_eq!(after.time_table_bytes, before.time_table_bytes);
+        assert_eq!(after.packed_bytes, before.packed_bytes);
+        assert_eq!(after.decoded_struct_bytes, before.decoded_struct_bytes);
+        assert_eq!(after.cache_bytes, before.cache_bytes);
+        assert_eq!(after.time_table_bytes, 0, "no body materialisation");
+        assert_eq!(after.packed_bytes, 0, "no packed decodes retained");
         registry.close(summary.id).expect("close");
     }
 }

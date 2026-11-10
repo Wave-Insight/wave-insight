@@ -350,8 +350,97 @@ pub fn deliver_open(session: RemoteSession) -> bool {
     })
 }
 
+/// The backend's `dump_memory_stats` answer for the open native dump.
+///
+/// Every field is the flattened library `MemoryStats` plus the registry's own
+/// retained/mapped view; the wave pane publishes it under
+/// `__waveDebug.memory.native` so a desktop QA run can see what the native
+/// process holds (hierarchy + mapping, and that the body counters stay 0 on the
+/// streaming path).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct DumpMemoryStatsDto {
+    pub id: u64,
+    pub name: String,
+    pub bytes: u64,
+    pub retained_bytes: u64,
+    pub mapped_bytes: u64,
+    pub source_retained_bytes: u64,
+    pub source_mapped_bytes: u64,
+    pub hierarchy_bytes: u64,
+    pub packed_signals: u64,
+    pub packed_bytes: u64,
+    pub decoded_signals: u64,
+    pub decoded_changes: u64,
+    pub decoded_struct_bytes: u64,
+    pub decoded_payload_bytes: u64,
+    pub time_table_bytes: u64,
+    pub lookup_cache_entries: u64,
+    pub lookup_cache_bytes: u64,
+    pub cache_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// The native process working set (task-78 ~process_memory~ command).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct ProcessMemoryDto {
+    pub current_bytes: Option<u64>,
+    pub peak_bytes: Option<u64>,
+}
+
+/// What the desktop build holds: the open dump's library accounting and the
+/// process working set (both from cheap backend commands).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeMemorySnapshot {
+    pub dump: Option<DumpMemoryStatsDto>,
+    pub process: Option<ProcessMemoryDto>,
+}
+
 thread_local! {
     static NATIVE_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static NATIVE_MEMORY: std::cell::RefCell<Option<NativeMemorySnapshot>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Remember the latest native memory snapshot (published by the debug hook).
+pub fn set_native_memory(snapshot: Option<NativeMemorySnapshot>) {
+    NATIVE_MEMORY.with(|slot| *slot.borrow_mut() = snapshot);
+}
+
+/// The latest native memory snapshot, cloned for the debug hook.
+pub fn native_memory() -> Option<NativeMemorySnapshot> {
+    NATIVE_MEMORY.with(|slot| slot.borrow().clone())
+}
+
+thread_local! {
+    static LAST_MEMORY_REFRESH: std::cell::Cell<f64> = const { std::cell::Cell::new(-1.0e12) };
+}
+
+/// Refresh the native memory snapshot at most once per second.
+///
+/// The backend command is cheap (cached counters, no body materialisation), but
+/// it is still an IPC round trip: the browser-level debug hook must not turn a
+/// redraw loop into one request per frame. Desktop builds only.
+#[cfg(feature = "tauri")]
+pub fn maybe_refresh_native_memory(id: u64) {
+    let now = js_sys::Date::now();
+    let due = LAST_MEMORY_REFRESH.with(|last| {
+        if now - last.get() >= 1000.0 {
+            last.set(now);
+            true
+        } else {
+            false
+        }
+    });
+    if !due {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        let dump = ipc::memory_stats(id).await.ok();
+        let process = ipc::process_memory().await.ok();
+        if dump.is_some() || process.is_some() {
+            set_native_memory(Some(NativeMemorySnapshot { dump, process }));
+        }
+    });
 }
 
 /// Remember whether the desktop build is drawing a native dump right now.
@@ -620,6 +709,45 @@ pub fn window_groups(
     groups
 }
 
+/// What the desktop open path does when the native backend did not keep the dump.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeFallback {
+    /// The native backend *proved* the file is small (the >64 MiB threshold
+    /// decision returned Wasm): read it through the wasm path, as before.
+    Wasm,
+    /// Do not fall back: report the native error instead.
+    ///
+    /// A native error carries no proof that the file is small, so copying the
+    /// whole file into wasm memory to retry is exactly the multi-GB peak this
+    /// path exists to avoid. The status line names the native error.
+    Report,
+}
+
+/// The fallback decision after a native open.
+///
+/// `proven_small` is true only for the threshold answer (`Ok(None)` from
+/// `try_open`/`try_open_parts`): the backend successfully opened the dump and
+/// told us it is within the wasm threshold. Any error is [`NativeFallback::Report`];
+/// there is deliberately no "error + unknown size" fallback.
+pub fn native_fallback(proven_small: bool) -> NativeFallback {
+    if proven_small {
+        NativeFallback::Wasm
+    } else {
+        NativeFallback::Report
+    }
+}
+
+/// The status line of a native open error on the desktop path.
+///
+/// The wording is also what a QA/doc match can look for: names the file, the
+/// native error, and why the wasm fallback is not used. `file` is the name the
+/// dialog/drop path shows, `error` the backend string.
+pub fn native_error_status(file: &str, error: &str) -> String {
+    format!(
+        "{file}: native dump error ({error}) — not falling back to the wasm reader, because a possibly large dump would be copied into wasm memory; dumps up to 64 MB can still be opened through the wasm path"
+    )
+}
+
 /// The JSON name of a [`ShowType`]: the `dump_find` command takes `show: ShowType`
 /// (serde unit-variant names), unlike dump_window/dump_value_at which take a
 /// plain string ("hex", ...).
@@ -867,6 +995,25 @@ mod ipc {
         call("dump_find", &args).await
     }
 
+    /// What the native dump actually holds (library memory accounting + the
+    /// registry's retained/mapped view). Cheap: the backend reads cached
+    /// counters, it never materialises the body.
+    ///
+    /// Command `dump_memory_stats { id }`.
+    pub async fn memory_stats(id: u64) -> Result<DumpMemoryStatsDto, String> {
+        let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "id": id }))
+            .map_err(|error| error.to_string())?;
+        call("dump_memory_stats", &args).await
+    }
+
+    /// The native process working set (current/peak). One syscall on the backend;
+    /// safe to poll (task-78 `process_memory`).
+    pub async fn process_memory() -> Result<ProcessMemoryDto, String> {
+        let args = serde_wasm_bindgen::to_value(&serde_json::json!({}))
+            .map_err(|error| error.to_string())?;
+        call("process_memory", &args).await
+    }
+
     /// Close one native dump (frees the mapping).
     pub async fn close(id: u64) -> Result<(), String> {
         let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "id": id }))
@@ -932,7 +1079,8 @@ mod ipc {
 #[allow(unused_imports)]
 #[cfg(feature = "tauri")]
 pub use ipc::{
-    close, find, hierarchy, open, open_parts, try_open, try_open_parts, value_at, window,
+    close, find, hierarchy, memory_stats, open, open_parts, process_memory, try_open,
+    try_open_parts, value_at, window,
 };
 
 #[cfg(not(feature = "tauri"))]
@@ -979,6 +1127,12 @@ mod browser {
     ) -> Result<Option<FindHitDto>, String> {
         Err("native dumps need the desktop build".to_string())
     }
+    pub async fn memory_stats(_id: u64) -> Result<DumpMemoryStatsDto, String> {
+        Err("native dumps need the desktop build".to_string())
+    }
+    pub async fn process_memory() -> Result<ProcessMemoryDto, String> {
+        Err("native dumps need the desktop build".to_string())
+    }
     pub async fn close(_id: u64) -> Result<(), String> {
         Ok(())
     }
@@ -998,7 +1152,8 @@ mod browser {
 #[cfg(not(feature = "tauri"))]
 #[allow(unused_imports)]
 pub use browser::{
-    close, find, hierarchy, open, open_parts, try_open, try_open_parts, value_at, window,
+    close, find, hierarchy, memory_stats, open, open_parts, process_memory, try_open,
+    try_open_parts, value_at, window,
 };
 
 #[cfg(test)]
@@ -1047,6 +1202,22 @@ mod tests {
             mapped_bytes: 102_000_000,
             open_ms: 9.4,
         }
+    }
+
+    #[test]
+    fn a_native_error_never_falls_back_to_wasm() {
+        // the only proof that the wasm path is safe is the threshold answer
+        assert_eq!(native_fallback(true), NativeFallback::Wasm);
+        assert_eq!(native_fallback(false), NativeFallback::Report);
+        // the status line names the file, the native error and the reason
+        let status = native_error_status("big.fst", "open_dump: bad magic bytes");
+        assert!(status.contains("big.fst"));
+        assert!(status.contains("bad magic bytes"));
+        assert!(status.contains("not falling back"));
+        assert!(status.contains("wasm"));
+        assert!(status.contains("64 MB"));
+        // and it is an error line, not a load line
+        assert!(!status.starts_with("waveform loaded"));
     }
 
     #[test]

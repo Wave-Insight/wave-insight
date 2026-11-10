@@ -746,11 +746,90 @@ pub fn publish_debug(info: &DebugInfo) {
     set_memory("dumps", info.memory.dumps as f64);
     set_memory("unloaded", info.memory.unloaded as f64);
     set_memory("released", info.memory.released as f64);
+    // Wave 17: the library's own accounting, so a QA run can see whether the
+    // backend materialised a random-access body (the multi-GB peak). These keys
+    // are additive; the existing assertions keep reading the fields above.
+    set_memory(
+        "sourceRetainedBytes",
+        info.memory.lib.source_retained_bytes as f64,
+    );
+    set_memory(
+        "sourceMappedBytes",
+        info.memory.lib.source_mapped_bytes as f64,
+    );
+    set_memory("hierarchyBytes", info.memory.lib.hierarchy_bytes as f64);
+    set_memory("packedBytes", info.memory.lib.packed_bytes as f64);
+    set_memory(
+        "decodedStructBytes",
+        info.memory.lib.decoded_struct_bytes as f64,
+    );
+    set_memory(
+        "decodedPayloadBytes",
+        info.memory.lib.decoded_payload_bytes as f64,
+    );
+    set_memory("timeTableBytes", info.memory.lib.time_table_bytes as f64);
+    set_memory("cacheBytes", info.memory.lib.cache_bytes as f64);
+    set_memory("libTotalBytes", info.memory.lib.total_bytes as f64);
+    set_memory(
+        "lookupCacheEntries",
+        info.memory.lib.lookup_cache_entries as f64,
+    );
+    set_memory(
+        "lookupCacheBytes",
+        info.memory.lib.lookup_cache_bytes as f64,
+    );
+    let _ = js_sys::Reflect::set(
+        &memory,
+        &JsValue::from_str("bodyMaterialised"),
+        &JsValue::from_bool(info.memory.lib.body_materialised()),
+    );
     let _ = js_sys::Reflect::set(
         &memory,
         &JsValue::from_str("overBudget"),
         &JsValue::from_bool(info.memory.over_budget()),
     );
+    // native mode: the backend's dump_memory_stats snapshot (refresh in the
+    // wave pane); absent in the browser build and before the first answer
+    #[cfg(feature = "tauri")]
+    if let Some(snapshot) = crate::remote::native_memory() {
+        let native_object = js_sys::Object::new();
+        let set_native = |key: &str, value: f64| {
+            let _ = js_sys::Reflect::set(
+                &native_object,
+                &JsValue::from_str(key),
+                &JsValue::from_f64(value),
+            );
+        };
+        if let Some(process) = &snapshot.process {
+            if let Some(current) = process.current_bytes {
+                set_native("processCurrentBytes", current as f64);
+            }
+            if let Some(peak) = process.peak_bytes {
+                set_native("processPeakBytes", peak as f64);
+            }
+        }
+        if let Some(native) = &snapshot.dump {
+            set_native("retainedBytes", native.retained_bytes as f64);
+            set_native("mappedBytes", native.mapped_bytes as f64);
+            set_native("sourceRetainedBytes", native.source_retained_bytes as f64);
+            set_native("sourceMappedBytes", native.source_mapped_bytes as f64);
+            set_native("hierarchyBytes", native.hierarchy_bytes as f64);
+            set_native("packedBytes", native.packed_bytes as f64);
+            set_native("decodedStructBytes", native.decoded_struct_bytes as f64);
+            set_native("decodedPayloadBytes", native.decoded_payload_bytes as f64);
+            set_native("timeTableBytes", native.time_table_bytes as f64);
+            set_native("lookupCacheEntries", native.lookup_cache_entries as f64);
+            set_native("lookupCacheBytes", native.lookup_cache_bytes as f64);
+            set_native("cacheBytes", native.cache_bytes as f64);
+            set_native("totalBytes", native.total_bytes as f64);
+            let _ = js_sys::Reflect::set(
+                &native_object,
+                &JsValue::from_str("bodyMaterialised"),
+                &JsValue::from_bool(native.time_table_bytes > 0 || native.packed_bytes > 0),
+            );
+        }
+        let _ = js_sys::Reflect::set(&memory, &JsValue::from_str("native"), &native_object);
+    }
     set("memory", memory.into());
     // R2: the shell's re-render counter, written by `App::rendered` into
     // `__waveRenderCount`. Carried over here because this function replaces the

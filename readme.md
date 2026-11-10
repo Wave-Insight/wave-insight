@@ -438,7 +438,8 @@ file. What that means in practice:
   reserved once at its exact size (a fallible allocation: failure becomes an
   error, not an allocator abort). VCD and GHW keep the file bytes and materialise
   the whole trace body in wellen's packed form; FST streams its body and keeps
-  only the header and time table. On top sit the hierarchy and the decoded
+  only the header (its time range is read from the header block, so a summary
+  does not materialise the 8-bytes-per-step time table). On top sit the hierarchy and the decoded
   windows of the rows that are (or recently were) on screen.
 - **Decode budget.** ONE global 64 MiB budget covers the decoded histories of
   every open dump and of the split pane (it used to be 64 MiB per pane). When it
@@ -456,40 +457,75 @@ file. What that means in practice:
   real blow-up trigger - a 97.5 MiB / 58M-change FST loaded and scrolled fine,
   while one visible 10M-change row used to decode 229 MB and grow the wasm by
   ~0.5 GB; with windows a drawn row is bounded by the window, not the trace.
+- **Memory root cause fixed (value lookups).** Filling a dump summary used to
+  call `Waveform::time_range_hint()`, and a cursor readout or editor inlay hint
+  called `Waveform::value_at`; both silently materialised the random-access body
+  for FST (an 8-bytes-per-time-step table plus packed decodes). A 20M-time-step
+  FST allocated 160 MB of time table + 100 MB packed and peaked at ~623 MB just
+  to show its summary, and a 100+ MB FST with many steps could reach multiple GB
+  that way. Now the FST time range comes from the header block (the body counters
+  stay 0 after open), and cursor readouts/inlay hints use the new
+  `Waveform::stream_value_before`: the last change at or before a time with O(1)
+  retained memory (FST capped exponential backward probes over the stream, VCD a
+  single forward scan, GHW a documented materialised fallback), memoised in a
+  64-entry LRU. The native desktop backend uses the same streaming lookup with a
+  per-signal last-answer cache, and editor inlay hints do a bounded streaming
+  pass instead of materialising the body.
 - **Pre-flight refusal.** Before a byte is read, the loader estimates the wasm
   memory a file needs (48 MB base + 3.2x file for VCD, 0.6x for FST, 2.0x for
   GHW) against a 1280 MiB policy cap and refuses with the numbers when it cannot
   fit: "about N MB of wasm memory are needed ... close a dump you are not looking
   at, split the dump, or open it in the desktop build". A 501 MB VCD is now
   refused up front instead of attempting a ~1.5 GB allocation.
-- **Readout.** `window.__waveDebug.memory` publishes `{ wasmBytes, fileBytes,
-  decodedBytes, budget, dumps, unloaded, released, overBudget }`, and the load
-  line reports the wasm memory used.
+- **Readout.** `window.__waveDebug.memory` publishes the renderer counters
+  (`wasmBytes`, `fileBytes`, `decodedBytes`, `budget`, `dumps`, `unloaded`,
+  `released`, `overBudget`) plus the library's accounting (`sourceRetainedBytes`,
+  `sourceMappedBytes`, `hierarchyBytes`, `packedBytes`, `decodedStructBytes`,
+  `decodedPayloadBytes`, `timeTableBytes`, `cacheBytes`, `libTotalBytes`,
+  `lookupCacheEntries`, `lookupCacheBytes`, `bodyMaterialised`) and, in the
+  desktop build, `memory.native` from `dump_memory_stats` (the same accounting per
+  open native dump) with `processCurrentBytes`/`processPeakBytes` from the
+  `process_memory()` command (real working set / peak). The load line reports the
+  wasm memory used. To report a peak, open the dump, reproduce the action and
+  note `__waveDebug.memory` (the `lib*`/`native` counters and
+  `processPeakBytes`) together with the Task Manager peak and the dump's shape
+  (format, size, signal count).
 - **Measured.** The footprint work cut the load peak by 31-44%: 34 MB -> 85.9 MB
   (was 137.7 MB), 139 MB -> 295.3 MB (was 521.8 MB), 349 MB -> 715.0 MB (was
   1033.9 MB). Hierarchy string interning cut hierarchy bytes by 58.3% on a
   200k-signal design (78.8 MB -> 32.9 MB, 394 B -> 164 B per signal). The
   windowed path benchmarks at 2.33 ms for eight rows over the full trace
   (full-history decode of the same rows: 99.6 ms), and a dense row now stays
-  inside the decode budget instead of growing it by the full history.
+  inside the decode budget instead of growing it by the full history. The
+  streaming lookup cut the value-readout peak on a 20M-time-step FST from a
+  260,019,306 B retained heap after one lookup to 15,876-19,235 B, and the
+  process peak from 623 MB to 196 MB (including the 120 MB mapped file); on the
+  1M-step `large.fst` `value_at` went from 812 ms to 241-345 ms, the peak from
+  36.5 MB to 16.4-18 MB and retained after open from 13.6 MB to 0, and opening
+  the summary no longer allocates the 8 MB time table.
 - **Honest limits.** The browser keeps the whole file for VCD/GHW (there is no
   mmap in the browser); wasm linear memory never shrinks, so a tab's high-water
   mark is its real footprint even after closing dumps; a drawn row decodes only
   a capped window, but that window plus the per-row cache still costs memory, so
   an extremely wide window over a dense row can exceed the soft budget (the
   `overBudget` flag says so); and wasm32 has a hard 4 GiB address space (a
-  browser tab usually dies well before that). Prefer FST over VCD for very large
-  dumps, keep one or two dumps open in the browser, and use the desktop build for
-  multi-GB sessions.
-- **Direction (the desktop foundation has landed).** The desktop build now has
-  the native half: a host-only `memmap2` source (`Waveform::open_path_mmap`, 0
-  retained heap bytes) and a Tauri dump registry that answers windowed queries
-  over IPC, so the file never enters the webview's wasm memory. The shipped
-  desktop build still draws through the wasm path; the desktop renderer that
-  draws the native queries is the next wave (see the Tauri section). The browser's
-  analogue is a dedicated worker plus an OPFS lazy byte source; the `ByteSource`
-  trait (file, memory or mapping) is the groundwork for both. The current model
-  and both plans are in [`docs/design/large-files.md`](docs/design/large-files.md).
+  browser tab usually dies well before that). The streaming lookup is memory-flat
+  but not time-flat: a sparse FST signal can take hundreds of milliseconds for a
+  far-back lookup (capped exponential probes), a VCD lookup scans from the start,
+  the GHW fallback materialises the signal, and FST calls allocate a small
+  transient buffer per query. Prefer FST over VCD for very large dumps, keep one
+  or two dumps open in the browser, and use the desktop build for multi-GB
+  sessions.
+- **Direction (the desktop large-file mode has shipped).** The desktop build
+  opens dumps over 64 MiB through a host-only `memmap2` source and draws them
+  read-only from windowed IPC queries, so the file never enters the webview's wasm
+  memory; the native memory diagnostics above are its accounting. The remaining
+  desktop gaps (export, split/multi-dump, lazy hierarchy, a batched values API)
+  are the next wave (see the Tauri section). The browser's analogue is a
+  dedicated worker plus an OPFS lazy byte source; the `ByteSource` trait (file,
+  memory or mapping) is the groundwork for both. The current model, the root
+  cause and both plans are in
+  [`docs/design/large-files.md`](docs/design/large-files.md).
 
 ## Known limitations
 
