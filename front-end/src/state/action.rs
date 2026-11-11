@@ -72,7 +72,18 @@ pub enum Action {
     /// already open, that tab is focused). The store owns the handle and derives
     /// the time range; the identity (`name` + `bytes`) is what the remembered row
     /// list is keyed by, so reopening the same file restores its rows.
-    DumpAdded { id: DumpId, handle: DumpHandle },
+    ///
+    /// `fingerprint` is the content hash of the bytes just parsed (see
+    /// [`crate::file_load::fingerprint`]). When the identity is already open and
+    /// the fingerprint differs, the file was re-written under the same name and
+    /// size: the reducer replaces that tab's handle in place (a reload) instead
+    /// of keeping the stale waveform. `None` (a transport that reports none)
+    /// keeps the plain dedupe rule.
+    DumpAdded {
+        id: DumpId,
+        handle: DumpHandle,
+        fingerprint: Option<u64>,
+    },
     /// A dump tab was clicked: it becomes the active dump.
     DumpTabActivated { index: usize },
     /// A dump tab was closed. Closing the active tab activates its neighbour;

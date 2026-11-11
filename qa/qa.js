@@ -235,7 +235,96 @@ window.__qa = {
       lsp: this.lsp(),
       editor: this.editor(),
     };
-  }
+  },
+
+  // --- Wave 18 seams (task-1/2/3) -------------------------------------------
+  // The label cell is name -> two hover-only action icons -> value column(s):
+  // a cursor value column is the last element and flush to the waveform, and
+  // before a cursor no value element exists at all (--wave-value-ch: 0).
+  waveValueLayout(){
+    const rect = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), w: Math.round(r.width) }; };
+    const pane = document.querySelector("#wave-pane");
+    return {
+      ch: pane ? getComputedStyle(pane).getPropertyValue("--wave-value-ch").trim() : null,
+      canvas: this.rect("#wave-surface"),
+      cells: Array.prototype.map.call(document.querySelectorAll(".wave-name-cell"), (cell) => ({
+        name: rect(cell.querySelector(".wave-name-text")),
+        mores: Array.prototype.map.call(cell.querySelectorAll(".wave-more"), rect),
+        values: Array.prototype.map.call(cell.querySelectorAll(".wave-value"), (v) => ({ text: (v.innerText || "").trim(), rect: rect(v) })),
+      })),
+    };
+  },
+  // __waveDebug label seam (task-1): the band labels the last paint drew and
+  // how many were ellipsized/dropped (labels is capped at 256 texts,
+  // labels_drawn is the true count).
+  bandLabels(){
+    const d = window.__waveDebug || {};
+    return { labels: (d.labels || []).slice(), drawn: d.labels_drawn, truncated: d.labels_truncated, hidden: d.labels_hidden, bands: d.bands };
+  },
+  // The split pane last frame, parsed out of its data-frame attribute (it is
+  // written in view() and the paint fills it in rendered(); flush it first).
+  splitPaneFrame(){
+    const pane = document.querySelector(".split-pane");
+    const raw = pane ? (pane.getAttribute("data-frame") || "") : "";
+    const view = /view=(-?[0-9.]+):([0-9.]+)/.exec(raw);
+    const scroll = /scroll=(-?[0-9.]+)/.exec(raw);
+    return { raw: raw, start: view ? parseFloat(view[1]) : null, size: view ? parseFloat(view[2]) : null, scroll: scroll ? parseFloat(scroll[1]) : null };
+  },
+  // One dump snapshot for the reload scenario: open tabs, rows, cursor values,
+  // canvas hash and the status line.
+  dumpSnapshot(){
+    return {
+      tabs: Array.prototype.map.call(document.querySelectorAll(".dump-tab .dump-tab-name"), (b) => (b.innerText || "").trim()),
+      rows: this.texts(".wave-name-text"),
+      values: this.texts(".wave-name-cell .wave-value"),
+      hash: this.surfaceHash(),
+      status: this.text(".topbar-hint .brand-tag"),
+      cursor1: (window.__waveDebug || {}).cursor1,
+    };
+  },
+  // 1-bit alignment probe (task-1): the cursor column is the column painted in
+  // the cursor colour, the edge ink is the blue coverage of the middle band of
+  // the first row (only a vertical edge has ink there; the high/low levels sit
+  // at ROW_PAD=6 and ROW_HEIGHT-ROW_PAD=24 css px, outside 9..21).
+  alignProbe(){
+    const d = window.__waveDebug || {};
+    const c = this.surface();
+    if (!c) return null;
+    const img = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+    const W = c.width, H = c.height;
+    const px = (x, y) => { const i = ((y * W) + x) * 4; return [img.data[i], img.data[i + 1], img.data[i + 2], img.data[i + 3]]; };
+    const bg = [13, 18, 24], wave = [76, 194, 255], yellow = [255, 209, 102];
+    const cov = (p) => {
+      const dv0 = wave[0] - bg[0], dv1 = wave[1] - bg[1], dv2 = wave[2] - bg[2];
+      const v0 = p[0] - bg[0], v1 = p[1] - bg[1], v2 = p[2] - bg[2];
+      const k = (v0 * dv0 + v1 * dv1 + v2 * dv2) / (dv0 * dv0 + dv1 * dv1 + dv2 * dv2);
+      const res = Math.hypot(p[0] - (bg[0] + k * dv0), p[1] - (bg[1] + k * dv1), p[2] - (bg[2] + k * dv2));
+      return res < 40 ? Math.max(0, Math.min(1, k)) : 0;
+    };
+    const cols = [];
+    for (let x = 0; x < W; x++) {
+      let n = 0;
+      for (let y = 0; y < H; y++) { const p = px(x, y); if (Math.hypot(p[0] - yellow[0], p[1] - yellow[1], p[2] - yellow[2]) < 60) n++; }
+      if (n > H / 2) cols.push(x);
+    }
+    const xc = cols.length ? cols[0] : -1;
+    const masses = [];
+    if (xc >= 4) {
+      for (let dx = -4; dx <= 4; dx++) {
+        let m = 0;
+        for (let y = 9; y < 21; y++) m += cov(px(xc + dx, y));
+        masses.push([dx, +m.toFixed(2)]);
+      }
+    }
+    const xraw = (d.cursor1 - d.x_axis) * d.size;
+    return {
+      cursor1: d.cursor1, x_axis: d.x_axis, size: d.size,
+      dpr: c.width / c.getBoundingClientRect().width,
+      xraw: +xraw.toFixed(3), xfrac: +(xraw - Math.floor(xraw)).toFixed(3),
+      crisp: +(Math.round(xraw) + 0.5).toFixed(2),
+      cursorCol: xc, cursorCols: cols.length, masses: masses,
+    };
+  },
 };
 'ready';
 `;
@@ -388,6 +477,47 @@ async function addSignal(cdp, name) {
   const result = await cdp.eval(`window.__qa.clickSignal(${JSON.stringify(name)})`);
   await sleep(900);
   return result === 'ok';
+}
+
+// Wave 18 (task-2, Verdi wheel mapping): a plain wheel over the wave canvas
+// PANS the time axis (wheel down = forward in time), Ctrl+wheel zooms at the
+// pointer and Shift+wheel scrolls the row list (over the name column the wheel
+// keeps scrolling the rows, as any list). This dispatcher is the single place
+// that encodes the CDP modifier bitmask (Alt=1, Ctrl=2, Meta=4, Shift=8), so
+// every scenario exercises the same gesture the app sees from a real wheel.
+// The keyDown/keyUp pairs are kept too: the app tracks key state for the
+// historical self.key() path, and the wheel event carries the modifiers itself
+// (e.ctrl_key() / e.shift_key()), which covers a synthetic event with no
+// preceding key event.
+async function wheel(cdp, x, y, deltaY, options = {}) {
+  const modifiers = (options.alt ? 1 : 0) | (options.ctrl ? 2 : 0) | (options.meta ? 4 : 0) | (options.shift ? 8 : 0);
+  if (options.ctrl) await cdp.key("keyDown", "Control", "ControlLeft", 17);
+  if (options.shift) await cdp.key("keyDown", "Shift", "ShiftLeft", 16);
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseWheel", x, y, deltaX: options.deltaX || 0, deltaY, modifiers,
+  });
+  if (options.ctrl) await cdp.key("keyUp", "Control", "ControlLeft", 17);
+  if (options.shift) await cdp.key("keyUp", "Shift", "ShiftLeft", 16);
+}
+
+// The wave pane view + row scroll, from the renderer seam and the DOM.
+// `scroll_top` is the renderer copy of the list offset (gated on its scroll
+// handler); `dom_scroll` is the list own scrollTop. Both must move for the rows
+// gesture and both must stay put for a pan.
+async function viewState(cdp) {
+  return cdp.eval('(function(){ const d = window.__waveDebug || {}; const body = document.querySelector("#wave-body"); return { x_axis: d.x_axis, size: d.size, scroll_top: d.scroll_top, dom_scroll: body ? Math.round(body.scrollTop) : null }; })()');
+}
+
+// Flush the split pane's data-frame with two window resizes (the +1 px pass
+// forces a render, the restore forces the second one), then leave the window at
+// the caller width/height. The attribute is written in view() while the paint
+// happens in rendered(), so it is exactly one paint behind; the frame fields are
+// parsed by __qa.splitPaneFrame().
+async function flushSplitPane(cdp, width, height) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: width + 1, height, deviceScaleFactor: 1, mobile: false });
+  await sleep(550);
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+  await sleep(850);
 }
 
 // ---------------------------------------------------------------------------
@@ -681,37 +811,69 @@ scenarios.lsp = async (cdp) => {
 
 scenarios.zoomPan = async (cdp) => {
   await boot(cdp);
-  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
-  await waitStatus(cdp, 'waveform loaded', 25000);
-  await sleep(600);
-  await cdp.eval(`window.__qa.clickSignal('clk')`);
-  await sleep(800);
-  const canvas = await cdp.eval(`window.__qa.rect('.wave-canvas')`);
-  note('canvas', canvas);
-  const before = await cdp.eval('window.__qa.axis()');
-  // ctrl + wheel zoom in
+  // Wave 18 (task-2): the wheel mapping is Verdi-like now - a plain wheel PANS
+  // the time axis (wheel down = forward), Ctrl+wheel zooms at the pointer and
+  // Shift+wheel scrolls the row list (over the label column the wheel keeps
+  // scrolling, untouched). The scenario needs a list that overflows and a view
+  // that can pan (a fitted view is clamped at the end), so it loads
+  // many_signals.vcd, adds 20 rows and shrinks the window.
+  await cdp.upload([path.join(FIXTURES, 'many_signals.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 40000);
+  await sleep(700);
+  const addedRows = await cdp.eval('(function(){ let n = 0; for (let i = 0; i < 20; i++) { if (window.__qa.clickSignal("sig_" + String(i).padStart(4, "0")) === "ok") n++; } return n; })()');
+  await sleep(1500);
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 600, deviceScaleFactor: 1, mobile: false });
+  await sleep(1500);
+  const canvas = await cdp.eval('window.__qa.rect(".wave-canvas")');
+  note('canvas', { canvas: canvas, rows: addedRows });
+  check('zoom: a list big enough for the row gesture is loaded', addedRows === 20, addedRows);
+  const before = await viewState(cdp);
+  const axisBefore = await cdp.eval('window.__qa.axis()');
+  const hashBefore = await cdp.eval('window.__qa.surfaceHash()');
+  note('view before', before);
+  // ctrl + wheel zoom: the scale changes at the pointer, the rows stay put
   await cdp.key('keyDown', 'Control', 'ControlLeft', 17);
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: canvas.x + 200, y: canvas.y + 20, deltaX: 0, deltaY: -120, modifiers: 2 });
+  for (let i = 0; i < 2; i++) {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: canvas.x + 200, y: canvas.y + 20, deltaX: 0, deltaY: -120, modifiers: 2 });
+    await sleep(250);
+  }
   await cdp.key('keyUp', 'Control', 'ControlLeft', 17);
   await sleep(700);
-  const zoomed = await cdp.eval('window.__qa.axis()');
-  note('axis zoomed', zoomed);
-  check('zoom: ctrl+wheel changes the axis', zoomed !== before, { before, zoomed });
+  const zoomed = await viewState(cdp);
+  const axisZoomed = await cdp.eval('window.__qa.axis()');
   const hashZoomed = await cdp.eval('window.__qa.surfaceHash()');
-  const viewZoomed = await cdp.eval('window.__qa.dbg("size")');
-  note('canvas after zoom', { hashZoomed, size: viewZoomed });
-  // pan with shift + wheel (Verdi convention; a plain wheel scrolls the rows)
-  await cdp.key('keyDown', 'Shift', 'ShiftLeft', 16);
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: canvas.x + 200, y: canvas.y + 20, deltaX: 0, deltaY: 120, modifiers: 8 });
-  await cdp.key('keyUp', 'Shift', 'ShiftLeft', 16);
+  note('after ctrl+wheel', { view: zoomed, axis: axisZoomed });
+  check('zoom: ctrl+wheel changes the axis', axisZoomed !== axisBefore, { before: axisBefore, zoomed: axisZoomed });
+  check('zoom: ctrl+wheel changes the scale', zoomed.size > before.size, { before: before.size, after: zoomed.size });
+  check('zoom: ctrl+wheel does not scroll the rows', zoomed.dom_scroll === before.dom_scroll && zoomed.scroll_top === before.scroll_top, { before: before.dom_scroll, after: zoomed.dom_scroll });
+  check('zoom: ctrl+wheel keeps the canvas in step', hashZoomed !== hashBefore, { same: hashZoomed === hashBefore });
+  // plain wheel: pan the time axis (the gesture that used to be Shift+wheel)
+  await wheel(cdp, canvas.x + 200, canvas.y + 20, 120, {});
   await sleep(700);
-  const panned = await cdp.eval('window.__qa.axis()');
-  note('axis panned', panned);
-  check('pan: shift+wheel changes the axis', panned !== zoomed, { zoomed, panned });
+  const panned = await viewState(cdp);
+  const axisPanned = await cdp.eval('window.__qa.axis()');
   const hashPanned = await cdp.eval('window.__qa.surfaceHash()');
-  const viewPanned = await cdp.eval('window.__qa.dbg("x_axis")');
+  note('after plain wheel', panned);
+  check('pan: a plain wheel changes the axis', axisPanned !== axisZoomed, { before: axisZoomed, after: axisPanned });
+  check('pan: a plain wheel pans forward in time', panned.x_axis > zoomed.x_axis, { before: +zoomed.x_axis.toFixed(3), after: +panned.x_axis.toFixed(3) });
   check('pan: the canvas repainted at the new origin', hashPanned !== hashZoomed, { same: hashPanned === hashZoomed });
-  check('pan: the viewport moved', typeof viewPanned === 'number' && viewPanned > 0, viewPanned);
+  check('pan: a plain wheel keeps the scale', panned.size === zoomed.size, { before: zoomed.size, after: panned.size });
+  check('pan: a plain wheel does not scroll the rows', panned.dom_scroll === zoomed.dom_scroll && panned.scroll_top === zoomed.scroll_top, { before: zoomed.dom_scroll, after: panned.dom_scroll });
+  // shift + wheel: scroll the row list; the view must not move (Shift+wheel was
+  // the pan gesture before Wave 18, so this is the assertion that flipped)
+  await cdp.key('keyDown', 'Shift', 'ShiftLeft', 16);
+  for (let i = 0; i < 3; i++) {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: canvas.x + 200, y: canvas.y + 20, deltaX: 0, deltaY: 240, modifiers: 8 });
+    await sleep(220);
+  }
+  await cdp.key('keyUp', 'Shift', 'ShiftLeft', 16);
+  await sleep(800);
+  const scrolled = await viewState(cdp);
+  const axisScrolled = await cdp.eval('window.__qa.axis()');
+  note('after shift+wheel', scrolled);
+  check('pan: shift+wheel scrolls the row list', scrolled.dom_scroll > panned.dom_scroll, { before: panned.dom_scroll, after: scrolled.dom_scroll });
+  check('pan: shift+wheel leaves the axis where it was', axisScrolled === axisPanned && scrolled.x_axis === panned.x_axis && scrolled.size === panned.size, { axis: [axisPanned, axisScrolled], view: [panned.x_axis, scrolled.x_axis] });
+  check('pan: shift+wheel keeps the renderer scroll in step with the list', Math.abs(scrolled.scroll_top - scrolled.dom_scroll) <= 1, { renderer: scrolled.scroll_top, dom: scrolled.dom_scroll });
   // drag select zoom
   await cdp.mouse('mousePressed', canvas.x + 100, canvas.y + 15, { buttons: 1 });
   await cdp.mouse('mouseMoved', canvas.x + 260, canvas.y + 15, { buttons: 1 });
@@ -719,7 +881,7 @@ scenarios.zoomPan = async (cdp) => {
   await sleep(800);
   const dragged = await cdp.eval('window.__qa.axis()');
   note('axis after drag', dragged);
-  check('zoom: drag-select changes the axis', dragged !== panned, { panned, dragged });
+  check('zoom: drag-select changes the axis', dragged !== axisPanned, { before: axisPanned, after: dragged });
   // z and f keys
   await cdp.press('z', 'KeyZ', 90);
   await sleep(600);
@@ -730,6 +892,8 @@ scenarios.zoomPan = async (cdp) => {
   const fitted = await cdp.eval('window.__qa.axis()');
   note('axis fitted', fitted);
   check('zoom: f fits the trace', fitted !== zoomedOut, { zoomedOut, fitted });
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+  await sleep(900);
   check('zoom: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   await cdp.shot('qa-zoom.png');
 };
@@ -825,6 +989,16 @@ scenarios.formats = async (cdp) => {
     { hex: values['Hex'], dec: values['Dec'], bin: values['Bin'] });
   const distinctValues = new Set(Object.values(values).map(String));
   check('formats: the six formats produce at least four distinct values', distinctValues.size >= 4, Array.from(distinctValues));
+  // Wave 18 (task-1): the wave view prints bare digits - the Verilog radix
+  // prefix belongs to the data form (editor inlay, export, find), not to the
+  // value column. pc is 0x49 = 73 at this cursor, so the six formats must print
+  // exactly these strings.
+  const expected = { Dec: '73', Hex: '49', Signed: '73', Oct: '111', Bin: '01001001', ASCII: 'I' };
+  note('formats bare values', values);
+  check('formats: the value column prints the bare formatted digits',
+    Object.keys(expected).every((label) => values[label] === expected[label]), { values: values, expected: expected });
+  check('formats: no value carries a Verilog radix prefix',
+    Object.values(values).every((value) => typeof value === 'string' && value.length > 0 && value.charCodeAt(0) !== 39), values);
   check('formats: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   await cdp.shot('qa-formats.png');
 };
@@ -1696,19 +1870,23 @@ scenarios.traceEnd = async (cdp) => {
     return n;
   })()`);
   check('traceEnd: no trace is drawn past the end of the dump', beyond === 0, { pixels: beyond });
-  // pan right: the view must stop at the end (zoom back in first, a fully
-  // zoomed-out view cannot pan at all and legitimately shows the empty rest)
+  // Pan right with the plain wheel: since Wave 18 a plain wheel pans the time
+  // axis (before it scrolled the row list, so this block was not exercising the
+  // pan clamp at all). Zoom back in first: a fully zoomed-out view cannot pan.
   await cdp.key('keyDown', 'Control', 'ControlLeft', 17, 2);
   await sleep(120);
   for (let i = 0; i < 4; i++) await wheel(-120);
   await cdp.key('keyUp', 'Control', 'ControlLeft', 17, 0);
   await sleep(400);
+  const beforePan = await read();
+  note('before panning right', { x_axis: beforePan.x_axis, size: beforePan.size, trace_end: beforePan.trace_end });
   for (let i = 0; i < 30; i++) await wheel(120);
   await sleep(700);
   s = await read();
   const span = s.w / s.size;
   const rightEdge = s.x_axis + span;
   note('after panning right', { x_axis: s.x_axis, size: s.size, span, rightEdge, trace_end: s.trace_end });
+  check('traceEnd: the plain wheel pans the view forward', s.x_axis > beforePan.x_axis + 1, { before: +beforePan.x_axis.toFixed(1), after: +s.x_axis.toFixed(1) });
   check('traceEnd: the view cannot be panned past the end',
     span >= s.trace_end ? Math.abs(s.x_axis) <= 0.5 : rightEdge <= s.trace_end + 1.0,
     { span: +span.toFixed(1), rightEdge: +rightEdge.toFixed(1), trace_end: s.trace_end, x_axis: +s.x_axis.toFixed(1) });
@@ -1938,7 +2116,9 @@ scenarios.busExpand = async (cdp) => {
     value: ((c.querySelector('.wave-value') || {}).innerText || '').trim(),
   }))`);
   note('values at the cursor', rowValues);
-  const hex = /'h([0-9a-f]+)/i.exec(rowValues[0] && rowValues[0].value);
+  // Wave 18 (task-1): the value column prints bare digits now, so the bus value
+  // is plain hex ("23") instead of "'h23".
+  const hex = /^([0-9a-f]+)$/i.exec(((rowValues[0] && rowValues[0].value) || '').trim());
   const bits = rowValues.slice(1);
   const number = hex ? parseInt(hex[1], 16) : null;
   const agree = number !== null && bits.length === 8 && bits.every((row, index) => {
@@ -1975,6 +2155,9 @@ scenarios.busBench = async (cdp) => {
   const rows = await cdp.eval('window.__qa.totalRows()');
   const canvas = await cdp.eval(`window.__qa.rect('.wave-canvas')`);
   const samples = [];
+  // Every wave gesture forces a redraw: since Wave 18 a plain wheel pans the
+  // time axis (it used to scroll the rows). The sample measures the redraw cost,
+  // not the gesture, so the mapping change does not alter what is asserted.
   for (let i = 0; i < 6; i += 1) {
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: canvas.x + 200, y: canvas.y + 30, deltaX: 0, deltaY: i % 2 ? -120 : 120, modifiers: 0 });
     await sleep(450);
@@ -2076,30 +2259,49 @@ scenarios.valueColumn = async (cdp) => {
   await addSignal(cdp, 'clk');
   await addSignal(cdp, 'pc');
   await sleep(900);
-  const cells = await cdp.eval(`window.__qa.qa('.wave-name-cell').length`);
-  const slots = await cdp.eval(`window.__qa.qa('.wave-name-cell .wave-value').length`);
-  const empty = await cdp.eval(`window.__qa.texts('.wave-name-cell .wave-value')`);
-  check('value: every row has a value column', cells > 0 && slots === cells, { cells, slots });
-  check('value: the column is empty before a cursor is placed', empty.every((t) => !t), empty.slice(0, 4));
-  const surface = await cdp.eval(`window.__qa.rect('#wave-surface')`);
+  // Wave 18 (task-2): the value column is compact and the LAST element of the
+  // label cell. The DOM order is name -> two hover-only action icons ->
+  // value column(s), so nothing can reserve a blank strip after the value; a
+  // value element exists only while its cursor does, and the pane advertises
+  // --wave-value-ch: 0 with no cursor (no fixed 54 px slot at all).
+  const layout = () => cdp.eval('window.__qa.waveValueLayout()');
+  let box = await layout();
+  const cells = box.cells.length;
+  const slots = box.cells.reduce((n, cell) => n + cell.values.length, 0);
+  note('value layout before a cursor', { ch: box.ch, cells: cells, values: slots, canvas: box.canvas });
+  check('value: no value column is rendered before a cursor', cells > 0 && slots === 0, { cells: cells, slots: slots, ch: box.ch });
+  check('value: no value space is reserved before a cursor', box.ch === '0', { ch: box.ch });
+  const surface = await cdp.eval('window.__qa.rect("#wave-surface")');
   await cdp.clickAt(surface.x + 120, surface.y + 15);
-  await sleep(600);
-  const texts1 = await cdp.eval(`window.__qa.texts('.wave-name-cell .wave-value')`);
-  note('value debug', await cdp.eval(`({debug: window.__qa.debug(), pane: window.__wavePaneRenderCount, cells: window.__qa.qa('.wave-name-cell').map((c) => ({name: (c.querySelector('.wave-name-text')||{}).innerText, v: Array.from(c.querySelectorAll('.wave-value')).map((x) => x.innerText)}))})`));
-  check('value: cursor 1 fills the value column', texts1.filter((t) => t && t.length).length >= 1, texts1.slice(0, 4));
+  await sleep(700);
+  box = await layout();
+  const slots1 = box.cells.reduce((n, cell) => n + cell.values.length, 0);
+  const texts1 = box.cells.reduce((all, cell) => all.concat(cell.values.map((value) => value.text)), []);
+  const filled1 = texts1.filter((text) => text.length > 0);
+  check('value: cursor 1 fills the value column once per row', slots1 === cells && filled1.length >= 1, { cells: cells, slots: slots1, texts: texts1 });
+  check('value: the cursor values are bare digits (no radix prefix)', filled1.every((text) => text.charCodeAt(0) !== 39), filled1);
+  // Flush to the waveform: the value column ends a few px left of the canvas
+  // (6 px cell padding + separator/slack), never a whole empty slot away, and
+  // the hover-only icons sit before it.
+  const gaps = box.cells.map((cell) => (cell.values.length && box.canvas ? box.canvas.x - cell.values[cell.values.length - 1].rect.right : null));
+  const iconsBeforeValues = box.cells.every((cell) => cell.values.length > 0 && cell.mores.length === 2
+    && cell.mores.every((more) => more && more.right <= cell.values[0].rect.left));
+  note('value column geometry', { gaps: gaps.slice(0, 8), ch: box.ch, canvas: box.canvas, cell: box.cells[0] });
+  check('value: the value column is flush to the waveform', gaps.length === cells && gaps.every((gap) => gap !== null && gap >= 0 && gap <= 14), { gaps: gaps.slice(0, 8), canvas: box.canvas });
+  check('value: the hover action icons sit before the value columns', iconsBeforeValues, box.cells.slice(0, 2).map((cell) => ({ mores: cell.mores, first: cell.values[0] && cell.values[0].rect })));
   await cdp.clickAt(surface.x + 320, surface.y + 15);
-  await sleep(600);
-  const texts2 = await cdp.eval(`window.__qa.texts('.wave-name-cell .wave-value')`);
+  await sleep(700);
+  const texts2 = await cdp.eval('window.__qa.texts(".wave-name-cell .wave-value")');
   check('value: the column follows cursor 1', JSON.stringify(texts1) !== JSON.stringify(texts2), { before: texts1.slice(0, 4), after: texts2.slice(0, 4) });
-  const slotsBefore2 = await cdp.eval(`window.__qa.qa('.wave-name-cell .wave-value').length`);
+  const slotsBefore2 = await cdp.eval('window.__qa.qa(".wave-name-cell .wave-value").length');
   await cdp.clickAt(surface.x + 420, surface.y + 15, 'right');
-  await sleep(600);
-  const slotsWith2 = await cdp.eval(`window.__qa.qa('.wave-name-cell .wave-value').length`);
-  const texts3 = await cdp.eval(`window.__qa.texts('.wave-name-cell .wave-value')`);
-  check('value: cursor 2 adds its own column', slotsWith2 === cells * 2 && slotsBefore2 === cells, { cells, slotsBefore2, slotsWith2 });
-  check('value: cursor 2 shows a value', texts3.filter((t) => t && t.length).length >= 2, texts3.slice(0, 6));
-  const names = await cdp.eval(`window.__qa.texts('.wave-name-text')`);
-  check('value: the signal names are still there', names.length === cells && names.every((n) => n && n.length), names.slice(0, 4));
+  await sleep(700);
+  const slotsWith2 = await cdp.eval('window.__qa.qa(".wave-name-cell .wave-value").length');
+  const texts3 = await cdp.eval('window.__qa.texts(".wave-name-cell .wave-value")');
+  check('value: cursor 2 adds its own column', slotsWith2 === cells * 2 && slotsBefore2 === cells, { cells: cells, slotsBefore2: slotsBefore2, slotsWith2: slotsWith2 });
+  check('value: cursor 2 shows a value', texts3.filter((text) => text && text.length).length >= 2, texts3.slice(0, 6));
+  const names = await cdp.eval('window.__qa.texts(".wave-name-text")');
+  check('value: the signal names are still there', names.length === cells && names.every((name) => name && name.length), names.slice(0, 4));
   check('value: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   await cdp.shot('qa-value-column.png');
 };
@@ -2800,16 +3002,212 @@ scenarios.findValue = async (cdp) => {
   check('findValue: the cursor jumps to the next change with that value',
     before === 0 && after === 10, { before: before, after: after });
   check('findValue: the status line reports the match', /found/i.test(s.status || ''), s.status);
+  // Wave 18 (task-1/find.rs): the wave view prints bare digits, so typing what
+  // the value column shows must find the same change; the prefixed query above
+  // keeps working because find strips an optional 'h/'d/'sd/'o/'b prefix. The
+  // query must not be integer-looking (the ruler box reads a plain integer as a
+  // time), so the probe uses pc's bare hex '2a' - the value at t=420.
+  const goto = (text) => cdp.eval('(function(){ var i = document.querySelector(".timebar-goto"); if (!i) return "no-input"; var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; set.call(i, ' + JSON.stringify(String(text)) + '); i.dispatchEvent(new Event("input", {bubbles: true})); i.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true})); return "ok"; })()');
+  await goto(0);
+  await sleep(700);
+  const bareStart = await cdp.eval('window.__qa.debug().cursor1');
+  const bareTyped = await goto('2a');
+  await sleep(900);
+  const bareFound = await cdp.eval('window.__qa.debug().cursor1');
+  const bareShown = await cdp.eval('window.__qa.text(".wave-name-cell .wave-value")');
+  s = await state(cdp);
+  note('find value (bare digits)', { typed: bareTyped, start: bareStart, found: bareFound, shown: bareShown, status: s.status });
+  check('findValue: the bare digits the value view shows find the same change', bareStart === 0 && bareFound === 420, { start: bareStart, found: bareFound });
+  check('findValue: the bare-digit query is what the value column displays', bareFound === 420 && bareShown === '2a', { shown: bareShown, found: bareFound });
+  check('findValue: the bare-digit query reports the match', /found/i.test(s.status || ''), s.status);
   // an unknown value reports no match and does not move the cursor
+  const beforeMiss = await cdp.eval('window.__qa.debug().cursor1');
   await cdp.eval('(function(){ var i = document.querySelector(".timebar-goto"); var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; set.call(i, "no_such_value"); i.dispatchEvent(new Event("input", {bubbles: true})); i.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true})); })()');
   await sleep(700);
   const missed = await cdp.eval('window.__qa.debug().cursor1');
   s = await state(cdp);
   const tone = await cdp.eval('window.__qa.statusTone()');
   note('find miss', { cursor: missed, status: s.status, tone: tone });
-  check('findValue: an unknown value reports no match', missed === after, { after: after, missed: missed });
+  check('findValue: an unknown value reports no match', missed === beforeMiss, { before: beforeMiss, missed: missed });
   check('findValue: the miss is an error status', /no match/i.test(s.status || '') && tone === 'error', { status: s.status, tone: tone });
   check('findValue: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+};
+
+// --- Wave 18 (task-3): reload a dump re-written with the same name and size --
+// DumpId is file name + byte size, so the normal "re-simulate, then open the
+// dump again" loop used to focus the existing tab and keep showing the OLD
+// waveform. A content fingerprint now reloads that tab in place: the tab, the
+// row list, the viewport and the cursors stay while the waveform, ruler and
+// cursor values become the new file's, and the status line says "waveform
+// reloaded". The pair of dumps is generated here from qa/fixtures/wave.vcd
+// (qa/artifacts is gitignored, so the pair is not a committed fixture): A is a
+// verbatim copy, B rewrites every pc value to 8'b10101010 while keeping every
+// line length, so the two files share the name and the byte size by
+// construction and only their bytes differ.
+scenarios.reload = async (cdp) => {
+  const dir = path.join(QA, 'artifacts', 'reload-qa');
+  fs.mkdirSync(dir, { recursive: true });
+  const fixture = fs.readFileSync(path.join(FIXTURES, 'wave.vcd'), 'utf8');
+  const lines = fixture.split('\n');
+  const rewritten = lines.map((line) => (line.length === 11 && line.charCodeAt(0) === 98
+    && line.charAt(9) === ' ' && line.charAt(10) === '$' ? 'b10101010 $' : line));
+  const changedLines = lines.filter((line, index) => rewritten[index] !== line).length;
+  const aFile = path.join(dir, 'wave-A.vcd');
+  const bFile = path.join(dir, 'wave-B.vcd');
+  fs.writeFileSync(aFile, fixture);
+  fs.writeFileSync(bFile, rewritten.join('\n'));
+  const live = path.join(dir, 'wave.vcd');
+  const aBytes = fs.statSync(aFile).size;
+  const bBytes = fs.statSync(bFile).size;
+  note('reload fixtures', { a: aBytes, b: bBytes, changedLines: changedLines });
+  check('reload: the changed dump has the same name and byte size', aBytes === bBytes && aBytes > 0 && changedLines > 0, { a: aBytes, b: bBytes, changedLines: changedLines });
+  if (aBytes !== bBytes || changedLines === 0) return;
+  fs.copyFileSync(aFile, live);
+  await boot(cdp);
+  await cdp.upload([live]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(800);
+  const addedPc = await addSignal(cdp, 'pc');
+  const addedClk = await addSignal(cdp, 'clk');
+  const surface = await cdp.eval('window.__qa.rect("#wave-surface")');
+  await cdp.clickAt(surface.x + 300, surface.y + 15);
+  await sleep(800);
+  const before = await cdp.eval('window.__qa.dumpSnapshot()');
+  note('reload before', before);
+  check('reload: file A is open with rows and cursor values', addedPc && addedClk && before.tabs.length === 1 && before.rows.length === 2 && before.values.length >= 2, { addedPc: addedPc, addedClk: addedClk, before: before });
+  // overwrite the SAME path with B and pick it again: same name, same byte
+  // size, different content -> that tab must reload in place
+  fs.copyFileSync(bFile, live);
+  await cdp.upload([live]);
+  await waitStatus(cdp, 'waveform reloaded', 25000);
+  await sleep(1200);
+  const after = await cdp.eval('window.__qa.dumpSnapshot()');
+  note('reload after', after);
+  check('reload: re-opening a changed dump does not add a tab', after.tabs.length === 1 && after.tabs[0] === before.tabs[0], { before: before.tabs, after: after.tabs });
+  check('reload: the row list survives the reload', JSON.stringify(after.rows) === JSON.stringify(before.rows) && after.rows.length === 2, { before: before.rows, after: after.rows });
+  check('reload: the canvas repaints with the new content', after.hash !== before.hash, { before: before.hash, after: after.hash });
+  check('reload: the cursor value column shows the new file values', after.values.indexOf('aa') >= 0 && before.values.indexOf('aa') < 0, { before: before.values, after: after.values });
+  check('reload: the cursor survives the reload', typeof after.cursor1 === 'number' && after.cursor1 === before.cursor1, { before: before.cursor1, after: after.cursor1 });
+  check('reload: the status line says reloaded', /^waveform reloaded/.test(after.status || ''), after.status);
+  // the unchanged-file contract: picking the same bytes again focuses the tab,
+  // says "loaded" and does not repaint the waveform
+  await cdp.upload([live]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(1000);
+  const same = await cdp.eval('window.__qa.dumpSnapshot()');
+  note('reload unchanged', same);
+  check('reload: an unchanged re-open keeps the loaded status', /^waveform loaded/.test(same.status || ''), same.status);
+  check('reload: an unchanged re-open adds no tab and does not repaint', same.tabs.length === 1 && same.hash === after.hash, { tabs: same.tabs, hash: [after.hash, same.hash] });
+  check('reload: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-reload.png');
+};
+
+// --- Wave 18 (task-1): bare band labels + ellipsis truncation -----------------
+// The wave view prints bare digits (no Verilog radix prefix) and a band label
+// that does not fit is shortened with a single ellipsis instead of being
+// dropped. The canvas publishes what it drew on window.__waveDebug (additive
+// seam: labels / labels_drawn / labels_truncated / labels_hidden).
+scenarios.rendererLabels = async (cdp) => {
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(700);
+  await addSignal(cdp, 'pc');
+  await sleep(900);
+  const canvas = await cdp.eval('window.__qa.rect(".wave-canvas")');
+  await cdp.clickAt(canvas.x + 200, canvas.y + 20);
+  await sleep(700);
+  const values = await cdp.eval('window.__qa.texts(".wave-name-cell .wave-value")');
+  check('rendererLabels: the value column prints bare digits',
+    values.length > 0 && values.every((text) => text && text.length > 0 && text.charCodeAt(0) !== 39), values);
+  // Bin gives the longest labels: at this zoom the old renderer dropped the
+  // ones that did not fit, the new one truncates them with an ellipsis.
+  await cdp.eval('window.__qa.click(".wave-more", 1)');
+  await sleep(500);
+  const bin = await cdp.eval('window.__qa.clickText(".modal .btn", "Bin")');
+  await sleep(600);
+  await cdp.key('keyDown', 'Control', 'ControlLeft', 17);
+  for (let i = 0; i < 9; i++) {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: canvas.x + 200, y: canvas.y + 20, deltaX: 0, deltaY: -120, modifiers: 2 });
+    await sleep(220);
+  }
+  await cdp.key('keyUp', 'Control', 'ControlLeft', 17);
+  await sleep(900);
+  const info = await cdp.eval('window.__qa.bandLabels()');
+  const ellipsis = String.fromCharCode(8230);
+  const truncatedLabels = info.labels.filter((text) => text.indexOf(ellipsis) >= 0);
+  note('band labels', { bin: bin, drawn: info.drawn, truncated: info.truncated, hidden: info.hidden, bands: info.bands, sample: info.labels.slice(0, 12) });
+  check('rendererLabels: the seam publishes the drawn band labels',
+    bin === 'ok' && Array.isArray(info.labels) && info.labels.length > 0, { bin: bin, labels: info.labels.slice(0, 8) });
+  check('rendererLabels: no band label carries a radix prefix',
+    info.labels.every((text) => text.length > 0 && text.charCodeAt(0) !== 39),
+    info.labels.filter((text) => text.charCodeAt(0) === 39).slice(0, 6));
+  check('rendererLabels: the drawn counter is at least the published array',
+    typeof info.drawn === 'number' && info.drawn >= info.labels.length, { drawn: info.drawn, published: info.labels.length });
+  check('rendererLabels: narrow bands are ellipsized, not dropped',
+    info.truncated > 0 && info.labels.length === Math.min(256, info.drawn), { truncated: info.truncated, hidden: info.hidden, drawn: info.drawn, published: info.labels.length });
+  check('rendererLabels: every ellipsized label has exactly one ellipsis',
+    truncatedLabels.length > 0 && truncatedLabels.every((text) => text.split(ellipsis).length === 2), truncatedLabels.slice(0, 6));
+  const binValues = await cdp.eval('window.__qa.texts(".wave-name-cell .wave-value")');
+  check('rendererLabels: the value column goes on printing bare digits',
+    binValues.length > 0 && binValues.every((text) => text && text.length > 0 && text.charCodeAt(0) !== 39), binValues);
+  check('rendererLabels: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-renderer-labels.png');
+};
+
+// --- Wave 18 (task-1): 1-bit level vs cursor alignment -----------------------
+// A cursor placed exactly on a clk transition must sit centred on the edge: the
+// cursor line and every value-change x are painted on the same crisp device
+// column now, so the blue edge ink is symmetric around the cursor column. The
+// old renderer painted the edge at the raw x, so at this zoom (the change is
+// 0.25 px off the 0.5 px cursor column) the visible ink was one-sided to the
+// left. The probe finds the cursor column by its colour and measures the middle
+// band of the clk row, where only a vertical edge has ink.
+scenarios.rendererAlign = async (cdp) => {
+  await boot(cdp);
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+  await sleep(400);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(700);
+  await cdp.eval('window.__qa.clickSignal("clk")');
+  await sleep(600);
+  await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(900);
+  const canvas = await cdp.eval('window.__qa.rect(".wave-canvas")');
+  await cdp.key('keyDown', 'Control', 'ControlLeft', 17);
+  for (let i = 0; i < 8; i++) {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: canvas.x + 300, y: canvas.y + 20, deltaX: 0, deltaY: -120, modifiers: 2 });
+    await sleep(200);
+  }
+  await cdp.key('keyUp', 'Control', 'ControlLeft', 17);
+  await sleep(700);
+  // t=575 is a clk edge in wave.vcd (clk falls 1 -> 0 there); the goto box puts
+  // cursor 1 exactly on it and the probe derives the pixel phase from the
+  // renderer seam instead of assuming it.
+  await cdp.eval('(function(){ var i = document.querySelector(".timebar-goto"); if (!i) return "no-input"; var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; set.call(i, "575"); i.dispatchEvent(new Event("input", { bubbles: true })); i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true })); return "ok"; })()');
+  await sleep(900);
+  const probe = await cdp.eval('window.__qa.alignProbe()');
+  note('align probe', probe);
+  check('align: the goto box puts cursor 1 exactly on the clk edge (575)',
+    !!probe && probe.cursor1 === 575, probe && probe.cursor1);
+  check('align: the probe runs at devicePixelRatio 1',
+    !!probe && Math.abs(probe.dpr - 1) <= 1e-6, probe && probe.dpr);
+  check('align: the cursor column is found by the cursor colour',
+    !!probe && probe.cursorCol >= 0 && probe.cursorCols === 1, probe && { cursorCol: probe.cursorCol, cursorCols: probe.cursorCols });
+  check('align: the case is discriminating (the raw edge is off the cursor column)',
+    !!probe && Math.abs(probe.xfrac - 0.5) > 0.1, probe && probe.xfrac);
+  check('align: the cursor sits on the crisp column of the change',
+    !!probe && Math.abs(probe.crisp - (probe.cursorCol + 0.5)) < 1e-6, probe && { crisp: probe.crisp, cursorCol: probe.cursorCol });
+  const massAt = (dx) => { const entry = probe && probe.masses.find((pair) => pair[0] === dx); return entry ? entry[1] : 0; };
+  const left = massAt(-1);
+  const right = massAt(1);
+  check('align: there is 1-bit edge ink on both sides of the cursor', left > 0.5 && right > 0.5, { left: left, right: right, masses: probe && probe.masses });
+  check('align: the 1-bit edge ink is symmetric around the cursor column',
+    Math.abs(left - right) <= 0.2 * Math.max(left, right, 1),
+    { left: left, right: right, balance: +(Math.min(left, right) / Math.max(left, right, 1)).toFixed(3) });
+  check('align: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-renderer-align.png');
 };
 
 // --- Wave 6: elaboration in the UI, elaboration diagnostics, TXT export -----
@@ -3380,9 +3778,10 @@ scenarios.inspectorBits = async (cdp) => {
 
 // --- Wave 11: split-view polish -------------------------------------------------
 // The split pane has its own separator (keyboard + drag, clamped to 25..75 %),
-// its own row scroll / zoom / pan while unlinked, follows the left window again
-// when linked, survives a window resize, and the ratio is persisted in the
-// layout. Every assertion is DOM/state/canvas based, never style based.
+// its own wheel mapping while unlinked (Wave 18: a plain wheel pans its time
+// axis, Shift+wheel scrolls its rows, Ctrl+wheel zooms), follows the left window
+// again when linked, survives a window resize, and the ratio is persisted in
+// the layout. Every assertion is DOM/state/canvas based, never style based.
 scenarios.splitView = async (cdp) => {
   const hashOf = (selector) => cdp.eval('(function(){ const c = document.querySelector(' + JSON.stringify(selector) + '); if (!c) return null; const ctx = c.getContext("2d"); if (!ctx) return null; try { const d = ctx.getImageData(0,0,c.width,c.height).data; let h = 2166136261 >>> 0; for (let i=0;i<d.length;i+=4){ h ^= (d[i]|(d[i+1]<<8)|(d[i+2]<<16)|(d[i+3]<<24))>>>0; h = Math.imul(h,16777619)>>>0; } return h; } catch(e){ return "no-pixels:"+String(e); } })()');
   const splitState = () => cdp.eval(`(function(){
@@ -3442,11 +3841,12 @@ scenarios.splitView = async (cdp) => {
     sep.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify('KEY')}, bubbles: true, cancelable: true }));
     return true;
   })()`.replace('KEY', key));
-  // ctrl+wheel (zoom) and plain wheel (row scroll) at a point
-  const wheelAt = async (x, y, deltaY, ctrl) => {
-    if (ctrl) await cdp.key('keyDown', 'Control', 'ControlLeft', 17);
-    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: x, y: y, deltaX: 0, deltaY: deltaY, modifiers: ctrl ? 2 : 0 });
-    if (ctrl) await cdp.key('keyUp', 'Control', 'ControlLeft', 17);
+  // ctrl+wheel zooms, a plain wheel pans that pane's time axis, shift+wheel
+  // scrolls its rows (Wave 18 Verdi mapping; the boolean form keeps the old
+  // ctrl-only call sites working).
+  const wheelAt = async (x, y, deltaY, options) => {
+    const opts = typeof options === 'boolean' ? { ctrl: options } : (options || {});
+    await wheel(cdp, x, y, deltaY, opts);
   };
   const centerOf = async (selector) => {
     const rect = await cdp.eval('window.__qa.rect(' + JSON.stringify(selector) + ')');
@@ -3569,27 +3969,70 @@ scenarios.splitView = async (cdp) => {
       && st.canvasWidth < 1100,
     { canvas: [st.canvasWidth, st.canvasHeight], css: [st.canvasClientW, st.canvasClientH], dpr: dpr });
   check('splitView: the right canvas repaints at the new size', afterResizeHash !== beforeResizeHash, { before: beforeResizeHash, after: afterResizeHash });
-  // (e) plain wheel scrolls the right pane's rows and clamps at the ends. The
-  // smaller window makes 20 rows overflow the pane, so the scroll is observable.
+  // (e) unlinked right pane: a plain wheel PANS that pane's own time axis and
+  // Shift+wheel scrolls its rows (Wave 18: it used to be the other way round).
+  // The pane publishes its last paint on .split-pane[data-frame], which is
+  // written in view() while the paint happens in rendered(), so it is exactly
+  // one paint behind: flush it with two window resizes before reading (the
+  // integration probe did the same). The smaller window makes 20 rows overflow
+  // the pane, so the row scroll is observable.
+  await flushSplitPane(cdp, 1100, 600);
   const smallRight = await centerOf('canvas.split-canvas');
-  let scrollHash = afterResizeHash;
-  await wheelAt(smallRight.x, smallRight.y, 100, false);
+  let pane = await cdp.eval('window.__qa.splitPaneFrame()');
+  const leftHashBefore = await hashOf('#wave-surface');
+  const rightHashBefore = await hashOf('canvas.split-canvas');
+  note('unlinked: pane before the wheel gestures', pane);
+  check('splitView: the right pane publishes its frame',
+    pane.raw.length > 0 && typeof pane.start === 'number' && typeof pane.scroll === 'number', pane);
+  // plain wheel: the pane's own time axis moves forward, the rows do not scroll
+  await wheelAt(smallRight.x, smallRight.y, 240, false);
+  await sleep(600);
+  await flushSplitPane(cdp, 1100, 600);
+  const panePanned = await cdp.eval('window.__qa.splitPaneFrame()');
+  note('unlinked: after a plain wheel', panePanned);
+  check('splitView: a plain wheel pans the right pane time axis',
+    panePanned.start > pane.start && panePanned.size === pane.size, { before: pane, after: panePanned });
+  check('splitView: a plain wheel does not scroll the right pane rows',
+    panePanned.scroll === pane.scroll, { before: pane.scroll, after: panePanned.scroll });
+  // plain wheel backwards moves the start back (the pan is symmetric)
+  await wheelAt(smallRight.x, smallRight.y, -240, false);
+  await sleep(600);
+  await flushSplitPane(cdp, 1100, 600);
+  const paneBack = await cdp.eval('window.__qa.splitPaneFrame()');
+  note('unlinked: after a plain wheel back', paneBack);
+  check('splitView: a plain wheel pans the right pane back',
+    paneBack.start < panePanned.start, { forward: panePanned.start, back: paneBack.start });
+  // shift + wheel: rows scroll, the pane's view does not move. A small notch
+  // first, so the later clamp pass has room to prove the clamp.
+  await wheelAt(smallRight.x, smallRight.y, 60, { shift: true });
+  await sleep(600);
+  await flushSplitPane(cdp, 1100, 600);
+  const paneRows = await cdp.eval('window.__qa.splitPaneFrame()');
+  note('unlinked: after shift+wheel', paneRows);
+  check('splitView: shift+wheel scrolls the right pane rows',
+    paneRows.scroll > paneBack.scroll, { before: paneBack.scroll, after: paneRows.scroll });
+  check('splitView: the row scroll leaves the right pane view alone',
+    paneRows.start === paneBack.start && paneRows.size === paneBack.size, { view: [paneBack.start, paneRows.start], size: [paneBack.size, paneRows.size] });
+  // ...and the row scroll clamps at the end of the list
+  for (let i = 0; i < 10; i++) { await wheelAt(smallRight.x, smallRight.y, 400, { shift: true }); }
+  await sleep(800);
+  await flushSplitPane(cdp, 1100, 600);
+  const paneClamped = await cdp.eval('window.__qa.splitPaneFrame()');
+  await wheelAt(smallRight.x, smallRight.y, 400, { shift: true });
   await sleep(700);
-  const scrolled = await hashOf('canvas.split-canvas');
-  await wheelAt(smallRight.x, smallRight.y, 100, false);
-  await sleep(700);
-  const scrolledAgain = await hashOf('canvas.split-canvas');
-  for (let i = 0; i < 10; i++) { await wheelAt(smallRight.x, smallRight.y, 400, false); }
-  await sleep(900);
-  const clamped = await hashOf('canvas.split-canvas');
-  await wheelAt(smallRight.x, smallRight.y, 400, false);
-  await sleep(700);
-  const clampedAgain = await hashOf('canvas.split-canvas');
-  note('unlinked: row scroll', { start: scrollHash, scrolled: scrolled, scrolledAgain: scrolledAgain, clamped: clamped, clampedAgain: clampedAgain });
-  check('splitView: a plain wheel scrolls the right pane rows',
-    scrolled !== scrollHash && scrolledAgain !== scrolled, { start: scrollHash, scrolled: scrolled, scrolledAgain: scrolledAgain });
+  await flushSplitPane(cdp, 1100, 600);
+  const paneClampedAgain = await cdp.eval('window.__qa.splitPaneFrame()');
+  note('unlinked: row scroll clamp', { clamped: paneClamped.scroll, clampedAgain: paneClampedAgain.scroll });
   check('splitView: the row scroll clamps at the end of the list',
-    clamped === clampedAgain, { clamped: clamped, clampedAgain: clampedAgain });
+    paneClamped.scroll === paneClampedAgain.scroll && paneClamped.scroll > paneRows.scroll,
+    { first: paneRows.scroll, clamped: paneClamped.scroll, clampedAgain: paneClampedAgain.scroll });
+  // the right-pane gestures never touch the interactive left pane
+  const leftHashAfter = await hashOf('#wave-surface');
+  const rightHashAfter = await hashOf('canvas.split-canvas');
+  note('unlinked: pane hashes', { left: [leftHashBefore, leftHashAfter], right: [rightHashBefore, rightHashAfter] });
+  check('splitView: the right pane gestures leave the left pane untouched',
+    leftHashAfter === leftHashBefore && rightHashAfter !== rightHashBefore,
+    { left: [leftHashBefore, leftHashAfter], right: [rightHashBefore, rightHashAfter] });
   // (f) back to the normal window for the linked re-sync test
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
   await sleep(1200);
@@ -3757,7 +4200,9 @@ scenarios.largeDump = async (cdp) => {
       decodedOk(memoryAfterRows), memoryAfterRows);
     const surface = await cdp.eval('window.__qa.rect("#wave-surface")');
     if (surface) {
-      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: Math.round(surface.x + surface.w / 2), y: Math.round(surface.y + surface.h / 2), deltaX: 0, deltaY: 400 });
+      // scroll the rows with Shift+wheel (Wave 18: a plain wheel pans the time
+      // axis now), then Ctrl+wheel zoom at the pointer
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: Math.round(surface.x + surface.w / 2), y: Math.round(surface.y + surface.h / 2), deltaX: 0, deltaY: 400, modifiers: 8 });
       await sleep(500);
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: Math.round(surface.x + surface.w / 2), y: Math.round(surface.y + surface.h / 2), deltaX: 0, deltaY: -240, modifiers: 2 });
       await sleep(700);
@@ -4227,8 +4672,10 @@ scenarios.denseDump = async (cdp) => {
       if (fstSurface) {
         const fx = Math.round(fstSurface.x + fstSurface.w / 2);
         const fy = Math.round(fstSurface.y + fstSurface.h / 2);
+        // scroll through the rows with Shift+wheel (Wave 18: the plain wheel
+        // pans the time axis instead)
         for (let notch = 0; notch < 24; notch++) {
-          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: fx, y: fy, deltaX: 0, deltaY: 800 });
+          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: fx, y: fy, deltaX: 0, deltaY: 800, modifiers: 8 });
           await sleep(250);
         }
       }

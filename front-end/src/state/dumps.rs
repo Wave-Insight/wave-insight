@@ -7,6 +7,12 @@
 //! the active entry, so the renderer, the time bar and the wave pane keep their
 //! current shape.
 //!
+//! Re-opening a dump whose identity (name + byte size) is already open focuses
+//! its tab instead of adding a second one. When the file was re-written under
+//! the same name and size (a re-simulated dump), the content fingerprint of the
+//! new bytes differs and the reducer replaces the entry's handle in place, so
+//! the tab reloads the new waveform and keeps its rows/settings/viewport.
+//!
 //! A session with no dump open (the sources-only workflow: load .sv files, add
 //! signals, no waveform yet) keeps using the `State.rows`/`viewport`/`focus`
 //! scratch slices; [`super::select`] prefers the active entry when there is one.
@@ -29,6 +35,14 @@ pub struct DumpEntry {
     pub handle: DumpHandle,
     pub time_range: Option<TimeRange>,
     pub range_from_body: bool,
+    /// Content fingerprint of the bytes that were parsed (see
+    /// [`crate::file_load::fingerprint`]), when the transport reports one.
+    ///
+    /// The identity above is name + size; a re-simulated dump can keep both and
+    /// still change every value. Opening such a file again compares this
+    /// fingerprint with the open entry's and reloads the tab in place when it
+    /// differs, instead of silently keeping the old waveform.
+    pub fingerprint: Option<u64>,
     /// The wave rows of this dump (order, per-row settings, selection).
     pub rows: Rows,
     /// The committed zoom/pan and cursors of this dump.
@@ -47,12 +61,14 @@ impl DumpEntry {
         handle: DumpHandle,
         time_range: Option<TimeRange>,
         range_from_body: bool,
+        fingerprint: Option<u64>,
     ) -> Self {
         Self {
             id,
             handle,
             time_range,
             range_from_body,
+            fingerprint,
             rows: Rows::default(),
             viewport: Viewport::default(),
             focus: Focus::default(),

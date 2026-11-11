@@ -193,10 +193,28 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 state.set_rows(items);
             }
         }
-        Action::DumpAdded { id, handle } => {
-            // the same file is already open: focus its tab, never a second copy
+        Action::DumpAdded {
+            id,
+            handle,
+            fingerprint,
+        } => {
+            // the same file is already open: focus its tab, never a second copy.
+            // But the identity is only name + byte size, and a re-simulated dump
+            // can keep both while every value changes: when the content
+            // fingerprint differs, that tab reloads the new bytes in place
+            // instead of keeping the old waveform on screen.
             if let Some(index) = state.dumps.index_of(&id) {
-                activate_dump(state, index);
+                let same_content = match (state.dumps.items[index].fingerprint, fingerprint) {
+                    (Some(open), Some(incoming)) => open == incoming,
+                    // a transport that reports no fingerprint keeps the old
+                    // dedupe rule instead of reparsing blind
+                    _ => true,
+                };
+                if same_content {
+                    activate_dump(state, index);
+                } else {
+                    reload_dump(state, index, handle, fingerprint);
+                }
                 return vec![Effect::LspTop {
                     top: state.design.top().map(str::to_owned),
                 }];
@@ -227,7 +245,8 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             };
             let healed = session_restore.is_some();
             let rows_version = state.dumps.next_rows_version();
-            let mut entry = DumpEntry::new(id.clone(), handle, time_range, range_from_body);
+            let mut entry =
+                DumpEntry::new(id.clone(), handle, time_range, range_from_body, fingerprint);
             entry.rows = super::state::Rows {
                 items: Rc::new(rows),
                 version: rows_version,
@@ -656,6 +675,69 @@ fn activate_dump(state: &mut State, index: usize) {
     refresh_tree(state);
 }
 
+/// Replace the handle of an already-open tab in place.
+///
+/// The same dump identity (file name + byte size) was opened again but the
+/// content fingerprint differs: the testbench was re-simulated, so the tab has
+/// to show the new waveform. The tab, its row order/settings, the committed
+/// viewport and the cursors stay; the rows are re-resolved against the new dump
+/// and the ones whose signal is gone (or whose bit no longer fits the bus) are
+/// dropped and reported through [`SessionRestore`], exactly like a remembered
+/// session that no longer matches.
+fn reload_dump(state: &mut State, index: usize, handle: DumpHandle, fingerprint: Option<u64>) {
+    let (time_range, range_from_body) = handle.time_range();
+    let waveform = handle.waveform();
+    let mut rows = (*state.dumps.items[index].rows.items).clone();
+    let mut dropped = 0usize;
+    rows.retain_mut(|row| {
+        let Some(signal) = waveform.signal_by_path(&row.path) else {
+            dropped += 1;
+            return false;
+        };
+        match row.bit {
+            // an expanded bit row survives while the bus still has that bit
+            Some(bit) if signal.width() > u32::from(bit) => {
+                row.width = 1;
+                true
+            }
+            Some(_) => {
+                dropped += 1;
+                false
+            }
+            None => {
+                row.width = signal.width().max(1) as usize;
+                true
+            }
+        }
+    });
+    // a cursor past the new end of the trace would sit outside the surface:
+    // keep it on the last time step instead of losing it off screen
+    let mut viewport = state.dumps.items[index].viewport;
+    if let Some(range) = time_range {
+        let end = i32::try_from(range.end).unwrap_or(i32::MAX);
+        viewport.cursors.one = viewport.cursors.one.map(|one| one.min(end));
+        viewport.cursors.two = viewport.cursors.two.map(|two| two.min(end));
+    }
+    let restored = rows.len();
+    let entry = &mut state.dumps.items_mut()[index];
+    entry.handle = handle;
+    entry.time_range = time_range;
+    entry.range_from_body = range_from_body;
+    entry.fingerprint = fingerprint;
+    entry.viewport = viewport;
+    entry.session_restore = Some(SessionRestore {
+        restored,
+        skipped: dropped,
+    });
+    state.dumps.touch();
+    // activate first: `set_rows` works on the active entry, and the tree/top
+    // hint have to follow the reloaded hierarchy
+    activate_dump(state, index);
+    // the row funnel bumps the rows version and records the remembered list, so
+    // the session keeps exactly the rows the reloaded dump has
+    state.set_rows(rows);
+}
+
 /// Tell the design which module the active dump was made from: the best guess
 /// for the elaborated top while no source declares one.
 fn sync_top_hint(state: &mut State) {
@@ -811,7 +893,8 @@ mod tests {
     use super::*;
     use crate::state::persist::SessionRow;
     use crate::state::types::{
-        DumpHandle, DumpId, Layout, Settings, Status, StatusTone, EDITOR_RATIO_MIN, SIDEBAR_MIN,
+        Cursors, DumpHandle, DumpId, Layout, Settings, Status, StatusTone, View, EDITOR_RATIO_MIN,
+        SIDEBAR_MIN,
     };
     use wave_insight_lib::waveform::ShowType;
 
@@ -843,6 +926,49 @@ mod tests {
         (DumpHandle::new(waveform), size)
     }
 
+    /// A handle for raw dump bytes.
+    fn handle_of(bytes: Vec<u8>) -> DumpHandle {
+        DumpHandle::new(
+            wave_insight_lib::waveform::Waveform::open_bytes(bytes).expect("the dump opens"),
+        )
+    }
+
+    /// `wave.vcd` with one `pc` value changed: the re-simulated dump the reload
+    /// rule exists for. Same file name, same byte size, different waveform.
+    fn wave_vcd_changed() -> (DumpHandle, u64) {
+        let mut bytes = include_bytes!("../../../qa/fixtures/wave.vcd").to_vec();
+        let marker = b"b00000001 $";
+        let at = bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("the fixture has a pc value");
+        bytes[at..at + marker.len()].copy_from_slice(b"b10101010 $");
+        let size = bytes.len() as u64;
+        (handle_of(bytes), size)
+    }
+
+    /// A minimal synthetic VCD padded with blank lines to `size` bytes, so two
+    /// variants (different end time, with/without `pc`) can share the identity
+    /// (name + size) that the reload rule is keyed by.
+    fn padded_vcd(end: u32, with_pc: bool, size: usize) -> (DumpHandle, u64) {
+        let mut text =
+            String::from("$timescale 1ns $end\n$scope module top $end\n  $var wire 1 ! clk $end\n");
+        if with_pc {
+            text.push_str("  $var wire 8 # pc [7:0] $end\n");
+        }
+        text.push_str("$upscope $end\n$enddefinitions $end\n$dumpvars\n0!\n");
+        if with_pc {
+            text.push_str("b0 #\n");
+        }
+        text.push_str("$end\n");
+        text.push_str(&format!("#{end}\n1!\n"));
+        let mut bytes = text.into_bytes();
+        assert!(bytes.len() <= size, "the padding size is large enough");
+        bytes.resize(size, b'\n');
+        let size = bytes.len() as u64;
+        (handle_of(bytes), size)
+    }
+
     fn session_row(path: &str, bit: Option<u8>) -> SessionRow {
         SessionRow {
             path: path.to_string(),
@@ -869,11 +995,25 @@ mod tests {
         name: Option<&str>,
         bytes: Option<u64>,
     ) -> Vec<Effect> {
+        open_dump_fp(state, handle, name, bytes, None)
+    }
+
+    /// [`open_dump`] with the content fingerprint the loader reports: this is
+    /// what tells a re-open of the same bytes from a re-written file with the
+    /// same name and size.
+    fn open_dump_fp(
+        state: &mut State,
+        handle: DumpHandle,
+        name: Option<&str>,
+        bytes: Option<u64>,
+        fingerprint: Option<u64>,
+    ) -> Vec<Effect> {
         reduce(
             state,
             Action::DumpAdded {
                 id: DumpId::new(name.unwrap_or_default(), bytes),
                 handle,
+                fingerprint,
             },
         )
     }
@@ -1855,12 +1995,124 @@ mod tests {
     fn opening_the_same_identity_focuses_the_existing_tab() {
         let mut state = state();
         let (handle, size) = wave_vcd();
+        let first = handle.clone();
         open_dump(&mut state, handle, Some("wave.vcd"), Some(size));
+        add(&mut state, "top.pc");
         let (handle, size) = wave_vcd();
+        let second = handle.clone();
         open_dump(&mut state, handle, Some("wave.vcd"), Some(size));
         // dedupe by identity: one tab, still active
         assert_eq!(state.dumps.len(), 1);
         assert_eq!(state.dumps.active_index(), 0);
+        // no fingerprints (a transport that reports none): the old dedupe rule,
+        // the open handle and the rows are untouched
+        assert_eq!(dump(&state).handle, first);
+        assert_ne!(dump(&state).handle, second);
+        assert_eq!(paths(&state), vec!["top.pc"]);
+    }
+
+    #[test]
+    fn reopening_the_same_bytes_keeps_the_handle_and_the_rows() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        let first = handle.clone();
+        open_dump_fp(&mut state, handle, Some("wave.vcd"), Some(size), Some(7));
+        add(&mut state, "top.pc");
+        let (handle, _) = wave_vcd();
+        let second = handle.clone();
+        open_dump_fp(&mut state, handle, Some("wave.vcd"), Some(size), Some(7));
+        // the same content is the same dump: focus the tab, keep the handle
+        assert_eq!(state.dumps.len(), 1);
+        assert_eq!(dump(&state).handle, first);
+        assert_ne!(dump(&state).handle, second);
+        // and the rows are not restored a second time on top of themselves
+        assert_eq!(paths(&state), vec!["top.pc"]);
+    }
+
+    #[test]
+    fn a_rewritten_dump_with_the_same_identity_reloads_in_place() {
+        let mut state = state();
+        let (handle, size) = wave_vcd();
+        open_dump_fp(&mut state, handle, Some("wave.vcd"), Some(size), Some(1));
+        add(&mut state, "top.pc");
+        add(&mut state, "top.clk");
+        // the user zoomed/panned and set both cursors before re-simulating
+        reduce(&mut state, Action::ViewCommitted(View::new(120.0, 2.0)));
+        reduce(
+            &mut state,
+            Action::CursorsChanged(Cursors {
+                one: Some(200),
+                two: Some(300),
+            }),
+        );
+
+        let (changed, changed_size) = wave_vcd_changed();
+        assert_eq!(changed_size, size, "same name and same byte size");
+        open_dump_fp(
+            &mut state,
+            changed.clone(),
+            Some("wave.vcd"),
+            Some(size),
+            Some(2),
+        );
+
+        // one tab, now showing the new bytes, with the rows/settings/viewport kept
+        assert_eq!(state.dumps.len(), 1);
+        assert_eq!(state.dumps.active_index(), 0);
+        assert_eq!(dump(&state).handle, changed);
+        assert_eq!(dump(&state).fingerprint, Some(2));
+        assert_eq!(paths(&state), vec!["top.pc", "top.clk"]);
+        assert_eq!(dump(&state).viewport.view, View::new(120.0, 2.0));
+        assert_eq!(dump(&state).viewport.cursors.one, Some(200));
+        assert_eq!(dump(&state).viewport.cursors.two, Some(300));
+        // the rows were re-resolved against the new dump (same widths: no drop)
+        assert_eq!(
+            dump(&state).session_restore,
+            Some(SessionRestore {
+                restored: 2,
+                skipped: 0
+            })
+        );
+        // the remembered list is the reloaded dump's, and it is what a later
+        // re-open restores
+        let remembered = state
+            .sessions
+            .get(&DumpId::new("wave.vcd", Some(size)))
+            .expect("the reload recorded the session");
+        assert_eq!(remembered.rows.len(), 2);
+    }
+
+    #[test]
+    fn a_reload_drops_rows_the_new_dump_no_longer_has_and_clamps_cursors() {
+        let mut state = state();
+        let (handle, size) = padded_vcd(1000, true, 512);
+        open_dump_fp(&mut state, handle, Some("s.vcd"), Some(size), Some(1));
+        add(&mut state, "top.pc");
+        add(&mut state, "top.clk");
+        reduce(
+            &mut state,
+            Action::CursorsChanged(Cursors {
+                one: Some(900),
+                two: None,
+            }),
+        );
+        // the re-simulated dump is shorter and no longer has pc
+        let (changed, changed_size) = padded_vcd(10, false, 512);
+        assert_eq!(changed_size, size);
+        open_dump_fp(&mut state, changed, Some("s.vcd"), Some(size), Some(2));
+        assert_eq!(state.dumps.len(), 1);
+        // the row whose signal is gone is dropped and reported; the survivor
+        // keeps its place
+        assert_eq!(paths(&state), vec!["top.clk"]);
+        assert_eq!(
+            dump(&state).session_restore,
+            Some(SessionRestore {
+                restored: 1,
+                skipped: 1
+            })
+        );
+        // a cursor past the new end of the trace is kept on the last step
+        assert_eq!(dump(&state).viewport.cursors.one, Some(10));
     }
 
     #[test]

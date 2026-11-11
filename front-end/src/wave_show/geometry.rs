@@ -23,6 +23,24 @@ pub const ROW_HEIGHT: f64 = 30.0;
 /// for the backend. Drawing only uses the rows that are really visible.
 pub const PREFETCH_ROWS: usize = 12;
 
+/// Snap a css-pixel coordinate to the centre of a device pixel column.
+///
+/// Canvas lines are painted at fractional coordinates by default, which spreads
+/// them over two device columns and makes them look soft. More importantly for
+/// the waveform, the cursor lines and the value-change edges must land on the
+/// *same* column: a cursor placed exactly on a change is drawn with this helper
+/// and so is the change itself, so the 1-bit edge sits centred under the cursor
+/// instead of peeking out one column beside it. `dpr` is the device pixel
+/// ratio; a missing or broken value falls back to 1.
+pub fn crisp(value: f64, dpr: f64) -> f64 {
+    let dpr = if dpr.is_finite() && dpr > 0.0 {
+        dpr
+    } else {
+        1.0
+    };
+    ((value * dpr).round() + 0.5) / dpr
+}
+
 /// Minimum horizontal distance between two drawn changes, in css pixels.
 ///
 /// A dump can have hundreds of changes per pixel; drawing all of them costs a
@@ -480,5 +498,32 @@ mod tests {
         //a view with a nonsense origin makes every distance NaN: no snap, no panic
         let broken = View::new(f64::NAN, 1.0);
         assert_eq!(snap_to_edges(150, &edges, &broken, SNAP_PX), 150);
+    }
+
+    #[test]
+    fn crisp_snaps_a_cursor_and_a_value_edge_to_the_same_column() {
+        // dpr 1: a line lands on the middle of one device column
+        assert_eq!(crisp(231.25, 1.0), 231.5);
+        assert_eq!(crisp(0.0, 1.0), 0.5);
+        // coordinates that round to the same device column land on the same
+        // painted column: this is why a cursor placed on a change and the change
+        // itself share one column instead of sitting side by side
+        assert_eq!(crisp(231.25, 1.0), crisp(231.0, 1.0));
+        assert_eq!(crisp(231.25, 1.0), crisp(231.4, 1.0));
+        assert_ne!(crisp(231.25, 1.0), crisp(231.75, 1.0));
+        // dpr 2: a device pixel is half a css pixel
+        assert_eq!(crisp(10.3, 2.0), 10.75);
+        assert_eq!(crisp(10.1, 2.0), 10.25);
+        // the result is always a device pixel centre
+        for dpr in [1.0, 1.25, 2.0, 3.0] {
+            for x in [0.0, 0.1, 7.4, 231.25, 400.99] {
+                let snapped = crisp(x, dpr) * dpr - 0.5;
+                assert!((snapped - snapped.round()).abs() < 1e-9, "{x} @ {dpr}");
+            }
+        }
+        // a broken dpr falls back to 1 instead of producing NaN
+        assert_eq!(crisp(5.0, 0.0), 5.5);
+        assert_eq!(crisp(5.0, f64::NAN), 5.5);
+        assert!(crisp(f64::NAN, 1.0).is_nan());
     }
 }

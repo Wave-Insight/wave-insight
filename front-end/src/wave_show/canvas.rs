@@ -12,7 +12,7 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 use wave_insight_lib::waveform::ShowType;
 use wave_insight_lib::waveform::{BitValue, WaveValue};
 
-use crate::wave_show::geometry::{Time, View, ROW_HEIGHT};
+use crate::wave_show::geometry::{crisp, Time, View, ROW_HEIGHT};
 use crate::wave_show::util::signal_things::{RowKind, SignalItem};
 use crate::wave_show::Settings;
 
@@ -86,6 +86,12 @@ pub struct PaintStats {
     pub bands: usize,
     /// Rows drawn as an analog polyline instead of a digital one.
     pub analog: usize,
+    /// Value labels drawn inside bus bands (Wave 18 QA seam).
+    pub labels: usize,
+    /// Labels drawn with a trailing ellipsis because the band was too narrow.
+    pub labels_truncated: usize,
+    /// Labels skipped because not even the ellipsis fitted in the band.
+    pub labels_hidden: usize,
 }
 
 /// Paint `frame` into `canvas`.
@@ -95,6 +101,8 @@ pub struct PaintStats {
 /// hidpi screen.
 pub fn paint(canvas: &HtmlCanvasElement, frame: &Frame<'_>) -> PaintStats {
     let mut stats = PaintStats::default();
+    // every frame replaces the label record the QA seam reads
+    LAST_LABELS.with(|labels| labels.borrow_mut().clear());
     let dpr = if frame.dpr.is_finite() && frame.dpr > 0.0 {
         frame.dpr
     } else {
@@ -149,11 +157,6 @@ fn context_of(canvas: &HtmlCanvasElement) -> Option<CanvasRenderingContext2d> {
         .and_then(|context| context.dyn_into::<CanvasRenderingContext2d>().ok())
 }
 
-/// Snap a coordinate to a device pixel so a 1 px line is exactly 1 px wide.
-fn crisp(value: f64, dpr: f64) -> f64 {
-    ((value * dpr).round() + 0.5) / dpr
-}
-
 fn draw_grid(context: &CanvasRenderingContext2d, frame: &Frame<'_>, dpr: f64, height: f64) {
     context.set_stroke_style_str(palette::GRID);
     context.set_line_width(1.0);
@@ -205,10 +208,10 @@ fn draw_rows(
             RowKind::Empty => draw_no_data(context, top, width),
             // analog mode replaces both the digital step and the bus band
             _ if item.setting.analog_active => {
-                draw_analog_row(context, frame, item, top, width, stats)
+                draw_analog_row(context, frame, item, top, width, dpr, stats)
             }
-            RowKind::Bool => draw_bool_row(context, frame, item, top, width, stats),
-            RowKind::Bits => draw_bus_row(context, frame, item, top, width, stats),
+            RowKind::Bool => draw_bool_row(context, frame, item, top, width, dpr, stats),
+            RowKind::Bits => draw_bus_row(context, frame, item, top, width, dpr, stats),
         }
     }
 }
@@ -255,6 +258,7 @@ fn draw_bool_row(
     item: &SignalItem,
     top: f64,
     width: f64,
+    dpr: f64,
     stats: &mut PaintStats,
 ) {
     let (start, end) = frame.view.window(width);
@@ -276,6 +280,14 @@ fn draw_bool_row(
     item.values
         .for_each_change(start, end, &frame.view, width, |x, value| {
             stats.changes += 1;
+            // Paint the edge on the same crisp device column as the cursor line
+            // (see `geometry::crisp`). A cursor placed on a change then sits
+            // centred on the 1-bit edge instead of one column to its right,
+            // which is what made the levels look misaligned: the opaque cursor
+            // covered the right half of the 1.6 px edge and left the left half
+            // visible. Bus bands looked fine because their diagonals leave ink
+            // on both sides.
+            let x = crisp(x, dpr);
             let next = bool_level(value, top);
             if started {
                 context.line_to(x, level);
@@ -299,6 +311,7 @@ fn draw_bus_row(
     item: &SignalItem,
     top: f64,
     width: f64,
+    dpr: f64,
     stats: &mut PaintStats,
 ) {
     let (start, end) = frame.view.window(width);
@@ -324,6 +337,10 @@ fn draw_bus_row(
     item.values
         .for_each_change(start, end, &frame.view, width, |x, value| {
             stats.changes += 1;
+            // one crisp column per change, shared with the cursor lines (see
+            // `geometry::crisp`): the band joins and the cursor sit on the
+            // same device column, so a cursor placed on a transition is centred
+            let x = crisp(x, dpr);
             let Some(previous) = current else {
                 // the history starts inside the window: this is the first band
                 current = Some(value);
@@ -346,6 +363,7 @@ fn draw_bus_row(
                 x,
                 band.upper,
                 band.lower,
+                stats,
             );
             current = Some(value);
             segment_start = x;
@@ -366,6 +384,7 @@ fn draw_bus_row(
                 end_x,
                 band.upper,
                 band.lower,
+                stats,
             );
         }
     }
@@ -437,6 +456,7 @@ fn draw_analog_row(
     item: &SignalItem,
     top: f64,
     width: f64,
+    dpr: f64,
     stats: &mut PaintStats,
 ) {
     let (start, end) = frame.view.window(width);
@@ -490,6 +510,8 @@ fn draw_analog_row(
     item.values
         .for_each_change(start, end, &frame.view, width, |x, value| {
             stats.changes += 1;
+            // same crisp column as the cursor lines (see `geometry::crisp`)
+            let x = crisp(x, dpr);
             let point = analog_number(value, &item.setting).map(&y_of);
             analog_point(context, &mut last, x, point);
         });
@@ -562,19 +584,103 @@ fn analog_number(value: &WaveValue, setting: &Settings) -> Option<f64> {
 /// fixed-point scale), reals and strings are printed as they are, events have no
 /// text.
 ///
-/// Delegates to [`crate::nav::value_text`] so the band labels, the value column
-/// and the editor inlay hints can never disagree about radix, formatting or the
-/// fixed-point scale.
+/// Delegates to [`crate::nav::value_text_bare`]: the wave view is a picture of
+/// the data, so it shows the bare digits (`37`, not `'h25`) in both the band
+/// labels and the cursor value column. The data views (editor inlay hints,
+/// export, find) keep the prefixed form; sharing the rest of the formatter
+/// means the two can never disagree about radix, signedness or fixed point.
 pub(crate) fn value_text(value: &WaveValue, width: usize, setting: &Settings) -> Option<String> {
-    crate::nav::value_text(
+    crate::nav::value_text_bare(
         value,
         width,
         &crate::nav::ValueFormat::from_setting(setting),
     )
 }
 
+/// The glyph that marks a band label cut short by a narrow segment.
+const ELLIPSIS: &str = "…";
+
+/// How a band label is fitted into the segment that holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LabelFit {
+    /// The whole text fits with the 6 px air kept on both sides.
+    Full,
+    /// Keep the first `n` characters and append [`ELLIPSIS`]; `n` may be 0.
+    Truncated(usize),
+    /// Not even the ellipsis fits: draw nothing.
+    Hidden,
+}
+
+/// Decide how a label fits into `max_width` css pixels.
+///
+/// `full_width` is the whole text's advance width as the canvas measured it;
+/// `char_widths` the advance width of every character (only read when the text
+/// does not fit); `ellipsis_width` the measured width of [`ELLIPSIS`].
+/// Pure on purpose: the host tests can cover every boundary without a DOM, and
+/// the canvas layer only supplies the measurements.
+pub(crate) fn fit_label(
+    full_width: f64,
+    char_widths: &[f64],
+    ellipsis_width: f64,
+    max_width: f64,
+) -> LabelFit {
+    if !full_width.is_finite() || !max_width.is_finite() || max_width <= 0.0 {
+        return LabelFit::Hidden;
+    }
+    if full_width <= max_width {
+        return LabelFit::Full;
+    }
+    if !ellipsis_width.is_finite() || ellipsis_width <= 0.0 || ellipsis_width > max_width {
+        return LabelFit::Hidden;
+    }
+    let mut width = 0.0;
+    let mut kept = 0usize;
+    for &char_width in char_widths {
+        if !char_width.is_finite() || width + char_width + ellipsis_width > max_width {
+            break;
+        }
+        width += char_width;
+        kept += 1;
+    }
+    LabelFit::Truncated(kept)
+}
+
+/// Advance width of every character of `text`, measured with the current font.
+///
+/// Only the prefix that could still fit is measured: the first character that
+/// overflows stops the walk, so a long ASCII value costs a few measurements,
+/// not one per byte.
+fn measured_char_widths(
+    context: &CanvasRenderingContext2d,
+    text: &str,
+    max_width: f64,
+    ellipsis_width: f64,
+) -> Vec<f64> {
+    let mut widths = Vec::new();
+    let mut total = 0.0;
+    let mut buffer = [0u8; 4];
+    for character in text.chars() {
+        let Ok(metrics) = context.measure_text(character.encode_utf8(&mut buffer)) else {
+            break;
+        };
+        let width = metrics.width();
+        total += width;
+        widths.push(width);
+        if total + ellipsis_width > max_width {
+            break;
+        }
+    }
+    widths
+}
+
 /// Draw the value of one bus segment in the middle of its band, if the text fits
 /// between `from` and `to`.
+///
+/// A value that does not fit is truncated to the longest prefix that fits with a
+/// single [`ELLIPSIS`], never dropped for being slightly too wide: the waveform
+/// used to lose the label entirely when the segment was a few pixels too narrow,
+/// which read as "this band has no value". Only when even the ellipsis cannot fit
+/// is nothing drawn.
 //the arguments are the drawing frame, the band, the label text and its geometry;
 //a struct for a single private helper would not make it clearer
 #[allow(clippy::too_many_arguments)]
@@ -587,28 +693,82 @@ fn label_segment(
     to: f64,
     upper: f64,
     lower: f64,
+    stats: &mut PaintStats,
 ) {
     let Some(text) = value_text(value, format_width, setting) else {
         return;
     };
     let segment = to - from;
-    if segment < 12.0 {
+    if !segment.is_finite() || segment <= 0.0 {
         return;
     }
     context.set_font(FONT);
     let Ok(metrics) = context.measure_text(&text) else {
         return;
     };
-    let text_width = metrics.width();
-    //keep a little air on both sides, and never draw over the next transition
-    if text_width + 6.0 > segment {
+    // keep a little air on both sides, and never draw over the next transition
+    let max_width = segment - 6.0;
+    let full_width = metrics.width();
+    let ellipsis_width = context
+        .measure_text(ELLIPSIS)
+        .map(|metrics| metrics.width())
+        .unwrap_or(0.0);
+    let fit = if full_width <= max_width {
+        LabelFit::Full
+    } else if !ellipsis_width.is_finite() || ellipsis_width <= 0.0 || ellipsis_width > max_width {
+        LabelFit::Hidden
+    } else {
+        // only now pay for the per-character measurements
+        let widths = measured_char_widths(context, &text, max_width, ellipsis_width);
+        fit_label(full_width, &widths, ellipsis_width, max_width)
+    };
+    let drawn = match fit {
+        LabelFit::Hidden => {
+            // even the ellipsis does not fit: the segment keeps its band only
+            stats.labels_hidden += 1;
+            return;
+        }
+        LabelFit::Full => text,
+        LabelFit::Truncated(kept) => {
+            stats.labels_truncated += 1;
+            let mut truncated: String = text.chars().take(kept).collect();
+            truncated.push_str(ELLIPSIS);
+            truncated
+        }
+    };
+    let Ok(drawn_metrics) = context.measure_text(&drawn) else {
         return;
-    }
+    };
+    stats.labels += 1;
+    record_label(&drawn);
     context.set_fill_style_str(palette::TEXT);
     let y = (upper + lower) / 2.0;
     context.set_text_baseline("middle");
     //centred in the band, like every waveform viewer draws a bus value
-    let _ = context.fill_text(&text, from + (segment - text_width) / 2.0, y);
+    let _ = context.fill_text(&drawn, from + (segment - drawn_metrics.width()) / 2.0, y);
+}
+
+/// How many band labels the QA seam keeps from one frame.
+///
+/// A dense bus dump can draw thousands of labels; the seam is for assertions,
+/// not for a full export, so it keeps the first few hundred.
+const DEBUG_LABEL_CAP: usize = 256;
+
+thread_local! {
+    /// The band labels the last [`paint`] drew, in drawing order, for the QA
+    /// seam (`window.__waveDebug.labels`). Cleared and refilled every frame.
+    static LAST_LABELS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Remember one drawn label for the QA seam.
+fn record_label(text: &str) {
+    LAST_LABELS.with(|labels| {
+        let mut labels = labels.borrow_mut();
+        if labels.len() < DEBUG_LABEL_CAP {
+            labels.push(text.to_string());
+        }
+    });
 }
 
 fn draw_band(context: &CanvasRenderingContext2d, from: f64, to: f64, width: f64, height: f64) {
@@ -831,6 +991,27 @@ pub fn publish_debug(info: &DebugInfo) {
         let _ = js_sys::Reflect::set(&memory, &JsValue::from_str("native"), &native_object);
     }
     set("memory", memory.into());
+    // Wave 18: the band value labels the last paint actually drew, in drawing
+    // order, plus how many were ellipsized or dropped. Additive keys: the QA
+    // harness can assert the displayed digits without reading pixels, and the
+    // existing fields above are untouched. `labels` is capped at
+    // `DEBUG_LABEL_CAP` entries; `labels_drawn` is the true count.
+    let labels = js_sys::Array::new();
+    LAST_LABELS.with(|stored| {
+        for text in stored.borrow().iter() {
+            labels.push(&JsValue::from_str(text));
+        }
+    });
+    set("labels", labels.into());
+    set("labels_drawn", JsValue::from_f64(info.stats.labels as f64));
+    set(
+        "labels_truncated",
+        JsValue::from_f64(info.stats.labels_truncated as f64),
+    );
+    set(
+        "labels_hidden",
+        JsValue::from_f64(info.stats.labels_hidden as f64),
+    );
     // R2: the shell's re-render counter, written by `App::rendered` into
     // `__waveRenderCount`. Carried over here because this function replaces the
     // whole debug object on every redraw; it is *not* a per-component counter.
@@ -847,4 +1028,109 @@ pub fn publish_debug(info: &DebugInfo) {
     }
     set("at", JsValue::from_f64(js_sys::Date::now()));
     let _ = js_sys::Reflect::set(&window, &JsValue::from_str("__waveDebug"), &object);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fit_label, LabelFit};
+
+    /// A monospace measurement: every character is `width` css px wide.
+    fn char_widths(chars: usize, width: f64) -> Vec<f64> {
+        vec![width; chars]
+    }
+
+    #[test]
+    fn a_label_that_fits_is_drawn_in_full() {
+        assert_eq!(fit_label(42.0, &[], 6.3, 60.0), LabelFit::Full);
+        // exactly at the limit still fits: no ellipsis is added for no reason
+        assert_eq!(fit_label(60.0, &[], 6.3, 60.0), LabelFit::Full);
+        // a fractional measurement just inside the limit fits too
+        assert_eq!(fit_label(59.9, &[], 6.3, 60.0), LabelFit::Full);
+    }
+
+    #[test]
+    fn a_label_that_does_not_fit_keeps_the_longest_prefix_plus_the_ellipsis() {
+        // 6.3 px per character + a 6.3 px ellipsis; 30 px is room for 3 chars
+        assert_eq!(
+            fit_label(63.0, &char_widths(10, 6.3), 6.3, 30.0),
+            LabelFit::Truncated(3)
+        );
+        // 31.6 px is enough for a 4th character (31.5 is the exact prefix)
+        assert_eq!(
+            fit_label(63.0, &char_widths(10, 6.3), 6.3, 31.6),
+            LabelFit::Truncated(4)
+        );
+        // the ellipsis alone fits: a single "…" still beats an empty band
+        assert_eq!(
+            fit_label(63.0, &char_widths(10, 6.3), 6.3, 6.4),
+            LabelFit::Truncated(0)
+        );
+        // a proportional fallback font is measured per character, not assumed
+        let proportional = [3.0, 12.0, 3.0, 3.0, 3.0];
+        assert_eq!(
+            fit_label(30.0, &proportional, 6.0, 24.0),
+            LabelFit::Truncated(3)
+        );
+        assert_eq!(
+            fit_label(30.0, &proportional, 6.0, 27.0),
+            LabelFit::Truncated(4)
+        );
+    }
+
+    #[test]
+    fn a_label_is_hidden_only_when_even_the_ellipsis_does_not_fit() {
+        assert_eq!(
+            fit_label(63.0, &char_widths(10, 6.3), 6.3, 6.2),
+            LabelFit::Hidden
+        );
+        assert_eq!(
+            fit_label(63.0, &char_widths(10, 6.3), 6.3, 0.0),
+            LabelFit::Hidden
+        );
+        assert_eq!(
+            fit_label(63.0, &char_widths(10, 6.3), 6.3, -4.0),
+            LabelFit::Hidden
+        );
+        // a broken measurement never draws a garbage label
+        assert_eq!(
+            fit_label(f64::NAN, &char_widths(3, 6.3), 6.3, 30.0),
+            LabelFit::Hidden
+        );
+        assert_eq!(
+            fit_label(63.0, &char_widths(10, 6.3), f64::NAN, 30.0),
+            LabelFit::Hidden
+        );
+        // ... and a broken character width ends the prefix there
+        let broken = [6.3, f64::NAN, 6.3];
+        assert_eq!(fit_label(63.0, &broken, 6.3, 30.0), LabelFit::Truncated(1));
+    }
+
+    #[test]
+    fn the_canvas_label_drops_the_radix_prefix() {
+        use super::value_text;
+        use wave_insight_lib::waveform::{BitValue, Bits, ShowType, WaveValue};
+        let mut setting = crate::state::Settings::new();
+        setting.show_type = ShowType::Hex;
+        let value = WaveValue::Bits(Bits::new_msb_first(
+            (0..8)
+                .rev()
+                .map(|bit| {
+                    if 0x2au64 & (1 << bit) != 0 {
+                        BitValue::One
+                    } else {
+                        BitValue::Zero
+                    }
+                })
+                .collect(),
+        ));
+        // the wave view (band labels + cursor value column) shows bare digits
+        assert_eq!(value_text(&value, 8, &setting).as_deref(), Some("2a"));
+        // the data form keeps the prefix: inlay hints / export / find are not
+        // affected by the wave view's presentation
+        assert_eq!(
+            crate::nav::value_text(&value, 8, &crate::nav::ValueFormat::base(ShowType::Hex))
+                .as_deref(),
+            Some("'h2a")
+        );
+    }
 }

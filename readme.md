@@ -134,8 +134,8 @@ a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
-and asserts the user-visible behaviour (the current matrix has **58 scenarios /
-524 assertions**; `--list` prints them). The full matrix is green with the R2
+and asserts the user-visible behaviour (the current matrix has **61 scenarios /
+575 assertions**; `--list` prints them). The full matrix is green with the R2
 layout rules required. The newest scenarios cover the generated/arrayed design
 tree in the sidebar, elaboration diagnostics reaching the editor and the top-bar
 chip, the TXT export matching the CSV for the same row, multi-dump tabs and the
@@ -178,12 +178,12 @@ cd front-end
 CARGO_PROFILE_RELEASE_OPT_LEVEL=s trunk serve --release
 ```
 
-The release wasm with the CI profile is **10,003,350 bytes = 9.54 MiB**
+The release wasm with the CI profile is **10,271,400 bytes = 9.80 MiB**
 (about 2 MB over the wire, because GitHub Pages serves the assets
 gzip-compressed). CI pins trunk 0.22.1 and fails the build if the release wasm
 grows past **10 MiB** (`WASM_SIZE_BUDGET` in the Rust workflow), so a size
-blow-up shows up before it ships; the current build leaves roughly half a
-MiB of headroom, so a big new dependency needs a budget review. Keep the
+blow-up shows up before it ships; the current build leaves roughly 200 KiB of
+headroom, so a big new dependency needs a budget review. Keep the
 `CARGO_PROFILE_RELEASE_OPT_LEVEL=s`
 part of the command: a plain `trunk build --release` uses the default
 `opt-level = 3` and produces a ~12.36 MiB bundle that *looks* like a budget
@@ -298,16 +298,24 @@ Each plan keeps the breaker list, the steps and the verification that was run.
 
 Load a `.vcd`, `.fst` or `.ghw` dump and any `.v`/`.sv` sources it came from.
 Click a signal in the sidebar (or an identifier in the source) to add it to the
-wave view; scroll to move through the signals, `ctrl`+wheel to zoom, drag to
-zoom into a range, left/right click to place the two cursors, `z`/`f` to zoom
-out and fit, `n`/`shift+n` to jump between value transitions. `Delete` removes
-the selected rows. The wave frame has a `Drivers / loads` tab that shows the
+wave view; the wheel pans the trace forward and back (Verdi's gesture: wheel down
+goes forward in time; over the label column a plain wheel still scrolls the
+signal rows, and `shift`+wheel scrolls them from anywhere over the wave),
+`ctrl`+wheel zooms at the pointer, drag to zoom into a range, left/right click to
+place the two cursors, `z`/`f` to zoom out and fit, `n`/`shift+n` to jump
+between value transitions. `Delete` removes the selected rows. The wave frame has a `Drivers / loads` tab that shows the
 declaration, drivers and loads of the selected signal and jumps to them; a
 sliced driver/load shows the slice it touches (e.g. `q[3:0]`) next to the size. A row's
 `...` menu opens its settings: number format (including a fixed-point exponent),
 an analog trace, colour, load/drive actions and an **Export** section. To the
-right of each signal name the value at the cursor is shown after a cursor is
-placed.
+right of each signal name the value at the cursor is shown once a cursor is
+placed: a compact column that ends the label area flush against the waveform,
+sized once per render from the values on screen (there is no fixed slot and no
+reserved blank before a cursor exists). The wave view prints bare digits
+(`37`, `42`, `-3`, `052`, `00101010`; 1-bit values stay `0`/`1`/`x`/`z`),
+while the editor inlay hints, the export files and the find box keep the
+Verilog-style radix form (`'h25`). A bus value too long for its band is
+shortened with `…` instead of disappearing.
 
 - **Export**: the settings dialog's `CSV (row)`, `TXT (row)`, `CSV (all rows)`
   and `MAT (row)` buttons write a row as `time,value` CSV, `<time> <value>` TXT or
@@ -328,7 +336,12 @@ placed.
   neighbour. Closing the last tab removes the strip and brings the empty start
   state back; reopening a dump after that restores its remembered rows.
   Reopening a file that is already open focuses its existing tab instead of
-  adding a second copy. The open dumps are budgeted: their file bytes may not
+  adding a second copy; if the file was re-simulated in the meantime and kept
+  its name and byte size, re-opening it **reloads that tab in place** - the
+  waveform, ruler and cursor values become the new file's, the tab keeps its
+  rows, per-row settings, viewport and cursors, rows the new dump no longer has
+  are reported, and the status line says `waveform reloaded — …`. (A changed
+  file size is a different dump identity and still opens a second tab.) The open dumps are budgeted: their file bytes may not
   exceed 1.5 GiB, and past that the open is
   refused with an actionable message ("close a dump tab first") rather than
   letting the tab run out of wasm memory. The status line appends
@@ -339,8 +352,9 @@ placed.
   split** closes the second pane. The left pane stays interactive; the right pane
   is a comparison surface for its dump (its name plus a `read only` label, the
   same canvas machinery, decoding only visible rows). In **unlinked** mode the
-  right pane scrolls its rows with the wheel (virtualized and clamped), zooms with
-  Ctrl+wheel anchored at the pointer and pans with a left-drag; those gestures
+  right pane uses the same gestures as the left one - a plain wheel pans its own
+  time axis, Shift+wheel scrolls its rows (virtualized and clamped) and
+  Ctrl+wheel zooms anchored at the pointer - plus a left-drag pan; those gestures
   commit to that dump only and never re-render the shell. **Linked** mode follows
   the left pane's window by fraction of trace (clamped) and draws the cursors at
   the mapped times; switching back to unlinked freezes the window the pane is
@@ -619,7 +633,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, 58 scenarios / 524 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
+- [x] browser QA suite moved into the repository (`qa/`, now 61 scenarios / 575 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)
@@ -663,6 +677,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] desktop raw IPC: `choose_vcd`/`choose_vcd_absolute` return `tauri::ipc::Response` (one ArrayBuffer + one wasm copy) instead of `Vec<u8>` serialised as a JSON number array
 - [x] bulk-add discoverability: always-visible per-row add button, right-click/Shift+F10 row menu, Select all in the Modules head, sticky bulk bar (count/Add selected/Clear/Ctrl-Shift hint) that does not move the rows, and a visible over-cap state
 - [x] CI green again: the clippy job creates a `front-end/dist` placeholder on a clean checkout, the QA job builds a root-relative `dist-qa` bundle and uses Node 22, and the release test run exposed the corrupt-FST allocation path above
+- [x] Wave 18 hands-on feedback: the wheel pans the time axis (Verdi style; `ctrl`+wheel zooms, `shift`+wheel scrolls rows, split pane follows), cursor value columns end the label cell flush against the waveform (sized per render from the visible rows, no reserved slot before a cursor exists), the wave view prints bare digits and ellipsizes too-wide band labels with `…`, a cursor on a 1-bit edge sits centred on it (crisp-column painting), and re-opening a re-simulated dump with the same name and byte size reloads its tab in place (content fingerprint; rows/settings/viewport kept, changed rows reported) - each with a browser QA regression scenario and rewritten wheel assertions
 
 Still open:
 

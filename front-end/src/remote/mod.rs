@@ -792,6 +792,65 @@ pub fn find_query(query: &str) -> String {
     }
 }
 
+/// The wave view's display form of a backend-rendered value: the Verilog radix
+/// prefix of the *data* form is stripped.
+///
+/// The wave view shows bare digits in both the band labels and the cursor value
+/// column, exactly like the wasm path does through
+/// [`crate::nav::value_text_bare`]. The desktop backend renders the readout with
+/// the library formatter, which is already bare today; this normalisation keeps
+/// the native value column identical to the wasm one if the backend ever renders
+/// the prefixed data form (`'h2a`, `'sd-3`). Find status strings are not touched:
+/// they quote the user's query and the backend's own hit text.
+///
+/// Only a well-formed numeric prefix is stripped: `'h`/`'b`/`'o` followed by
+/// their digits (plus `x`/`z`), `'d`/`'sd` followed by a sign/digits. Text that
+/// merely starts with a quote (an ASCII string value) is left alone.
+#[cfg_attr(not(feature = "tauri"), allow(dead_code))]
+pub fn display_value_text(text: &str, show: &str) -> String {
+    if show.eq_ignore_ascii_case("ascii") {
+        return text.to_string();
+    }
+    let Some(rest) = text.strip_prefix('\'') else {
+        return text.to_string();
+    };
+    let lowered = rest.to_ascii_lowercase();
+    let (digits, valid): (&str, fn(u8) -> bool) = if lowered.starts_with("sd") {
+        (&rest[2..], is_signed_digits)
+    } else if lowered.starts_with('d') {
+        (&rest[1..], is_signed_digits)
+    } else if lowered.starts_with('h') {
+        (&rest[1..], is_hex_digits)
+    } else if lowered.starts_with('o') {
+        (&rest[1..], is_oct_digits)
+    } else if lowered.starts_with('b') {
+        (&rest[1..], is_bin_digits)
+    } else {
+        return text.to_string();
+    };
+    if !digits.is_empty() && digits.bytes().all(valid) {
+        digits.to_string()
+    } else {
+        text.to_string()
+    }
+}
+
+fn is_signed_digits(byte: u8) -> bool {
+    byte.is_ascii_digit() || byte == b'-'
+}
+
+fn is_hex_digits(byte: u8) -> bool {
+    byte.is_ascii_hexdigit() || matches!(byte, b'x' | b'z' | b'X' | b'Z')
+}
+
+fn is_oct_digits(byte: u8) -> bool {
+    matches!(byte, b'0'..=b'7' | b'x' | b'z' | b'X' | b'Z')
+}
+
+fn is_bin_digits(byte: u8) -> bool {
+    matches!(byte, b'0' | b'1' | b'x' | b'z' | b'X' | b'Z')
+}
+
 /// One find result the native backend reports (dump_find).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct FindHitDto {
@@ -952,7 +1011,8 @@ mod ipc {
         call("dump_window", &args).await
     }
 
-    /// The rendered value of one signal at one time.
+    /// The rendered value of one signal at one time, in the wave view's display
+    /// form (bare digits: the cursor value column must not show `'h2a`).
     pub async fn value_at(
         id: u64,
         signal: usize,
@@ -966,7 +1026,8 @@ mod ipc {
             "show": show,
         }))
         .map_err(|error| error.to_string())?;
-        call("dump_value_at", &args).await
+        let text: Option<String> = call("dump_value_at", &args).await?;
+        Ok(text.map(|text| display_value_text(&text, show)))
     }
 
     /// Find a value in one signal, rendered with `show`: the next (or previous,
@@ -1535,6 +1596,31 @@ mod tests {
         assert_eq!(find_query("'dnot-a-number"), "'dnot-a-number");
         assert_eq!(find_query("'"), "'");
         assert_eq!(find_query("'h"), "'h");
+    }
+
+    #[test]
+    fn the_native_cursor_readout_is_normalised_to_the_wave_view_form() {
+        // the data form keeps the prefix; the value column shows bare digits
+        assert_eq!(display_value_text("'h2a", "hex"), "2a");
+        assert_eq!(display_value_text("'d42", "dec"), "42");
+        assert_eq!(display_value_text("'sd-3", "signed"), "-3");
+        assert_eq!(display_value_text("'o52", "oct"), "52");
+        assert_eq!(display_value_text("'b1010", "bin"), "1010");
+        // the backend already renders bare values today: unchanged
+        assert_eq!(display_value_text("2a", "hex"), "2a");
+        assert_eq!(display_value_text("0", "bin"), "0");
+        assert_eq!(display_value_text("-1", "signed"), "-1");
+        assert_eq!(display_value_text("hello", "ascii"), "hello");
+        // an ASCII value that starts with a quote is text, never a radix form
+        assert_eq!(display_value_text("'hello", "ascii"), "'hello");
+        // x/z values keep their unknown bits
+        assert_eq!(display_value_text("'hxx", "hex"), "xx");
+        assert_eq!(display_value_text("'b1z0", "bin"), "1z0");
+        // a malformed prefix is left alone (it is data, not a code form)
+        assert_eq!(display_value_text("'hgg", "hex"), "'hgg");
+        assert_eq!(display_value_text("'d", "dec"), "'d");
+        assert_eq!(display_value_text("'", "hex"), "'");
+        assert_eq!(display_value_text("'hello", "hex"), "'hello");
     }
 
     #[test]

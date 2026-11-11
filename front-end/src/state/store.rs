@@ -342,6 +342,7 @@ mod tests {
             store.dispatch(Action::DumpAdded {
                 id: DumpId::new("wave.vcd", Some(size)),
                 handle: DumpHandle::new(waveform),
+                fingerprint: None,
             });
         }
 

@@ -1457,6 +1457,7 @@ impl App {
                 // the remembered row list is keyed by (the report is emitted
                 // before the handle, so it is already here). A dump that arrived
                 // as raw bytes has no name and is never remembered.
+                let fingerprint = self.pending_load.as_ref().map(|report| report.fingerprint);
                 let id = DumpId::new(
                     self.pending_load
                         .as_ref()
@@ -1464,9 +1465,23 @@ impl App {
                         .unwrap_or_default(),
                     self.pending_load.as_ref().map(|report| report.bytes),
                 );
+                // a re-opened dump whose identity (name + size) is already open
+                // reloads in place when its bytes changed (a re-simulated file):
+                // the status line has to say "reloaded" instead of "loaded".
+                // Same rule as the reducer: only a known pair of fingerprints that
+                // differs is a reload.
+                let reload = self.store.select(|state| {
+                    state.dumps.index_of(&id).is_some_and(|index| {
+                        match (state.dumps.items[index].fingerprint, fingerprint) {
+                            (Some(open), Some(incoming)) => open != incoming,
+                            _ => false,
+                        }
+                    })
+                });
                 self.apply(Action::DumpAdded {
                     id: id.clone(),
                     handle: waveform.clone(),
+                    fingerprint,
                 });
                 // the memory budget may have refused the tab: keep its actionable
                 // error instead of overwriting it with a load line
@@ -1495,20 +1510,45 @@ impl App {
                 // memory): the QA matrix still asserts the "waveform loaded"
                 // prefix, so the numbers are appended to it
                 let report = self.pending_load.take();
-                let status = match (range_note, report) {
-                    (Some(note), Some(report)) => format!("{note} — {}", report.suffix()),
-                    (Some(note), None) => note,
-                    (None, Some(report)) => report.status(),
-                    (None, None) => "waveform loaded".to_string(),
+                let status = if reload {
+                    // the tab and its rows stayed, the waveform is the new file's
+                    match (&range_note, &report) {
+                        (Some(note), Some(report)) => {
+                            format!("waveform reloaded — {note} — {}", report.suffix())
+                        }
+                        (Some(note), None) => format!("waveform reloaded — {note}"),
+                        (None, Some(report)) => {
+                            format!("waveform reloaded — {}", report.suffix())
+                        }
+                        (None, None) => "waveform reloaded".to_string(),
+                    }
+                } else {
+                    match (range_note, report) {
+                        (Some(note), Some(report)) => format!("{note} — {}", report.suffix()),
+                        (Some(note), None) => note,
+                        (None, Some(report)) => report.status(),
+                        (None, None) => "waveform loaded".to_string(),
+                    }
                 };
                 // a remembered session may contain rows this dump does not have
                 // (a signal was renamed, or the file is not quite the same one);
-                // say so once, next to the load line, instead of failing the open
+                // say so once, next to the load line, instead of failing the open.
+                // A reload re-resolves the rows it already had, so the wording
+                // there is about the new file, not about a remembered session.
                 let status = match self.store.select(state::select::session_restore) {
-                    Some(restore) if restore.skipped > 0 => format!(
-                        "{status} — {} remembered row(s) are not in this dump",
-                        restore.skipped
-                    ),
+                    Some(restore) if restore.skipped > 0 => {
+                        if reload {
+                            format!(
+                                "{status} — {} row(s) are not in the reloaded file",
+                                restore.skipped
+                            )
+                        } else {
+                            format!(
+                                "{status} — {} remembered row(s) are not in this dump",
+                                restore.skipped
+                            )
+                        }
+                    }
                     _ => status,
                 };
                 // with more than one tab, the status line also reports how many

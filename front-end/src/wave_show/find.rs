@@ -4,16 +4,18 @@
 //! to that time (the old behaviour), anything else is a *value* and the box
 //! becomes a Verdi-style "find value": it walks the selected row's decoded
 //! history and moves cursor 1 to the next (or, with Shift+Enter, previous) change
-//! whose formatted value matches. Formatting goes through the same ValueFormat
-//! the value column and the canvas use, so what the user sees is what the search
-//! compares against (fixed point and x/z included).
+//! whose formatted value matches. The comparison uses the wave view's display
+//! form - bare digits, exactly what the value column and the band labels show -
+//! so what the user sees is what the search compares against (fixed point and
+//! x/z included); a query may still carry the Verilog radix prefix
+//! (`'h2a`, `'sd-3`), which is stripped before comparing.
 //!
 //! The matcher is pure and unit tested here; find_value is the thin glue that
 //! reads the store, decodes the row and dispatches the cursor move.
 
 use wave_insight_lib::waveform::{Change, DecodedSignal};
 
-use crate::nav::{value_text, ValueFormat};
+use crate::nav::{value_text_bare, ValueFormat};
 use crate::state::{select, Action, Status, Store};
 use crate::wave_show::util::signal_things::derive_bit;
 
@@ -37,13 +39,40 @@ pub struct Found {
     pub total: usize,
 }
 
+/// The query without an optional Verilog radix prefix.
+///
+/// The wave view prints bare digits, so the search compares against bare text;
+/// this keeps the old prefixed form working by stripping a leading
+/// `'h`/`'d`/`'sd`/`'o`/`'b` (case-insensitive) before the comparison. A
+/// quote that is not followed by a known radix letter is part of the value
+/// text (an ASCII string) and stays untouched.
+fn strip_query_prefix(query: &str) -> &str {
+    let Some(rest) = query.strip_prefix('\'') else {
+        return query;
+    };
+    let bytes = rest.as_bytes();
+    match bytes.first().map(u8::to_ascii_lowercase) {
+        // 'sd: the signed decimal marker is two letters
+        Some(b's')
+            if bytes
+                .get(1)
+                .is_some_and(|byte| byte.eq_ignore_ascii_case(&b'd')) =>
+        {
+            &rest[2..]
+        }
+        Some(b'h' | b'd' | b'o' | b'b') => &rest[1..],
+        _ => query,
+    }
+}
+
 /// The first match strictly after (or before) from, plus its ordinal.
 ///
 /// from is the current cursor time; a match exactly at from is skipped, so
 /// pressing Enter twice walks to the next occurrence instead of standing still.
-/// The comparison is case-insensitive (the display uses a lower-case radix
-/// prefix, but a user typing 'H2A means the same thing) and compares the
-/// formatted text, exactly as the value column shows it.
+/// The comparison is case-insensitive and compares the *displayed* text - the
+/// bare digits the value column shows (`2a`) - so a user typing what they see
+/// matches. A Verilog radix prefix in the query (`'h2a`, `'H2A`, `'sd-3`) is
+/// stripped first, which keeps the old prefixed queries working.
 pub fn find_match(
     changes: &[Change],
     format: &ValueFormat,
@@ -52,13 +81,14 @@ pub fn find_match(
     from: i64,
     direction: Direction,
 ) -> Option<Found> {
-    let needle = query.trim().to_lowercase();
+    let lowered = query.trim().to_lowercase();
+    let needle = strip_query_prefix(&lowered);
     if needle.is_empty() {
         return None;
     }
     let mut matches: Vec<(i64, usize)> = Vec::new();
     for (time, value) in changes {
-        if let Some(text) = value_text(value, width, format) {
+        if let Some(text) = value_text_bare(value, width, format) {
             if text.to_lowercase() == needle {
                 matches.push((*time as i64, matches.len()));
             }
@@ -275,6 +305,31 @@ mod tests {
             find_match(&changes, &format(), 8, "  'H2A \t", 0, Direction::Next).expect("match");
         assert_eq!(found.time, 20);
         assert!(find_match(&changes, &format(), 8, "   ", 0, Direction::Next).is_none());
+    }
+
+    #[test]
+    fn the_search_matches_the_bare_digits_the_wave_view_shows() {
+        let changes = hex_changes();
+        // what the value column displays: "01" / "2a" (the wave view dropped the
+        // Verilog prefix in Wave 18), so a user typing what they see must match
+        let found = find_match(&changes, &format(), 8, "01", 0, Direction::Next).expect("match");
+        assert_eq!(found.time, 10);
+        let found = find_match(&changes, &format(), 8, "2a", 10, Direction::Next).expect("match");
+        assert_eq!(found.time, 20);
+        let found = find_match(&changes, &format(), 8, " 2A ", 20, Direction::Next).expect("match");
+        assert_eq!(found.time, 40);
+        // ... and the prefixed query from before still matches the same change
+        let prefixed = find_match(&changes, &format(), 8, "'h2a", 10, Direction::Next);
+        let bare = find_match(&changes, &format(), 8, "2a", 10, Direction::Next);
+        assert_eq!(prefixed, bare);
+        // a signed-prefixed query strips two radix letters, not one
+        let signed = ValueFormat::base(ShowType::SInt);
+        let negative = vec![(0u64, bits(0xff, 8))];
+        let prefixed = find_match(&negative, &signed, 8, "'sd-1", -1, Direction::Next);
+        let bare = find_match(&negative, &signed, 8, "-1", -1, Direction::Next);
+        assert_eq!(prefixed.map(|found| found.time), Some(0));
+        assert_eq!(bare.map(|found| found.time), Some(0));
+        assert_eq!(prefixed, bare);
     }
 
     #[test]

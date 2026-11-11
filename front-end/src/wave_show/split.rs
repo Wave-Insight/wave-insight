@@ -22,6 +22,7 @@ use super::geometry::{visible_rows, View};
 use super::memory;
 use super::time::build_axis;
 use super::util::signal_things::SignalThings;
+use super::wave::{wheel_delta_px, wheel_pan_px};
 use super::windowed::{self, WindowRequest};
 
 #[derive(Debug, Properties, PartialEq)]
@@ -82,7 +83,9 @@ pub enum Msg {
     Waveform(Option<DumpHandle>),
     TimeRange(Option<TimeRange>),
     LeftViewport(Viewport),
-    /// Wheel over the pane: Ctrl+wheel zooms, a plain wheel scrolls the rows.
+    /// Wheel over the pane: a plain wheel pans the time axis (Verdi style),
+    /// Ctrl+wheel zooms at the pointer and Shift+wheel scrolls the rows; the
+    /// interactive pane uses the same mapping.
     Wheel(WheelEvent),
     /// Drag-pan started.
     DragStart(MouseEvent),
@@ -190,6 +193,7 @@ impl Component for SplitPane {
                     return false;
                 }
                 if event.ctrl_key() {
+                    // ctrl+wheel: zoom at the pointer, same as the left pane
                     let factor = if event.delta_y() < 0.0 {
                         1.15
                     } else {
@@ -198,9 +202,24 @@ impl Component for SplitPane {
                     let mut view = self.effective_view(width);
                     view.zoom_at_px(event.offset_x() as f64, factor, width);
                     self.commit_view(view);
-                } else {
+                } else if event.shift_key() {
+                    // shift+wheel: scroll the rows (the plain wheel pans now,
+                    // Verdi style; this pane has no label column, so every
+                    // wheel over the canvas is a time gesture otherwise)
                     let max = self.max_scroll();
-                    self.scroll_top = (self.scroll_top + event.delta_y()).clamp(0.0, max);
+                    let delta =
+                        wheel_delta_px(event.delta_y(), event.delta_x(), event.delta_mode());
+                    self.scroll_top = (self.scroll_top + delta).clamp(0.0, max);
+                } else {
+                    // plain wheel: pan this pane's own time axis, wheel down =
+                    // forward in time; a horizontal trackpad swipe pans too
+                    let dx = wheel_pan_px(event.delta_y(), event.delta_x(), event.delta_mode());
+                    if dx == 0.0 {
+                        return false;
+                    }
+                    let mut view = self.effective_view(width);
+                    view.pan_px(dx);
+                    self.commit_view(view);
                 }
                 return true;
             }
@@ -472,7 +491,14 @@ impl SplitPane {
     }
 
     /// Commit one viewport to this dump's own entry (the unlinked pane's path).
+    ///
+    /// The pane stops at the end of the trace like the interactive one: a pan
+    /// or a zoom-out must not scroll the waveform off the left of the surface.
     fn commit_view(&self, view: View) {
+        let view = match self.time_range {
+            Some(range) => view.clamp_to_end(range.end as i64, self.surface_width()),
+            None => view,
+        };
         self.store.dispatch(Action::ViewCommittedFor {
             dump: self.dump,
             view,

@@ -103,8 +103,11 @@ impl Component for TopBar {
                             title="errors and warnings the design front end reported for the open sources">
                             {label}</span>}
                     } else { html!{} }}
+                    // the wheel gestures follow Verdi: a plain wheel pans the
+                    // time axis, ctrl zooms at the pointer, shift scrolls rows
+                    <kbd>{"wheel"}</kbd>{" pan · "}
                     <kbd>{"ctrl+wheel"}</kbd>{" zoom · "}
-                    <kbd>{"shift+wheel"}</kbd>{" pan · "}
+                    <kbd>{"shift+wheel"}</kbd>{" rows · "}
                     <kbd>{"n"}</kbd>{" / "}<kbd>{"⇧n"}</kbd>{" transition · "}
                     <kbd>{"click a name"}</kbd>{" adds it · "}
                     <kbd>{"↗"}</kbd>{" declaration · "}

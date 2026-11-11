@@ -10,6 +10,73 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.21.0] - 2026-11-11
+
+### Added
+
+- Verdi-style mouse wheel: over the wave canvas a plain wheel pans the time axis
+  forward/backward (a trackpad horizontal `deltaX` pans too, one axis per event,
+  the DOM `deltaMode` is honoured and one notch is clamped to 240 px), Ctrl+wheel
+  still zooms at the pointer and Shift+wheel scrolls the signal rows. The label
+  column keeps scrolling the rows on a plain wheel, and the split view's
+  unlinked right pane uses the same mapping (linked mode still follows the left
+  window). The top-bar hint is now `wheel pan · ctrl+wheel zoom · shift+wheel
+  rows`.
+- The cursor value column(s) are the last element of the label area, flush
+  against the waveform: one width is computed per render from the widest value
+  the visible rows can print (font-exact `ch` units, capped so the signal name
+  keeps at least 60 % of the label column), both cursor columns share it so they
+  line up, and no column is reserved before a cursor is placed. The ↗ declaration
+  and ⋯ settings actions moved before the values, so they cannot leave an
+  invisible strip between the value and the trace any more.
+- In-place reload of a re-simulated dump: re-opening a dump with the same file
+  name and byte size now compares a cheap content fingerprint (FNV-1a over the
+  parsed bytes, threaded from the loader through the reducer) and reloads that
+  tab in place when the bytes changed - the tab, row order/settings, viewport
+  and cursors stay, rows whose signal disappeared (or whose expanded bit no
+  longer fits) are dropped with a status note, and the status line says
+  `waveform reloaded — ...`. An unchanged file still just focuses its tab
+  (`waveform loaded`), a different-size file still opens a second tab, and the
+  persisted `localStorage` format is unchanged.
+- A QA seam for the drawn band labels: `window.__waveDebug` now also publishes
+  `labels` (the last frame's drawn label texts, capped at 256), `labels_drawn`,
+  `labels_truncated` and `labels_hidden`. The browser matrix gained regression
+  scenarios for the reload, the bare-digit/ellipsis rendering and the 1-bit edge
+  alignment, and the wheel assertions were rewritten for the Verdi gestures
+  (see the QA counts below).
+
+### Changed
+
+- The wave view prints bare digits: band labels, the cursor value column and the
+  desktop native cursor readout show `37`, `42`, `-3`, `052`, `00101010`
+  (1-bit `0`/`1`/`x`/`z` stay bare) instead of the Verilog-style
+  `'h37`/`'d42`/`'sd-3`/`'o52`/`'b1010`. The editor inlay hints, CSV/TXT/MAT
+  export and find-value matching keep the prefixed data form, so code and data
+  contexts do not lose the radix.
+- A multi-bit band label that does not fit its segment is truncated to the
+  longest prefix that fits plus a single `…` instead of being dropped; only a
+  segment too narrow for the ellipsis itself stays unlabelled.
+- Value-change edges are painted on the same crisp device column as the cursor
+  lines (shared `geometry::crisp`): a cursor placed exactly on a 1-bit
+  transition now sits centred on the edge instead of the opaque cursor covering
+  half of the 1.6 px stroke and leaving the visible ink one column to the left
+  (multi-bit bands already looked aligned because their diagonals stay visible
+  on both sides). Vertical level geometry was measured and is unchanged.
+
+### Fixed
+
+- "Reload 波形有问题": a re-simulated dump with the same file name and byte size
+  kept showing the old waveform (the reducer deduped on name+size and dropped
+  the freshly parsed handle). Fixed by the fingerprint-driven in-place reload
+  above.
+- 1-bit high/low edges looked slightly offset from a cursor placed on them (the
+  rasterisation mismatch above).
+- Long bus values disappeared instead of being shortened with `…`.
+- The QA matrix is green on the 0.21.0 build; the new scenarios cover the reload
+  (same-name/same-size changed bytes), the bare digits and ellipsis, the cursor
+  centring on a 1-bit edge, and the wheel gesture mapping (61 scenarios /
+  575 assertions, full matrix and layout gate green).
+
 ## [0.20.0] - 2026-11-10
 
 ### Added

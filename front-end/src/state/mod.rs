@@ -34,6 +34,16 @@
 //! `MonacoShow`). The bridge keeps a mirror of the document table so
 //! `window.__waveInsightLsp.stats().documents` still counts the open documents.
 //!
+//! Wave 18 adds the in-place **reload**: `Action::DumpAdded` carries the content
+//! fingerprint of the bytes the loader parsed (see [`crate::file_load::fingerprint`]).
+//! A dump whose identity (file name + byte size) is already open is still
+//! deduped to its tab, but when the fingerprint differs the file was re-written
+//! under the same name and size (a re-simulated dump): the reducer replaces
+//! that tab's handle in place and re-resolves its rows against the new dump,
+//! instead of leaving the old waveform on screen. The fingerprint is not
+//! persisted (the session keys stay name + size), so the storage format is
+//! unchanged.
+//!
 //! Scope decision for this step: the **design slice**, `focus.instance` and the
 //! module-tree/instance selection stay in `App`/`ModuleStruct` until step 3b
 //! (`module_struct/**` belongs to another agent this wave); the reducer never

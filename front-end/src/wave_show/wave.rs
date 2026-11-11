@@ -6,7 +6,7 @@ use wasm_bindgen_futures::spawn_local;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wave_insight_lib::waveform::{Change, DecodedSignal, TimeRange};
+use wave_insight_lib::waveform::{Change, DecodedSignal, ShowType, TimeRange};
 use yew::prelude::*;
 
 use crate::state::DumpHandle;
@@ -52,6 +52,29 @@ const DEFAULT_NAMES_W: f64 = 220.0;
 /// The range the label-column splitter may drag to, in css pixels.
 const NAMES_W_MIN: f64 = 200.0;
 const NAMES_W_MAX: f64 = 640.0;
+
+/// Share of the label column the cursor value column(s) may take together, so
+/// the signal name always keeps the majority of the cell.
+const VALUE_COLUMN_SHARE: f64 = 0.40;
+/// How many characters the widest fixed-point reading can print: a 64-bit
+/// two's-complement value scaled with one decimal (`-9223372036854775808.0`).
+const VALUE_FIXED_POINT_CHARS: usize = 21;
+/// Pixel estimate of one value-font character (the 10.5 px monospace slot).
+/// Only the 40 % cap is derived from it; the drawn width is `ch` based (see
+/// `styles.css`), so the estimate being a little generous is harmless.
+const VALUE_CHAR_PX: f64 = 6.4;
+/// Padding, separator and slack of one `.wave-value` column, in css pixels: the
+/// `11px` in the `.wave-value` flex basis in `styles.css`.
+const VALUE_COLUMN_PAD_PX: f64 = 11.0;
+/// Narrowest value column, in characters: one digit plus a little air.
+const VALUE_COLUMN_MIN_CHARS: usize = 2;
+/// Largest horizontal pan one wheel event may apply, in css pixels: a single
+/// notch must not jump the whole trace.
+const WHEEL_PAN_MAX_PX: f64 = 240.0;
+/// How a wheel delta reported in lines / pages is converted to css pixels
+/// (`WheelEvent::delta_mode` 1 / 2, matching the DOM constants).
+const WHEEL_LINE_PX: f64 = 16.0;
+const WHEEL_PAGE_PX: f64 = 400.0;
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct WaveShowProps {
@@ -506,6 +529,26 @@ impl Component for WaveShow {
         let name_first = draw.start.saturating_sub(NAME_OVERSCAN);
         let name_last = (draw.end + NAME_OVERSCAN).min(rows);
 
+        // The cursor value columns end the label cell (Verdi style: the value
+        // sits right against the waveform). Their width is the widest value the
+        // rows on screen can print, computed once per render: one shared width
+        // keeps the two cursor columns aligned vertically, and sizing it from
+        // the rows' formats rather than from decoded text means it does not
+        // jump while the cursor moves (a drag only repaints the canvas; the view
+        // renders once when the cursor commits). No cursor, no columns, no
+        // reserved space.
+        let value_columns =
+            usize::from(self.cursors.one.is_some()) + usize::from(self.cursors.two.is_some());
+        let value_chars = if value_columns == 0 {
+            0
+        } else {
+            value_column_chars(
+                self.widest_visible_value_chars(&draw),
+                value_columns,
+                self.names_w,
+            )
+        };
+
         let rows_height = format!("{:.1}px", content_height(rows));
         // the settings dialog can expand a bus into its bits
         let dialog_indices = self.dialog_indices();
@@ -521,7 +564,10 @@ impl Component for WaveShow {
                 // width (used by the name cells, the canvas and the ruler) is
                 // adjustable: the splitter writes it during the drag and it is
                 // committed here on mouseup.
-                style={format!("--names-w: {:.0}px", self.names_w)}>
+                style={format!(
+                    "--names-w: {:.0}px;--wave-value-ch: {}",
+                    self.names_w, value_chars
+                )}>
                 {if let Some(row) = &dialog_row {
                     html!{
                     <Ctrl name={row.name.clone()}
@@ -574,9 +620,16 @@ impl Component for WaveShow {
                         {
                             for (name_first..name_last).map(|idx| {
                                 let item = &self.signal_things[idx];
-                                // the cursor values live in the label column now,
-                                // not on the canvas next to the cursor line
-                                let value = self.value_text_at(idx, item, self.cursors.one);
+                                // The cursor values live in the label column now,
+                                // not on the canvas next to the cursor line. A
+                                // value is `Some` only when its cursor exists:
+                                // the cell then adds one shared-width column,
+                                // even while the row's window is still decoding
+                                // (an empty string keeps the columns aligned).
+                                let value = self
+                                    .cursors
+                                    .one
+                                    .map(|_| self.value_text_at(idx, item, self.cursors.one).unwrap_or_default());
                                 let value2 = self
                                     .cursors
                                     .two
@@ -680,30 +733,46 @@ impl WaveShow {
             }
             Msg::Wheel(e) => {
                 let metrics = self.measure();
-                // over the name column the wheel scrolls the rows, like any list
+                // Over the name column the wheel keeps scrolling the rows, like
+                // any list: the browser does it, the event is not stopped.
                 if (e.x() as f64) < metrics.surface_left {
                     return false;
                 }
-                let delta_y = e.delta_y();
-                let mut view = self.view;
-                if self.key(17) {
-                    // ctrl: zoom at the pointer. Verdi zooms where you look;
-                    // a left-edge zoom slides the interesting part away.
+                // The key state is the historical path; the event's own
+                // modifiers also arrive on a wheel event and keep a synthetic
+                // event (or a missed keydown) working.
+                let ctrl = self.key(17) || e.ctrl_key();
+                let shift = self.key(16) || e.shift_key();
+                if ctrl {
+                    // ctrl: zoom at the pointer, unchanged. Verdi zooms where
+                    // you look; a left-edge zoom slides the interesting part
+                    // away.
                     e.prevent_default();
                     let local_x = e.x() as f64 - metrics.surface_left;
-                    let factor = if delta_y < 0.0 { 1.25 } else { 0.8 };
+                    let factor = if e.delta_y() < 0.0 { 1.25 } else { 0.8 };
+                    let mut view = self.view;
                     view.zoom_at_px(local_x, factor, metrics.surface_w);
-                } else if self.key(16) {
-                    // shift: pan the trace, one notch at a time
+                    self.commit_view(view);
+                } else if shift {
+                    // shift: scroll the row list (this used to pan the trace;
+                    // the plain wheel pans now, as in Verdi).
                     e.prevent_default();
-                    view.pan_px(if delta_y > 0.0 { 60.0 } else { -60.0 });
+                    scroll_rows_by(wheel_delta_px(e.delta_y(), e.delta_x(), e.delta_mode()));
                 } else {
-                    // plain wheel: the row list scrolls, like any list
-                    return false;
+                    // plain wheel: pan the time axis, wheel down = forward in
+                    // time, exactly the Verdi gesture. A horizontal trackpad
+                    // swipe pans too, but only one axis is used per event
+                    // (`wheel_delta_px`), so a diagonal gesture is never
+                    // applied twice.
+                    let dx = wheel_pan_px(e.delta_y(), e.delta_x(), e.delta_mode());
+                    if dx == 0.0 {
+                        return false;
+                    }
+                    e.prevent_default();
+                    let mut view = self.view;
+                    view.pan_px(dx);
+                    self.commit_view(view);
                 }
-                // one dispatch per notch; the canvas is repainted from the local
-                // frame, the time bar re-renders from its own subscription
-                self.commit_view(view);
                 false
             }
             Msg::Scroll => {
@@ -1258,6 +1327,32 @@ impl WaveShow {
         }
         let value = item.values.value_at(cursor as Time)?;
         canvas::value_text(value, item.format_width(), &item.setting)
+    }
+
+    /// The widest value text (in characters) the rows now on screen can print.
+    ///
+    /// Derived from the row's bit width and number format, not from decoded
+    /// text: the value column must not re-size while the cursor moves or while
+    /// a scroll decodes the row that happens to hold the longest number. Only
+    /// the visible rows count, so a narrow list does not pay for a wide row
+    /// outside the viewport.
+    fn widest_visible_value_chars(&self, draw: &std::ops::Range<usize>) -> usize {
+        draw.clone()
+            .filter_map(|row| self.signal_things.iter().nth(row))
+            .map(|item| {
+                let fixed_point = item
+                    .setting
+                    .fixed_active
+                    .then_some(item.setting.fixed_point);
+                value_text_chars(
+                    item.format_width(),
+                    item.is_bool,
+                    &item.setting.show_type,
+                    fixed_point,
+                )
+            })
+            .max()
+            .unwrap_or(1)
     }
 
     /// The time a click at `x` (surface pixels) places a cursor at: the raw
@@ -2174,6 +2269,22 @@ fn write_names_width(width: f64) {
     let _ = set_property.apply(&style, &args);
 }
 
+/// Scroll the row list by `delta` css pixels (the browser clamps the range).
+///
+/// Shift+wheel scrolls the rows: the list is the scroller and its `scroll`
+/// event already updates `scroll_top` and re-renders the virtualized name
+/// column, so the gesture itself never has to write component state.
+fn scroll_rows_by(delta: f64) {
+    if !delta.is_finite() || delta == 0.0 {
+        return;
+    }
+    let Some(element) = document().and_then(|document| document.get_element_by_id("wave-body"))
+    else {
+        return;
+    };
+    element.set_scroll_top((element.scroll_top() as f64 + delta).max(0.0) as i32);
+}
+
 /// Current scroll offset of the row list.
 fn scroll_top_from_dom() -> f64 {
     document()
@@ -2215,6 +2326,96 @@ fn typing_in_text_field(event: &web_sys::KeyboardEvent) -> bool {
         current = element.parent_element();
     }
     false
+}
+
+/// Longest value text, in characters, one row can print.
+///
+/// The wave view prints bare digits (no Verilog radix prefix), so the length is
+/// fully determined by the bit width and the row's number format: hex needs
+/// `bits/4` digits, oct `bits/3`, bin one per bit, unsigned decimal
+/// `ceil(bits * log10 2)` and signed decimal one more for the sign; ascii is
+/// bounded by the bit count (a safe upper bound). A fixed-point row prints
+/// `value / 2^f` with one decimal and falls back to the base format when the
+/// value has no number, so the worse of the two is taken.
+///
+/// Pure and host tested: the value column width is computed from this before any
+/// value is decoded, so it cannot jump as a scroll decodes a wider row.
+pub fn value_text_chars(
+    bits: usize,
+    is_bool: bool,
+    show: &ShowType,
+    fixed_point: Option<u32>,
+) -> usize {
+    let bits = bits.max(1);
+    if is_bool || bits <= 1 {
+        return 1;
+    }
+    let base = match show {
+        ShowType::Hex => bits.div_ceil(4),
+        ShowType::Oct => bits.div_ceil(3),
+        ShowType::Bin => bits,
+        ShowType::UInt => decimal_chars(bits, false),
+        ShowType::SInt => decimal_chars(bits, true),
+        ShowType::Ascii => bits,
+    };
+    match fixed_point {
+        Some(_) => base.max(VALUE_FIXED_POINT_CHARS),
+        None => base,
+    }
+}
+
+/// Characters of an unsigned/signed decimal rendering of `bits` bits.
+fn decimal_chars(bits: usize, signed: bool) -> usize {
+    let digits = (bits as f64 * std::f64::consts::LOG10_2).ceil() as usize;
+    digits + usize::from(signed)
+}
+
+/// Width of the cursor value columns, in characters of the value font.
+///
+/// All rows share one width, and all value columns together may take at most
+/// `VALUE_COLUMN_SHARE` of the label column: a 64-bit binary value must not
+/// squeeze the signal name to nothing. A single character's width is only
+/// estimated here (the exact width is `1ch` in CSS); the cap is what matters,
+/// and it is deliberately a little conservative. Non-finite or tiny label
+/// widths degrade to the minimum column instead of a panic.
+pub fn value_column_chars(widest: usize, columns: usize, names_w: f64) -> usize {
+    let columns = columns.max(1) as f64;
+    let budget = (names_w.max(0.0) * VALUE_COLUMN_SHARE / columns) - VALUE_COLUMN_PAD_PX;
+    let cap = (budget / VALUE_CHAR_PX)
+        .floor()
+        .max(VALUE_COLUMN_MIN_CHARS as f64) as usize;
+    widest.clamp(VALUE_COLUMN_MIN_CHARS, cap)
+}
+
+/// The dominant wheel delta, in css pixels, with `delta_mode` resolved
+/// (0 = pixels, 1 = lines, 2 = pages, the DOM constants).
+///
+/// A trackpad reports a sideways swipe on `delta_x` and a vertical one on
+/// `delta_y`; the dominant axis wins so a diagonal gesture is never applied
+/// twice. Positive means down / right, i.e. later in time. Non-finite deltas
+/// (some synthetic events report them) count as zero.
+pub fn wheel_delta_px(delta_y: f64, delta_x: f64, delta_mode: u32) -> f64 {
+    if !delta_y.is_finite() || !delta_x.is_finite() {
+        return 0.0;
+    }
+    let dominant = if delta_x.abs() > delta_y.abs() {
+        delta_x
+    } else {
+        delta_y
+    };
+    let factor = match delta_mode {
+        1 => WHEEL_LINE_PX,
+        2 => WHEEL_PAGE_PX,
+        _ => 1.0,
+    };
+    dominant * factor
+}
+
+/// Horizontal pan of a plain wheel event, in css pixels: wheel down / swipe
+/// right = forward in time. Clamped per event so one notch cannot jump the
+/// whole trace.
+pub fn wheel_pan_px(delta_y: f64, delta_x: f64, delta_mode: u32) -> f64 {
+    wheel_delta_px(delta_y, delta_x, delta_mode).clamp(-WHEEL_PAN_MAX_PX, WHEEL_PAN_MAX_PX)
 }
 
 /// A keyboard gesture the wave pane owns (row selection movement).
@@ -2268,5 +2469,92 @@ mod key_tests {
         // ctrl+arrow is not a selection gesture
         assert_eq!(wave_key_action(38, true, false), None);
         assert_eq!(wave_key_action(40, true, false), None);
+    }
+}
+
+#[cfg(test)]
+mod value_and_wheel_tests {
+    use super::value_column_chars;
+    use super::value_text_chars;
+    use super::wheel_delta_px;
+    use super::wheel_pan_px;
+    use super::ShowType;
+    use super::VALUE_COLUMN_MIN_CHARS;
+    use super::VALUE_FIXED_POINT_CHARS;
+    use super::WHEEL_LINE_PX;
+    use super::WHEEL_PAGE_PX;
+    use super::WHEEL_PAN_MAX_PX;
+
+    #[test]
+    fn value_text_chars_counts_bare_digits() {
+        // a single bit is one character, whatever the base
+        assert_eq!(value_text_chars(1, true, &ShowType::Hex, None), 1);
+        assert_eq!(value_text_chars(1, false, &ShowType::Bin, None), 1);
+        // radix digits: no Verilog prefix in the wave view any more
+        assert_eq!(value_text_chars(8, false, &ShowType::Hex, None), 2);
+        assert_eq!(value_text_chars(32, false, &ShowType::Hex, None), 8);
+        assert_eq!(value_text_chars(32, false, &ShowType::Oct, None), 11);
+        assert_eq!(value_text_chars(32, false, &ShowType::Bin, None), 32);
+        // decimal: 32 bits hold 10 digits, signed adds the sign
+        assert_eq!(value_text_chars(32, false, &ShowType::UInt, None), 10);
+        assert_eq!(value_text_chars(32, false, &ShowType::SInt, None), 11);
+        assert_eq!(value_text_chars(64, false, &ShowType::UInt, None), 20);
+        // an unknown width is still one bit, not zero characters
+        assert_eq!(value_text_chars(0, false, &ShowType::Hex, None), 1);
+        // fixed point prints a scaled decimal reading (or falls back to base)
+        assert_eq!(
+            value_text_chars(32, false, &ShowType::Hex, Some(4)),
+            VALUE_FIXED_POINT_CHARS
+        );
+    }
+
+    #[test]
+    fn value_column_chars_is_capped_so_the_name_keeps_room() {
+        // the widest value wins when it fits...
+        assert_eq!(value_column_chars(8, 1, 220.0), 8);
+        // ...but 40 % of the label column is all the columns may take: a
+        // 64-bit binary value is truncated instead of squeezing the name out
+        assert_eq!(value_column_chars(64, 1, 220.0), 12);
+        // two cursor columns share the same budget
+        assert_eq!(value_column_chars(64, 2, 220.0), 5);
+        // a wide label column lets a 64-bit hex value through
+        assert_eq!(value_column_chars(16, 1, 640.0), 16);
+        // degenerate widths clamp to the minimum instead of panicking
+        assert_eq!(value_column_chars(64, 2, 100.0), VALUE_COLUMN_MIN_CHARS);
+        assert_eq!(value_column_chars(64, 1, f64::NAN), VALUE_COLUMN_MIN_CHARS);
+    }
+
+    #[test]
+    fn wheel_pixel_deltas_pan_by_their_delta() {
+        assert_eq!(wheel_pan_px(120.0, 0.0, 0), 120.0);
+        assert_eq!(wheel_pan_px(-120.0, 0.0, 0), -120.0);
+        // one event is clamped, so one notch cannot jump the whole trace
+        assert_eq!(wheel_pan_px(1000.0, 0.0, 0), WHEEL_PAN_MAX_PX);
+        assert_eq!(wheel_pan_px(-1000.0, 0.0, 0), -WHEEL_PAN_MAX_PX);
+    }
+
+    #[test]
+    fn wheel_delta_mode_is_honoured() {
+        assert_eq!(wheel_delta_px(3.0, 0.0, 1), 3.0 * WHEEL_LINE_PX);
+        assert_eq!(wheel_delta_px(1.0, 0.0, 2), WHEEL_PAGE_PX);
+        // line mode is scaled before the clamp applies
+        assert_eq!(wheel_pan_px(100.0, 0.0, 1), WHEEL_PAN_MAX_PX);
+    }
+
+    #[test]
+    fn wheel_uses_the_dominant_axis_only() {
+        // a sideways trackpad swipe pans the time axis
+        assert_eq!(wheel_pan_px(0.0, -80.0, 0), -80.0);
+        // a diagonal gesture is applied once (the larger axis wins)
+        assert_eq!(wheel_pan_px(40.0, -80.0, 0), -80.0);
+        assert_eq!(wheel_pan_px(-120.0, 30.0, 0), -120.0);
+        // the rows gesture uses the same resolution, unscaled by the pan clamp
+        assert_eq!(wheel_delta_px(0.0, 200.0, 0), 200.0);
+    }
+
+    #[test]
+    fn wheel_ignores_non_finite_deltas() {
+        assert_eq!(wheel_pan_px(f64::NAN, 0.0, 0), 0.0);
+        assert_eq!(wheel_pan_px(0.0, f64::INFINITY, 0), 0.0);
     }
 }

@@ -1081,6 +1081,33 @@ button:active { background: var(--bg-4); }
 .wave-name-cell:hover .wave-more { color: var(--text-2); }
 .wave-more:hover { color: var(--accent); }
 
+/* The cursor value column(s): the last element of a label cell, right aligned
+   against the waveform so nothing but the cell padding separates the number
+   from the canvas (the Wave 18 user report: a blank strip used to sit between
+   the value and the trace). The width is a number of characters read from
+   `--wave-value-ch`, set inline per pane render by wave_show/wave.rs::view from
+   the widest value of the rows currently on screen: `1ch` is the exact advance
+   of a monospace digit, so a row shows its value without clipping and every
+   row lines up on the same column. The 11px accounts for the 6px left padding,
+   the 2px right padding, the 1px separator and 2px of slack (the global
+   `box-sizing: border-box` makes the flex basis the full cell width). A cursor
+   that is not set renders no element, so no slot is reserved for it. */
+.wave-value {
+  flex: 0 0 calc(var(--wave-value-ch, 4) * 1ch + 11px);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  padding: 0 2px 0 6px;
+  border-left: 1px solid var(--line-soft);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.wave-value.cursor-a { color: var(--cursor-a); }
+.wave-value.cursor-b { color: var(--cursor-b); }
+
 .axis-line {
   stroke: #2b3648;
   stroke-width: 1;

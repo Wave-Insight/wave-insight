@@ -83,6 +83,14 @@ pub struct LoadReport {
     pub file_name: String,
     /// Bytes that were read and handed to the parser.
     pub bytes: u64,
+    /// Cheap content fingerprint of the parsed bytes (see [`fingerprint`]).
+    ///
+    /// The dump identity is the file name plus the byte size, and a re-simulated
+    /// dump can have exactly the size of the one that is already open. The app
+    /// compares this fingerprint with the open dump's: equal means the same
+    /// content (focus the tab, as before), different means the file was
+    /// re-written and its tab has to reload the new waveform in place.
+    pub fingerprint: u64,
     /// Milliseconds the synchronous parse took.
     pub parse_ms: f64,
     /// Size of the wasm linear memory after the parse, in MB; None where it
@@ -110,12 +118,16 @@ impl LoadReport {
 /// wrong, then what to do about it).
 pub fn parse_dump(file_name: &str, bytes: Vec<u8>) -> Result<(DumpHandle, LoadReport), String> {
     let size = bytes.len() as u64;
+    // the fingerprint rides along with the bytes the parse already owns, so it
+    // costs one linear pass over a buffer that was just read (see [`fingerprint`])
+    let content = fingerprint(&bytes);
     let started = js_sys::Date::now();
     let opened = Waveform::open_bytes(bytes);
     let parse_ms = js_sys::Date::now() - started;
     let report = LoadReport {
         file_name: file_name.to_string(),
         bytes: size,
+        fingerprint: content,
         parse_ms,
         memory_mb: wasm_memory_mb(),
     };
@@ -141,6 +153,35 @@ pub fn parse_dump(file_name: &str, bytes: Vec<u8>) -> Result<(DumpHandle, LoadRe
             ))
         }
     }
+}
+
+/// A cheap content fingerprint of a dump's bytes.
+///
+/// The dump identity is the file name plus the byte size; that is enough to
+/// dedupe a file that is opened twice, but not to tell the open file from a
+/// re-simulated one that happens to have the same size. The store compares this
+/// hash to decide whether a re-open is the same content (focus the tab) or new
+/// bytes (reload the tab in place, see `Action::DumpAdded`).
+///
+/// FNV-1a over 8-byte words: one linear pass at memory bandwidth, noise next to
+/// the parse it rides along with, and stable across runs (no random state), so
+/// the same file always fingerprints the same. This is a change detector, not a
+/// cryptographic digest: a collision would only mean a re-written dump is not
+/// refreshed, nothing worse.
+pub fn fingerprint(bytes: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    let (words, remainder) = bytes.as_chunks::<8>();
+    for word in words {
+        hash = (hash ^ u64::from_le_bytes(*word)).wrapping_mul(PRIME);
+    }
+    for byte in remainder {
+        hash = (hash ^ u64::from(*byte)).wrapping_mul(PRIME);
+    }
+    // the size is part of the identity already; folding it in costs nothing and
+    // keeps the hash well defined for the empty payload
+    hash ^ (bytes.len() as u64).wrapping_mul(PRIME)
 }
 
 /// Size of the wasm linear memory in MiB, as the browser reports it.
@@ -750,5 +791,34 @@ mod tests {
             error.contains("wasm memory") || error.contains("address space"),
             "unhelpful message: {error}"
         );
+    }
+
+    #[test]
+    fn the_content_fingerprint_separates_same_length_dumps() {
+        // the case the fingerprint exists for: a re-simulated dump with the same
+        // name and the same byte size but different values
+        let a = include_bytes!("../../../qa/fixtures/wave.vcd");
+        let mut b = a.to_vec();
+        let marker = b"b00000001 $";
+        let at = b
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("the fixture has a pc value to change");
+        b[at..at + marker.len()].copy_from_slice(b"b10101010 $");
+        assert_eq!(a.len(), b.len(), "the pair is a same-size pair");
+        assert_ne!(fingerprint(a), fingerprint(&b));
+        // the same bytes always fingerprint the same, whatever buffer holds them
+        // (a re-open is a dedupe, and the loader hands over a Vec)
+        let owned = a.to_vec();
+        assert_eq!(fingerprint(a), fingerprint(&owned));
+        // the empty payload is well defined and distinct from one zero byte
+        assert_eq!(fingerprint(b""), fingerprint(b""));
+        assert_ne!(fingerprint(b""), fingerprint(b"\0"));
+        // a one-byte change anywhere is enough (no sampling window to miss it)
+        for at in [0usize, a.len() / 2, a.len() - 1] {
+            let mut changed = a.to_vec();
+            changed[at] ^= 0x01;
+            assert_ne!(fingerprint(a), fingerprint(&changed), "byte {at}");
+        }
     }
 }

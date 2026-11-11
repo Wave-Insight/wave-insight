@@ -88,35 +88,62 @@ impl ValueFormat {
 /// A 1-bit value keeps its bare `0`/`1`/`x`/`z`, and reals/strings are printed
 /// as they are: a prefix there would say nothing true.
 ///
-/// Used by the editor inlay hints, the value column and the canvas band labels
-/// (the canvas calls this too, so all three displays always agree).
+/// This is the *data* form: the editor inlay hints, the CSV/TXT export and the
+/// find matcher print and compare it. The wave view shows the bare digits
+/// instead, through [`value_text_bare`], so the picture never carries a
+/// code-style prefix but still cannot disagree about radix or fixed point.
 pub fn value_text(value: &WaveValue, width: usize, format: &ValueFormat) -> Option<String> {
+    let (text, radix) = value_text_parts(value, width, format)?;
+    Some(match radix {
+        Some(radix) => format!("{radix}{text}"),
+        None => text,
+    })
+}
+
+/// Text of one waveform value without the Verilog radix prefix.
+///
+/// The wave view's band labels and cursor value column use this: a waveform is
+/// a picture of the data, so the user reads the digits there, not a code-style
+/// radix prefix. Every other formatter behaviour (fixed point, signedness,
+/// x/z, reals, strings, ASCII) is identical to [`value_text`], so the wave view
+/// and the data views never disagree about anything but the prefix.
+pub fn value_text_bare(value: &WaveValue, width: usize, format: &ValueFormat) -> Option<String> {
+    value_text_parts(value, width, format).map(|(text, _)| text)
+}
+
+/// The rendered text plus the Verilog radix it needs, when it is a multi-bit
+/// vector in a numeric presentation.
+fn value_text_parts(
+    value: &WaveValue,
+    width: usize,
+    format: &ValueFormat,
+) -> Option<(String, Option<&'static str>)> {
     if let Some(fraction_bits) = format.fixed_point {
         // an unknown bit has no number to scale; fall through to the base
         // format rather than hiding the value
         if let Some(text) = fixed_point_text(value, &format.show, fraction_bits) {
-            return Some(text);
+            return Some((text, None));
         }
     }
     let show = &format.show;
     let text = match value {
-        WaveValue::Real(number) => return Some(format!("{number}")),
-        WaveValue::String(text) => return Some(text.clone()),
+        WaveValue::Real(number) => return Some((format!("{number}"), None)),
+        WaveValue::String(text) => return Some((text.clone(), None)),
         _ => value.render(width, show)?,
     };
     if width <= 1 {
-        return Some(text);
+        return Some((text, None));
     }
     let radix = match show {
-        ShowType::Hex => "'h",
-        ShowType::UInt => "'d",
-        ShowType::SInt => "'sd",
-        ShowType::Oct => "'o",
-        ShowType::Bin => "'b",
+        ShowType::Hex => Some("'h"),
+        ShowType::UInt => Some("'d"),
+        ShowType::SInt => Some("'sd"),
+        ShowType::Oct => Some("'o"),
+        ShowType::Bin => Some("'b"),
         // ASCII (and any future non numeric presentation) stays bare text
-        ShowType::Ascii => "",
+        ShowType::Ascii => None,
     };
-    Some(format!("{radix}{text}"))
+    Some((text, radix))
 }
 
 /// Widest fixed-point exponent the formatter accepts: a larger one has no
@@ -460,6 +487,66 @@ mod tests {
             fixed_point: Some(4),
         };
         assert_eq!(value_text(&raw, 8, &fixed).as_deref(), Some("1.0"));
+    }
+
+    #[test]
+    fn the_wave_view_drops_the_verilog_radix_prefix() {
+        use super::{value_text, value_text_bare, ShowType, ValueFormat};
+        let raw = vector(0x2a, 8);
+        // the data form keeps the prefix: inlay hints, export and find rely on
+        // comparing/printing it
+        assert_eq!(
+            value_text(&raw, 8, &ValueFormat::base(ShowType::Hex)).as_deref(),
+            Some("'h2a")
+        );
+        // the wave view shows the same digits without the prefix, for every
+        // numeric presentation
+        assert_eq!(
+            value_text_bare(&raw, 8, &ValueFormat::base(ShowType::Hex)).as_deref(),
+            Some("2a")
+        );
+        assert_eq!(
+            value_text_bare(&raw, 8, &ValueFormat::base(ShowType::UInt)).as_deref(),
+            Some("42")
+        );
+        assert_eq!(
+            value_text_bare(&raw, 8, &ValueFormat::base(ShowType::Oct)).as_deref(),
+            Some("052")
+        );
+        assert_eq!(
+            value_text_bare(&raw, 8, &ValueFormat::base(ShowType::Bin)).as_deref(),
+            Some("00101010")
+        );
+        // signed: the prefix goes, the sign stays
+        assert_eq!(
+            value_text_bare(&vector(0xFF, 8), 8, &ValueFormat::base(ShowType::SInt)).as_deref(),
+            Some("-1")
+        );
+        // 1-bit stays 0/1, fixed point keeps its number, ASCII text stays bare
+        let bit = super::WaveValue::Bits(Bits::new_msb_first(vec![BitValue::One]));
+        assert_eq!(
+            value_text_bare(&bit, 1, &ValueFormat::base(ShowType::Bin)).as_deref(),
+            Some("1")
+        );
+        let fixed = ValueFormat {
+            show: ShowType::Hex,
+            fixed_point: Some(4),
+        };
+        assert_eq!(
+            value_text_bare(&vector(0x10, 8), 8, &fixed).as_deref(),
+            Some("1.0")
+        );
+        let text = super::WaveValue::String("hello".into());
+        assert_eq!(
+            value_text_bare(&text, 8, &ValueFormat::base(ShowType::Hex)).as_deref(),
+            Some("hello")
+        );
+        // ... and an unknown vector has a bare x/z form too
+        let unknown = super::WaveValue::Bits(Bits::new_msb_first(vec![BitValue::X, BitValue::Z]));
+        assert_eq!(
+            value_text_bare(&unknown, 2, &ValueFormat::base(ShowType::Bin)).as_deref(),
+            Some("xz")
+        );
     }
 
     #[test]

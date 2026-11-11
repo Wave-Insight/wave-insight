@@ -69,9 +69,10 @@ Scenario list (the runner's `--list` prints it, default is all):
 `tierA`, `layoutRules`, `traceEnd`, `waveTabs`, `navigation`, `busExpand`,
 `busBench`, `busBands`, `snap`, `valueColumn`, `analog`, `analogStep`,
 `mismatch`, `loadDrive`, `inlayHints`, `wave1`, `wave2`, `virtualization`,
-`persistence`, `session`, `findValue`, `a11y`, `elaboration`, `diagnostics`,
-`exportTxt`, `corruption`, `multiDump`, `bitRanges`, `completion`, `inspectorBits`,
-`splitView`, `largeDump`, `bulkAdd`, `denseDump`.
+`persistence`, `session`, `a11y`, `findValue`, `reload`, `rendererLabels`,
+`rendererAlign`, `elaboration`, `diagnostics`, `exportTxt`, `corruption`,
+`multiDump`, `bitRanges`, `completion`, `inspectorBits`, `splitView`, `largeDump`,
+`bulkAdd`, `denseDump`.
 
 `wave1` asserts the Wave 1 features (fixed point readout, search options);
 `wave2` asserts the Wave 2 features (CSV export through a real download,
@@ -159,9 +160,11 @@ toggle (`aria-pressed`) opens a `.split-view` that keeps the interactive left
 0); ArrowLeft/ArrowRight move it by 2 %, Home/End jump to 25/75, and dragging
 it shows a `.split-shield` overlay, previews `--split-ratio` live and commits
 on release. The ratio is persisted in `wave-insight.layout.v1` as
-`split_ratio`. Unlinked, the right pane has its own row scroll (plain wheel),
-zoom (Ctrl+wheel) and pan (drag) and the left gestures do not touch it; linked
-again it follows the left window. A window resize keeps the right canvas
+`split_ratio`. Unlinked, the right pane pans its own time axis on a plain
+wheel, scrolls its rows on Shift+wheel, zooms on Ctrl+wheel and can be
+drag-panned, and the left gestures do not touch it; linked again it follows the
+left window. Because its `data-frame` is one paint behind, the wheel assertions
+flush it with two window resizes before reading (see the Wave 18 section). A window resize keeps the right canvas
 backing store in step with its css box, and closing removes `.split-view`,
 keeps the toolbar and leaves `#wave-surface` as the only wave pane.
 
@@ -171,6 +174,65 @@ dpr=<ratio> rows=<n> first=<i> end=<t> w=<px>"` and
 `title="window <axis> @ <size>"` (plus `aria-label="Split pane: <name>"`), so
 a freeze/re-sync assertion can compare the right pane's window directly
 instead of relying only on the canvas pixels.
+
+### Wave 18 behaviour
+
+The mouse wheel follows Verdi now. Over the wave canvas the mapping is:
+
+| gesture | main (interactive) pane | split right pane (unlinked) |
+|---|---|---|
+| plain wheel / trackpad swipe | pans the time axis forward/back (wheel down = forward in time; `deltaMode` pixels/lines/pages resolved, one event clamped to ±240 css px); the rows do not scroll | pans that pane's own time axis; its rows do not scroll |
+| Ctrl+wheel | zooms at the pointer (unchanged factors) | zooms at that pane's pointer |
+| Shift+wheel | scrolls the row list (`.wave-body` `scrollTop`), no time change | scrolls that pane's rows |
+| wheel over the name column | scrolls the row list (browser native, unchanged) | n/a (the pane has no label column) |
+
+`zoomPan` asserts the mapping through `window.__waveDebug` (`x_axis`, `size`,
+`scroll_top`) and `.wave-body.scrollTop`: a pan moves `x_axis` and repaints while
+`size` and the list stay put, Ctrl+wheel changes `size` and leaves the list
+alone, Shift+wheel moves the list and leaves `x_axis` where it was (the old
+assertions had plain and Shift+wheel swapped). It loads `many_signals.vcd` with
+20 rows in a smaller window so the row scroll is observable, and `traceEnd` now
+exercises the end clamp with the plain-wheel pan (before Wave 18 that gesture
+scrolled the rows, so the clamp block was not actually panning).
+
+`valueColumn` covers the new cursor value column. It is the LAST element of the
+label cell (DOM order: name → ↗ → ⋯ → value cursor 1 → value cursor 2 →
+waveform), so the two hover-only action icons can no longer leave an invisible
+strip in front of the trace. Before a cursor no value element exists and the pane
+publishes `--wave-value-ch: 0` (no reserved 54 px slot); after cursor 1 every
+label cell carries exactly one `.wave-value`, after cursor 2 exactly two, and all
+columns share one width computed once per render from the visible rows' formats.
+The scenario also measures geometry: every value's right edge is 0..14 px left of
+the canvas start (6 px cell padding + separator/slack) and no `.wave-more` icon
+sits to the right of a value.
+
+`formats` asserts the wave view prints bare digits: `pc` at the probed cursor
+is `73` (Dec/Signed), `49` (Hex), `111` (Oct), `01001001` (Bin) and `I`
+(ASCII), and no value carries a leading `'` radix prefix — the prefixed form
+remains the data form used by the editor inlay hints, export and find.
+`rendererLabels` asserts the canvas band labels through the additive
+`window.__waveDebug` seam (`labels`, `labels_drawn`, `labels_truncated`,
+`labels_hidden`): no label carries a prefix, narrow bands are truncated rather
+than dropped (`labels_truncated > 0` at a Bin zoom where the old renderer drew
+nothing) and every label containing `…` has exactly one. `rendererAlign` is the
+1-bit alignment pixel probe: it puts cursor 1 exactly on a clk edge (`goto`
+575), finds the cursor column by its colour and asserts the blue edge ink at
+dx = -1 and dx = +1 around that column is within 20 % of itself, with the case
+proven discriminating (the raw edge sits 0.25 px off the cursor column, which is
+what made the old one-sided ink visible).
+
+`reload` covers the Wave 18 reload fix. A dump's identity is file name + byte
+size, so re-opening a re-simulated file used to focus the existing tab and keep
+showing the OLD waveform. Two same-name/same-size dumps are generated at run
+time from `wave.vcd` under `qa/artifacts/reload-qa/` (A is a verbatim copy, B
+rewrites every `pc` value to `8'b10101010` without changing any line length,
+and the scenario asserts the two byte sizes match): it opens A, adds `pc` and
+`clk`, places a cursor, overwrites the picked path with B, picks it again and
+asserts one tab, the row list kept, a repainted canvas, the cursor value `aa`
+from B and the status `waveform reloaded — …`; picking the same bytes once more
+gives `waveform loaded — …` again with no new tab and no repaint (the
+unchanged-file dedupe contract). The fixture pair is generated, not committed,
+because `qa/artifacts` is gitignored.
 
 `largeDump` covers the memory-first behaviour on big dumps. Its fixtures are
 generated at run time by `fixtures/generators/gen-large.js` into
@@ -289,6 +351,21 @@ Baseline on the Wave 13 build (2026-11-02, 58 scenarios):
 === summary: 524 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
 ```
 
+Baseline on the Wave 18 build (2026-11-11, 0.21.0, 61 scenarios):
+
+```
+=== summary: 575 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
+```
+
+The Wave 18 line comes from `node qa/run.mjs --layout --dist front-end/dist-qa`;
+the plain matrix (`node qa/run.mjs --dist front-end/dist-qa`, no `--layout`)
+printed the same 575 passed / 0 failed with "(R2 layout, run with QA_LAYOUT=1 to
+enforce)" and exited 0, and `node qa/run.mjs --offline --dist front-end/dist-qa`
+passed 9/9 (editor mounted, shipped loader, no external request, no failed load,
+no 404, no exception). Wave 18 adds 51 assertions over the Wave 13/17 baseline
+(526 records): the three new scenarios (27) and the rewritten wheel, value-column,
+split-view, trace-end, format and find assertions (24).
+
 The summary has five counters: **passed**, **failed**, **pending** (an R2 rule
 the build does not implement yet; counts as a pass by default, a requirement
 under `--layout`), **deferred** (an R2 step-4 rule, reported but never red) and
@@ -359,6 +436,12 @@ read `.wave-row polyline|text|line` goes through two seams instead:
 - a pixel hash/ink of `#wave-surface` (`__qa.surfaceHash()`,
   `__qa.surfaceInk(y0, y1)`), which is how "the row was recoloured",
   "the format changed" and "the canvas repainted" are checked now.
+- Wave 18 adds the band-label seam and the layout/alignment probes:
+  `labels`, `labels_drawn`, `labels_truncated`, `labels_hidden` on
+  `window.__waveDebug` (`__qa.bandLabels()`), `__qa.waveValueLayout()` for the
+  label-cell/value-column geometry, `__qa.splitPaneFrame()` for the parsed
+  split-pane `data-frame`, `__qa.dumpSnapshot()` for the reload scenario and
+  `__qa.alignProbe()` for the cursor-column/edge-ink pixel probe.
 
 `R2` (see `docs/state-store.md`) additionally defines `render_count` on
 `window.__waveDebug`; the splitter assertion uses it as soon as it exists.
