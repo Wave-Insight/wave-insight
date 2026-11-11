@@ -17,6 +17,6 @@ authors.workspace = true
 wave-insight-lib = { path = "../wave-insight-lib" }
 
 #stdio transport of the `lsp` binary
-lsp-server = "0.7"
+lsp-server = "0.10"
 
 serde_json = "1.0"
