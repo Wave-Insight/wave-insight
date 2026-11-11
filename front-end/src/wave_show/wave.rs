@@ -1832,6 +1832,10 @@ impl WaveShow {
                 .map(|item| item.setting.show_type.clone())
                 .unwrap_or_default()
         });
+        // one grouped native request: (display format, signal indices, (row,
+        // slot, width) of the rows asking for it). The `allow` keeps clippy's
+        // type-complexity lint quiet for this cfg(tauri)-only tuple shape.
+        #[allow(clippy::type_complexity)]
         let mut jobs: Vec<(&'static str, Vec<usize>, Vec<(usize, usize, usize)>)> = Vec::new();
         for (show, group_rows) in groups {
             let mut signals: Vec<usize> = Vec::new();

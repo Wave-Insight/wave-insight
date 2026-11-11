@@ -96,6 +96,16 @@ pub struct LoadReport {
     /// Size of the wasm linear memory after the parse, in MB; None where it
     /// cannot be read (the host target the unit tests run on).
     pub memory_mb: Option<f64>,
+    /// The absolute path of the file, when the transport knows one.
+    ///
+    /// The browser reader has no path (a `File` handle is all it has) and the
+    /// tauri dialog only carries navigation parts, so both leave this `None`
+    /// during the load; the desktop paths that *do* know the absolute path
+    /// (`Msg::RemoteFallback` for a small file, the native session summary for
+    /// a large one, and the dialog's resolved pick for the wasm fallback) fill
+    /// it in, and the app remembers the path so the next desktop start can open
+    /// the dump again (see `state::persist`'s desktop reopen list).
+    pub path: Option<String>,
 }
 
 impl LoadReport {
@@ -130,6 +140,9 @@ pub fn parse_dump(file_name: &str, bytes: Vec<u8>) -> Result<(DumpHandle, LoadRe
         fingerprint: content,
         parse_ms,
         memory_mb: wasm_memory_mb(),
+        // the parser does not know where the bytes came from; a transport that
+        // does (a desktop absolute path) fills it in before reporting
+        path: None,
     };
     match opened {
         Ok(waveform) => {

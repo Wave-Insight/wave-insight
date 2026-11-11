@@ -129,6 +129,10 @@ pub struct ModuleStructProps {
     /// The selection bar's "Clear" button.
     #[prop_or_default]
     pub onclear: Callback<()>,
+    /// The signal list's explicit "Add selected (N)": the selected signal paths,
+    /// which the app adds as ONE rows-added batch.
+    #[prop_or_default]
+    pub onaddmany: Callback<Vec<String>>,
     /// A row asked for its context menu (right click / keyboard).
     #[prop_or_default]
     pub onrowcontext: Callback<RowContext>,
@@ -324,10 +328,6 @@ impl Component for ModuleStruct {
             };
         };
         let selected = self.selected(ctx);
-        let signal_count = tree
-            .find(&selected)
-            .map(|scope| scope.signals.len())
-            .unwrap_or(0);
         let window = virtual_list::window(
             self.rows.len(),
             self.module_viewport,
@@ -546,17 +546,15 @@ impl Component for ModuleStruct {
                         html!{}
                     }}
                 </section>
-                <section class="panel panel-grow">
-                    <div class="panel-head">
-                        {"Signals"}
-                        <span class="count">{signal_count.to_string()}</span>
-                    </div>
-                    <SignalStruct
-                        tree={tree.clone()}
-                        selected={selected}
-                        signaladd={link.callback(Msg::SignalAdd)}
-                        onrowcontext={ctx.props().onrowcontext.clone()} />
-                </section>
+                // Wave 19: the signal list draws its own panel, head included:
+                // its "Select all" / "Add selected (N)" controls need the list's
+                // own selection state, which lives in SignalStruct per scope.
+                <SignalStruct
+                    tree={tree.clone()}
+                    selected={selected}
+                    signaladd={link.callback(Msg::SignalAdd)}
+                    onaddmany={ctx.props().onaddmany.clone()}
+                    onrowcontext={ctx.props().onrowcontext.clone()} />
             </div>
         }
     }

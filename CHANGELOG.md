@@ -8,7 +8,56 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
-Nothing yet: the next wave lands here.
+### Added
+
+- The SIGNALS list now selects like the module tree: a plain click selects a row
+  (it no longer adds it as a side effect), Ctrl/Cmd+click toggles, Shift+click
+  ranges over the filtered list, and the new Signals header controls
+  `Select all` / `Add selected (N)` plus a sticky footer bar add the whole
+  selection as one `RowsAdded` batch (dedupe, remembered settings, the existing
+  2000-signal cap and `added N signals (M already in the wave)` wording, with
+  `select fewer signals` for the signal-list refusal). Double-click, the
+  per-row `+` (now a real labelled button), Enter on the focused row and the row
+  menu's **Add signal** stay immediate single adds. The selection is pruned by the
+  search filter, cleared by a scope change, never persisted, and
+  `.sig-row.selected`/`aria-selected` mirror the module tree's highlight.
+- Desktop (Tauri) reload reopens the dumps that were open: the absolute paths are
+  remembered in a versioned `localStorage` entry (`wave-insight.desktop.v1`, at
+  most 16, last opened last), and a webview reload (`Ctrl+Shift+R`) replays them
+  through the normal open flow after closing the previous native mappings. Each
+  dump restores its remembered rows/settings (small dumps) or comes back as a
+  native read-only waveform (> 64 MiB; its rows are not replayed), a vanished
+  path is removed from the list and reported in one aggregated line, and closing
+  a tab removes it. Browser builds are unchanged (no file handle).
+- SpinalHDL companion RTL auto-load: opening a desktop dump also looks for the
+  generated RTL following SpinalHDL's `simWorkspace/<design>/rtl` layout (the
+  dump's own directory plus up to two ancestors; `rtl` first, then `generated`
+  and `verilog`; `.v`/`.sv` flat or one level deep, sorted, deduped, at most 128
+  files / 16 MiB; VHDL companions are skipped) and loads the found files as
+  source documents through the normal `SourceOpened` flow, reporting one line
+  `loaded N companion RTL source(s) from <dir>`. The scan is non-fatal (a dump
+  open never fails because of it) and runs for restored dumps as well.
+
+- Verdi-style block add: selecting a block of code in the source editor and
+  pressing `Ctrl+W` (or `Ctrl+Shift+W`, or the editor context-menu entry **Add
+  signals in selection to the wave**) adds every signal the block names in one
+  `RowsAdded` batch - the identifiers are resolved through the same design lookup
+  a click uses, ambiguous names are listed instead of being guessed, unresolved
+  names are counted and the status line says
+  `added N signals (M already in the wave) — from the code selection`. The
+  scanner masks comments and string literals, skips keywords/macros/system
+  tasks/based literals, clamps the selection ends to whole words and caps the
+  work (500 lines / 4000 identifiers, plus the shared 2000-row batch cap).
+  `Ctrl+W` without an editor selection keeps its old meaning (close the active
+  source tab; outside the editor and `Ctrl+F4` unchanged), and the editor menu is
+  the reliable path in a browser because Chrome reserves `Ctrl+W` itself.
+
+### Changed
+
+- Clicking a signal in the sidebar changed meaning: it now selects the row (the
+  explicit add gestures above put signals on the wave), and the top-bar hint says
+  a click on a name **in the source** adds it; the source-click add flow itself
+  is unchanged.
 
 ## [0.21.0] - 2026-11-11
 

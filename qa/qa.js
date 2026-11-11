@@ -108,17 +108,116 @@ window.__qa = {
   clickText(sel, txt){ const e = this.qa(sel).find(x => (x.innerText||'').trim() === txt); if (!e) return 'no-element:'+txt; e.click(); return 'ok'; },
   // R3 labels a sidebar signal name[width-1:0] (e.g. pc[7:0]); the wave rows
   // keep the plain hierarchical path, so match on the base name here.
-  clickSignal(name){
-    const row = this.qa('.sidebar .sig-row .sig-name').find((e) => {
-      const text = (e.innerText || '').trim();
+  signalRow(name){
+    return this.qa('.sidebar .sig-row').find((row) => {
+      const label = row.querySelector('.sig-name');
+      const text = label ? (label.innerText || '').trim() : '';
       return text === name || text.startsWith(name + '[');
-    });
+    }) || null;
+  },
+  // Wave 19a (task-5): a plain sidebar click now SELECTS (the module-tree
+  // pattern) instead of adding. This legacy helper keeps its "add this one
+  // signal to the wave" contract by pressing the row real per-row "+" button
+  // (button.sig-add, a labelled user affordance); a double click is the
+  // fallback for a build that lost the button. Return contract unchanged:
+  // 'ok' or 'no-element:<name>'.
+  clickSignal(name){
+    const row = this.signalRow(name);
     if (!row) return 'no-element:' + name;
-    row.parentElement.click();
+    const add = row.querySelector('.sig-add');
+    if (add) { add.click(); return 'ok'; }
+    row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
     return 'ok';
+  },
+  // Wave 19a: select a sidebar signal row WITHOUT adding it - plain click,
+  // Ctrl/Cmd toggle (2), Shift range (8) - the gesture the list now handles.
+  selectSignal(name, ctrl = false, shift = false){
+    const row = this.signalRow(name);
+    if (!row) return 'no-element:' + name;
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: !!ctrl, metaKey: !!ctrl, shiftKey: !!shift }));
+    return 'ok';
+  },
+  // Wave 19a: double-click a sidebar signal row (the immediate single add).
+  dblclickSignal(name){
+    const row = this.signalRow(name);
+    if (!row) return 'no-element:' + name;
+    row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    return 'ok';
+  },
+  // Wave 19a: the Signals list selection state: row markers, the header
+  // Select all / Add selected (N) controls and the sticky footer bar.
+  signalSelection(){
+    const rows = this.qa('.sidebar .sig-row');
+    const addSelected = this.q('.sig-add-selected');
+    const selectAll = this.q('.sig-select-all');
+    const bar = this.q('.sig-bulk-bar');
+    const barCount = bar ? bar.querySelector('.bulk-count') : null;
+    const barHint = bar ? bar.querySelector('.bulk-hint') : null;
+    const countOf = (text) => { const s = (text || '').trim(); const open = s.indexOf('('); const close = s.indexOf(')', open + 1); return open >= 0 && close > open ? Number(s.slice(open + 1, close)) : null; };
+    return {
+      rows: rows.length,
+      selected: rows.filter((row) => row.getAttribute('aria-selected') === 'true').length,
+      selectedNames: this.qa('.sidebar .sig-row.selected .sig-name').map((e) => (e.innerText || '').trim()),
+      // the logical count: the header text and the footer bar carry it even
+      // while the list is virtualized (the DOM only holds the window)
+      headerCount: addSelected ? countOf((addSelected.innerText || '').trim()) : null,
+      barCount: barCount ? Number(String(barCount.innerText || '').replace(/[^0-9].*$/, '')) : null,
+      addSelected: addSelected ? {
+        text: (addSelected.innerText || '').trim(),
+        label: addSelected.getAttribute('aria-label'),
+        title: addSelected.getAttribute('title'),
+        classes: addSelected.className,
+        disabled: addSelected.disabled,
+        ariaDisabled: addSelected.getAttribute('aria-disabled'),
+      } : null,
+      selectAll: selectAll ? {
+        text: (selectAll.innerText || '').trim(),
+        label: selectAll.getAttribute('aria-label'),
+        title: selectAll.getAttribute('title'),
+        disabled: selectAll.disabled,
+      } : null,
+      bar: bar ? {
+        role: bar.getAttribute('role'),
+        label: bar.getAttribute('aria-label'),
+        count: barCount ? (barCount.innerText || '').trim() : null,
+        add: !!bar.querySelector('.bulk-add'),
+        clear: !!bar.querySelector('.bulk-clear'),
+        hint: barHint ? (barHint.innerText || '').trim() : null,
+      } : null,
+    };
   },
   rect(sel){ const e = this.q(sel); if (!e) return null; const r = e.getBoundingClientRect(); return {x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)}; },
   editor(){ const eds = (window.monaco&&monaco.editor.getEditors)?monaco.editor.getEditors():[]; if(!eds.length) return null; const e=eds[0]; const p=e.getPosition(); const m=e.getModel(); return {line:p&&p.lineNumber, column:p&&p.column, uri:m&&m.uri.toString(), first:m&&m.getLineContent(1).slice(0,40)}; },
+  // Wave 19c: the selected source block - the same reader the page-wide Ctrl+W
+  // block-add handler uses (the Rust side installs this exact helper).
+  editorSelection(){ return window.__waveInsightEditorSelection ? window.__waveInsightEditorSelection() : null; },
+  // Select a monaco range (1-based, end column exclusive) and focus the editor,
+  // so a later CDP Ctrl+W targets the editor. Returns the model uri.
+  selectEditorBlock(startLine, startColumn, endLine, endColumn){
+    const eds = (window.monaco && monaco.editor.getEditors) ? monaco.editor.getEditors() : [];
+    if (!eds.length) return 'no-editor';
+    const editor = eds[0];
+    editor.setSelection(new monaco.Selection(startLine, startColumn, endLine, endColumn));
+    editor.focus();
+    const model = editor.getModel();
+    return model ? model.uri.toString() : '';
+  },
+  // Run a registered monaco editor action and wait for its callback.
+  editorAction(id){
+    const eds = (window.monaco && monaco.editor.getEditors) ? monaco.editor.getEditors() : [];
+    if (!eds.length) return 'no-editor';
+    const action = eds[0].getAction(id);
+    if (!action) return 'no-action';
+    return Promise.resolve(action.run()).then(function(){ return action.label; });
+  },
+  // Leave the editor so a page key goes to "the rest of the page".
+  blurEditor(){
+    const active = document.activeElement;
+    if (active && active.blur) active.blur();
+    const eds = (window.monaco && monaco.editor.getEditors) ? monaco.editor.getEditors() : [];
+    if (eds.length && eds[0].blur) eds[0].blur();
+    return document.activeElement ? document.activeElement.tagName : null;
+  },
   models(){ return ((window.monaco&&monaco.editor.getModels)?monaco.editor.getModels():[]).map(m=>({uri:m.uri.toString(), lines:m.getLineCount(), len:m.getValue().length})); },
   axis(){ return this.qa('.timebar-svg .axis-text').map(t => (t.textContent||'') + '@' + (t.getAttribute('x')||'')).join(','); },
   lsp(){ return window.__waveInsightLsp ? JSON.parse(window.__waveInsightLsp.stats()) : null; },
@@ -472,7 +571,9 @@ async function selectModule(cdp, name) {
   return ok;
 }
 
-// Add a signal from the sidebar signal list, by its local name.
+// Add a signal from the sidebar signal list, by its local name. Wave 19a: the
+// list selects on a plain click, so window.__qa.clickSignal presses the row's
+// "+" button (the explicit single add) - the helper name/contract is kept.
 async function addSignal(cdp, name) {
   const result = await cdp.eval(`window.__qa.clickSignal(${JSON.stringify(name)})`);
   await sleep(900);
@@ -498,6 +599,18 @@ async function wheel(cdp, x, y, deltaY, options = {}) {
   });
   if (options.ctrl) await cdp.key("keyUp", "Control", "ControlLeft", 17);
   if (options.shift) await cdp.key("keyUp", "Shift", "ShiftLeft", 16);
+}
+
+// Wave 19c (task-7): a Ctrl(+Shift) key press with the real CDP modifier
+// bitmask (Cdp.key sends none, and the block-add handler needs ctrl_key()).
+// The event targets the focused element, so the scenario focuses the monaco
+// editor first when it wants the in-editor Ctrl+W meaning.
+async function pressCtrl(cdp, keyName, code, vk, shift = false) {
+  const modifiers = 2 | (shift ? 8 : 0);
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: keyName, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers });
+  await sleep(90);
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: keyName, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers });
+  await sleep(1300);
 }
 
 // The wave pane view + row scroll, from the renderer seam and the DOM.
@@ -583,7 +696,8 @@ scenarios.fst = async (cdp) => {
   check('fst: module tree not empty', s.modules.length > 0, s.modules);
   const count = await cdp.eval(`window.__qa.qa('.sidebar .sig-row .sig-name').length`);
   check('fst: signals listed', count > 0, count);
-  await cdp.eval(`window.__qa.click('.sidebar .sig-row', 0)`);
+  // Wave 19a: the plain row click selects now; add through the row's "+" button
+  await cdp.eval(`window.__qa.click('.sidebar .sig-row .sig-add', 0)`);
   await sleep(900);
   s = await state(cdp);
   const fstDebug = await cdp.eval('window.__qa.debug()');
@@ -603,7 +717,8 @@ scenarios.bothDumps = async (cdp) => {
   note('state', s);
   check('both: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
   check('both: one tree shown', s.modules.length > 0, s.modules);
-  await cdp.eval(`window.__qa.click('.sidebar .sig-row', 0)`);
+  // Wave 19a: the plain row click selects now; add through the row's "+" button
+  await cdp.eval(`window.__qa.click('.sidebar .sig-row .sig-add', 0)`);
   await sleep(900);
   const after = await state(cdp);
   note('after add', after.waveNames);
@@ -648,6 +763,10 @@ scenarios.sourcesAndDump = async (cdp) => {
   await cdp.shot('qa-combo.png');
 };
 
+// Source-editor click-to-add: a click on an identifier in the Monaco editor adds
+// that signal through the candidate picker. This is NOT the sidebar SIGNALS list
+// interaction - since Wave 19a a plain click on a .sig-row only selects (the
+// explicit adds and the multi-selection are covered by scenarios.signalsSelect).
 scenarios.clickToAdd = async (cdp) => {
   await boot(cdp);
   await cdp.upload([path.join(FIXTURES, 'top.sv'), path.join(FIXTURES, 'cpu.sv'), path.join(FIXTURES, 'wave.vcd')]);
@@ -684,6 +803,371 @@ scenarios.clickToAdd = async (cdp) => {
     check('clickToAdd: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
     await cdp.shot('qa-click-to-add.png');
   }
+};
+
+
+// ---------------------------------------------------------------------------
+// Wave 19a (task-5): the SIGNALS list selects like the module tree; adding is
+// explicit. A plain click SELECTS (no wave row), Ctrl/Cmd-click toggles,
+// Shift-click ranges over the filtered order, and the explicit paths add:
+// double click, the per-row "+" (button.sig-add), the header "Add selected (N)"
+// and the sticky footer bar (one RowsAdded batch each). The filter prunes the
+// selection so a hidden row can never be added; above the 2000-signal cap the
+// add is refused with "select fewer signals"; the list stays virtualized.
+// (This is the Wave 19 update of the old clickSignal-as-plain-click contract:
+// the page helper drives the real per-row "+" button.)
+// ---------------------------------------------------------------------------
+scenarios.signalsSelect = async (cdp) => {
+  const selection = () => cdp.eval('window.__qa.signalSelection()');
+  const counts = async () => {
+    const s = await state(cdp);
+    return {
+      rows: s.waveNames.length,
+      // the wave row list is virtualized as well: total_rows is the logical count
+      total: await cdp.eval('window.__qa.totalRows()'),
+      names: s.waveNames,
+      status: s.status,
+      render: await cdp.eval('window.__qa.dbg("render_count")'),
+      pane: await cdp.eval('window.__qa.dbg("pane_render_count")'),
+    };
+  };
+  const filter = async (text) => {
+    const expr = '(function(){ const i = document.querySelector(".sidebar .filter-wrap input"); if (!i) return false; const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; set.call(i, ' + JSON.stringify(text) + '); i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()';
+    const ok = await cdp.eval(expr);
+    await sleep(700);
+    return ok;
+  };
+  const rowState = (name) => cdp.eval('(function(){ const row = window.__qa.signalRow(' + JSON.stringify(name) + '); return row ? { aria: row.getAttribute("aria-selected"), classes: row.className, tabindex: row.getAttribute("tabindex") } : null; })()');
+  const clickIn = async (selector) => {
+    const clicked = await cdp.eval('(function(){ const b = document.querySelector(' + JSON.stringify(selector) + '); if (!b) return false; b.click(); return true; })()');
+    await sleep(1400);
+    return clicked;
+  };
+  const select = async (name, ctrl, shift) => {
+    await cdp.eval('window.__qa.selectSignal(' + JSON.stringify(name) + ', ' + (ctrl ? 'true' : 'false') + ', ' + (shift ? 'true' : 'false') + ')');
+    await sleep(450);
+  };
+
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  const loaded = await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(900);
+  let s = await state(cdp);
+  let sel = await selection();
+  note('signalsSelect start', { loaded, status: s.status, selection: sel });
+  check('signalsSelect: the dump loads with an empty wave', !!loaded && s.waveNames.length === 0, { status: s.status, rows: s.waveNames });
+  check('signalsSelect: the Signals head starts with a disabled Add selected (0) and a Select all button',
+    !!sel.addSelected && sel.addSelected.text === 'Add selected (0)' && sel.addSelected.disabled === true
+      && sel.addSelected.label === 'Add selected signals to the wave'
+      && !!sel.selectAll && sel.selectAll.text === 'Select all' && sel.selectAll.label === 'Select all visible signals'
+      && sel.selectAll.disabled === false && !sel.bar && sel.headerCount === 0, sel);
+
+  // 1) a plain click selects only
+  const plain = await cdp.eval("window.__qa.selectSignal('clk')");
+  await sleep(500);
+  s = await state(cdp);
+  sel = await selection();
+  const ariaClk = await rowState('clk');
+  const ariaPc = await rowState('pc');
+  note('plain click', { selection: sel, ariaClk, ariaPc, wave: s.waveNames, status: s.status });
+  check('signalsSelect: a plain click selects the row and adds no wave row',
+    plain === 'ok' && s.waveNames.length === 0 && sel.selected === 1 && sel.headerCount === 1
+      && sel.selectedNames.length === 1 && sel.selectedNames[0] === 'clk'
+      && sel.addSelected.text === 'Add selected (1)' && sel.addSelected.disabled === false
+      && !!sel.bar && sel.bar.role === 'status' && sel.bar.label === 'Signal selection'
+      && sel.bar.count === '1 signals selected' && sel.barCount === 1
+      && sel.bar.add === true && sel.bar.clear === true && /Ctrl\/Cmd-click/.test(sel.bar.hint || '')
+      && !!ariaClk && ariaClk.aria === 'true' && /(^|\s)selected(\s|$)/.test(ariaClk.classes || '') && ariaClk.tabindex === '0'
+      && !!ariaPc && ariaPc.aria === 'false' && !/(^|\s)selected(\s|$)/.test(ariaPc.classes || '')
+      && !/added \d+ signals|to the waveform/.test(s.status || ''),
+    { selection: sel, ariaClk, ariaPc, wave: s.waveNames, status: s.status });
+
+  // 2) Ctrl/Cmd toggles
+  await select('pc', true);
+  sel = await selection();
+  check('signalsSelect: Ctrl+click toggles a second row into the selection',
+    sel.selected === 2 && sel.headerCount === 2 && sel.selectedNames.indexOf('clk') >= 0
+      && sel.selectedNames.indexOf('pc[7:0]') >= 0 && sel.addSelected.text === 'Add selected (2)' && sel.barCount === 2, sel);
+  await select('pc', true);
+  sel = await selection();
+  check('signalsSelect: Ctrl+click on a selected row toggles it off',
+    sel.selected === 1 && sel.headerCount === 1 && sel.selectedNames[0] === 'clk', sel);
+  await select('pc', true);
+  sel = await selection();
+  check('signalsSelect: the Ctrl toggle puts the row back', sel.selected === 2 && sel.selectedNames.length === 2, sel);
+
+  // 3) header Add selected (N) = one batch, one status line
+  let before = await counts();
+  const headerAdd = await clickIn('.sig-add-selected');
+  let after = await counts();
+  note('header Add selected', { before, after });
+  check('signalsSelect: the header Add selected adds the whole selection as one batch',
+    headerAdd === true && after.rows === 2 && after.names[0] === 'top.clk' && after.names[1] === 'top.pc[7:0]'
+      && after.status === 'added 2 signals (0 already in the wave)' && after.render - before.render <= 2,
+    { before, after });
+  // the selection is kept for a second add; the reducer reports the dedupe
+  before = after;
+  const headerAddAgain = await clickIn('.sig-add-selected');
+  after = await counts();
+  note('header Add selected again', after);
+  check('signalsSelect: adding the same selection again dedupes with the reducer wording',
+    headerAddAgain === true && after.rows === 2 && after.status === 'no new signals: 2 already in the wave', after);
+  const cleared = await clickIn('.sig-bulk-clear');
+  sel = await selection();
+  check('signalsSelect: the footer Clear empties the selection and hides the bar',
+    cleared === true && sel.selected === 0 && sel.headerCount === 0 && !sel.bar && sel.addSelected.disabled === true, sel);
+
+  // 4) the filter prunes selected rows: a hidden row is never added
+  await select('clk');
+  sel = await selection();
+  const filteredOn = await filter('pc');
+  s = await state(cdp);
+  sel = await selection();
+  note('filter prunes the selection', { filtered: filteredOn, signals: s.sidebarSignals, selection: sel });
+  check('signalsSelect: a filter that hides the selected row prunes it out of the selection',
+    filteredOn === true && s.sidebarSignals.length === 2 && s.sidebarSignals[0] === 'pc[7:0]'
+      && sel.selected === 0 && sel.headerCount === 0 && !sel.bar, { signals: s.sidebarSignals, selection: sel });
+  const selectAllFiltered = await clickIn('.sig-select-all');
+  sel = await selection();
+  check('signalsSelect: Select all takes only the filtered rows',
+    selectAllFiltered === true && sel.headerCount === 2 && sel.barCount === 2
+      && sel.selectedNames.indexOf('pc[7:0]') >= 0 && sel.selectedNames.indexOf('pc16[15:0]') >= 0, sel);
+  before = await counts();
+  const filteredAdd = await clickIn('.sig-add-selected');
+  after = await counts();
+  note('filtered add', { before, after });
+  check('signalsSelect: a filtered selection adds only the visible rows',
+    filteredAdd === true && after.rows === 3 && after.status === 'added 1 signals (1 already in the wave)'
+      && after.names.indexOf('top.pc16[15:0]') >= 0 && after.names.indexOf('top.clk') >= 0
+      && after.names.every((name) => name === 'top.clk' || name.indexOf('top.pc') === 0),
+    { before, after });
+  // restore the unfiltered list and clear the selection for the explicit adds
+  await filter('');
+  await clickIn('.sig-bulk-clear');
+
+  // 5) double click and the per-row "+" each add exactly one signal
+  const dbl = await cdp.eval("window.__qa.dblclickSignal('reset')");
+  await sleep(1000);
+  s = await state(cdp);
+  sel = await selection();
+  note('double click add', { dbl, wave: s.waveNames, status: s.status });
+  check('signalsSelect: double-clicking a row adds that one signal',
+    dbl === 'ok' && s.waveNames.length === 4 && s.waveNames.indexOf('top.reset') >= 0
+      && s.status === 'added top.reset to the waveform' && sel.selected === 0, { wave: s.waveNames, status: s.status });
+  const plus = await cdp.eval("window.__qa.clickSignal('instr')");
+  await sleep(900);
+  s = await state(cdp);
+  note('per-row + add', { plus, wave: s.waveNames, status: s.status });
+  check('signalsSelect: the per-row + adds exactly that one signal',
+    plus === 'ok' && s.waveNames.length === 5 && s.waveNames.indexOf('top.instr[7:0]') >= 0
+      && s.status === 'added top.instr to the waveform', { wave: s.waveNames, status: s.status });
+
+  // 6) Shift range from the anchor + footer Add selected: one batch, dedupe reported
+  await select('clk');
+  await select('result', false, true);
+  sel = await selection();
+  note('shift range', sel);
+  check('signalsSelect: Shift+click ranges from the anchor over the filtered order',
+    sel.selected === 6 && sel.headerCount === 6 && sel.selectedNames[0] === 'clk'
+      && sel.selectedNames[2] === 'instr[7:0]' && sel.selectedNames[5] === 'result[15:0]', sel);
+  before = await counts();
+  const barAdd = await clickIn('.sig-bulk-add');
+  after = await counts();
+  note('footer Add selected', { before, after });
+  check('signalsSelect: the footer Add selected adds the range in one deduped batch',
+    barAdd === true && after.rows === 7 && after.status === 'added 2 signals (4 already in the wave)'
+      && after.render - before.render <= 2, { before, after });
+  check('signalsSelect: every signal of the top scope is on the wave now',
+    after.names.length === 7 && ['top.clk', 'top.reset', 'top.instr[7:0]', 'top.pc[7:0]', 'top.data_out[7:0]', 'top.result[15:0]', 'top.pc16[15:0]'].every((name) => after.names.indexOf(name) >= 0), after.names);
+  check('signalsSelect: no exceptions during the signal-list interaction', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-signals-select.png');
+
+  // 7) virtualized list + the 2000 cap: many_signals.vcd has 2100 top signals
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'many_signals.vcd')]);
+  const bigLoaded = await waitStatus(cdp, 'waveform loaded', 30000);
+  await sleep(1200);
+  s = await state(cdp);
+  const dom = await cdp.eval('window.__qa.sidebarDom()');
+  const logical = s.sidebarSignals.length;
+  note('virtualized signals', { loaded: bigLoaded, logical, dom, status: s.status });
+  check('signalsSelect: the 2100-signal scope stays virtualized while the seam reports it all',
+    !!bigLoaded && logical > 2000 && dom.signals > 0 && dom.signals < 80, { logical, dom });
+  const bigSelectAll = await clickIn('.sig-select-all');
+  sel = await selection();
+  note('cap selection', sel);
+  check('signalsSelect: selecting 2100 rows flags Add selected over the 2000 cap',
+    bigSelectAll === true && sel.headerCount === logical && sel.barCount === logical
+      && /(^|\s)over-cap(\s|$)/.test(sel.addSelected.classes || '') && sel.addSelected.ariaDisabled === 'true'
+      && /Too many signals \(\d+\) — the limit is 2000; select fewer signal rows/.test(sel.addSelected.title || ''), sel);
+  before = await counts();
+  const capAdd = await clickIn('.sig-add-selected');
+  after = await counts();
+  note('over-cap refusal', { before, after });
+  check('signalsSelect: an over-cap signal batch is refused with the limit and the way out',
+    capAdd === true && after.rows === 0
+      && /^too many signals to add at once: \d+ \(limit 2000\) — select fewer signals$/.test(after.status || ''),
+    { before, after });
+  // the filter prunes the 2100-row selection to the 100 visible rows, which are
+  // then added: a filtered list can never add an invisible row
+  const bigFilter = await filter('sig_00');
+  s = await state(cdp);
+  sel = await selection();
+  note('filtered cap selection', { filtered: bigFilter, visible: s.sidebarSignals.length, selection: sel });
+  check('signalsSelect: a filter prunes the over-cap selection to the visible rows',
+    bigFilter === true && s.sidebarSignals.length === 100 && sel.headerCount === 100
+      && sel.barCount === 100 && !/(^|\s)over-cap(\s|$)/.test(sel.addSelected.classes || ''),
+    { visible: s.sidebarSignals.length, selection: sel });
+  before = await counts();
+  const prunedAdd = await clickIn('.sig-add-selected');
+  after = await counts();
+  note('filtered virtualized add', {
+    clicked: prunedAdd,
+    before: { total: before.total, render: before.render, status: before.status },
+    after: { total: after.total, render: after.render, status: after.status, visible: after.names.length },
+  });
+  check('signalsSelect: the pruned filtered selection adds only the visible rows in one batch',
+    prunedAdd === true && after.total === 100 && after.status === 'added 100 signals (0 already in the wave)'
+      && after.names.every((name) => name.indexOf('sig_00') >= 0) && after.render - before.render <= 2,
+    { total: after.total, status: after.status, render: [before.render, after.render], visible: after.names.length });
+  check('signalsSelect: the virtualized list keeps no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-signals-select-cap.png');
+};
+
+
+// ---------------------------------------------------------------------------
+// Wave 19c (task-7): the Verdi block add. Select a block of code in the source
+// editor and press Ctrl+W (or Ctrl+Shift+W, or the editor context-menu action
+// "Add signals in selection to the wave"): every signal the block names is
+// added in ONE rows batch and the source tab stays open. A block whose names
+// are ambiguous between instances adds nothing and says so (it never guesses);
+// a comment block says the selection has no signal names. Ctrl+W with no
+// selection in the editor adds nothing and closes nothing (the editor owns the
+// key); outside the editor it still closes the active source tab. The page-wide
+// window.__waveInsightEditorSelection() helper is the same reader the Rust
+// Ctrl+W handler uses, so the assertions can compare exactly what it would act
+// on. A real browser reserves Ctrl+W for itself - the context menu is the
+// guaranteed path there; the desktop webview and the CDP path share the same
+// page listener (see qa/README).
+// ---------------------------------------------------------------------------
+scenarios.blockAdd = async (cdp) => {
+  const counts = async () => {
+    const s = await state(cdp);
+    return {
+      names: s.waveNames,
+      total: await cdp.eval('window.__qa.totalRows()'),
+      tabs: s.tabs,
+      active: s.activeTab,
+      status: s.status,
+      render: await cdp.eval('window.__qa.dbg("render_count")'),
+    };
+  };
+  const activate = async (name) => {
+    await cdp.eval('window.__qa.clickText(".tab .tab-name", ' + JSON.stringify(name) + ')');
+    await sleep(800);
+  };
+  const lineLength = (line) => cdp.eval('monaco.editor.getEditors()[0].getModel().getLineContent(' + line + ').length');
+  const selectBlock = async (startLine, startColumn, endLine) => {
+    const endColumn = (await lineLength(endLine)) + 1;
+    const uri = await cdp.eval('window.__qa.selectEditorBlock(' + startLine + ', ' + startColumn + ', ' + endLine + ', ' + endColumn + ')');
+    await sleep(450);
+    return uri;
+  };
+  const selection = () => cdp.eval('window.__qa.editorSelection()');
+
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'top.sv'), path.join(FIXTURES, 'cpu.sv'), path.join(FIXTURES, 'wave.vcd')]);
+  await waitTabs(cdp, 2);
+  const loaded = await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(900);
+  let s = await state(cdp);
+  note('blockAdd start', { loaded, status: s.status, tabs: s.tabs, rows: s.waveNames });
+  check('blockAdd: the sources and the dump are open', !!loaded && s.tabs.length === 2
+    && s.tabs.indexOf('top.sv') >= 0 && s.tabs.indexOf('cpu.sv') >= 0 && s.waveNames.length === 0, { tabs: s.tabs, rows: s.waveNames });
+  check('blockAdd: the page-wide editor-selection helper is installed',
+    await cdp.eval('typeof window.__waveInsightEditorSelection === "function"') === true);
+  await activate('top.sv');
+
+  // 1) Ctrl+W on the top.sv declaration block (lines 9-11): pc, data_out, pc16
+  const uri = await selectBlock(9, 1, 11);
+  const sel = await selection();
+  note('block selection', { uri, selection: sel });
+  check('blockAdd: the helper reports the selected block',
+    !!sel && sel.file === 'top.sv' && sel.startLine === 9 && sel.startColumn === 1
+      && sel.endLine === 11 && (sel.lines || []).length === 3, sel);
+  let before = await counts();
+  await pressCtrl(cdp, 'w', 'KeyW', 87, false);
+  let after = await counts();
+  note('ctrl+w block add', { before, after });
+  check('blockAdd: Ctrl+W adds every signal of the block in one batch and keeps the tab',
+    after.total === before.total + 3 && after.tabs.length === before.tabs.length && after.active === 'top.sv'
+      && after.names.indexOf('top.pc[7:0]') >= 0 && after.names.indexOf('top.data_out[7:0]') >= 0
+      && after.names.indexOf('top.pc16[15:0]') >= 0
+      && after.status === 'added 3 signals (0 already in the wave) — from the code selection'
+      && after.render - before.render <= 2, { before, after });
+  await cdp.shot('qa-source-block-add.png');
+
+  // 2) Ctrl+Shift+W alias on the result assign line 29: result is new, data_out deduped
+  await selectBlock(29, 1, 29);
+  before = await counts();
+  await pressCtrl(cdp, 'W', 'KeyW', 87, true);
+  after = await counts();
+  note('ctrl+shift+w alias', { before, after });
+  check('blockAdd: Ctrl+Shift+W runs the same add (one new row, dedupe reported)',
+    after.total === before.total + 1 && after.tabs.length === before.tabs.length
+      && after.names.indexOf('top.result[15:0]') >= 0
+      && after.status === 'added 1 signals (1 already in the wave) — from the code selection'
+      && after.render - before.render <= 2,
+    { before: { total: before.total, status: before.status }, after: { total: after.total, status: after.status, render: after.render - before.render } });
+
+  // 3) no selection in the editor: nothing is added and the tab is not closed
+  await cdp.eval('window.__qa.selectEditorBlock(9, 1, 9, 1)');
+  await sleep(450);
+  before = await counts();
+  await pressCtrl(cdp, 'w', 'KeyW', 87, false);
+  after = await counts();
+  note('ctrl+w collapsed selection', { before, after });
+  check('blockAdd: Ctrl+W with no selection in the editor adds nothing and keeps the tab',
+    after.total === before.total && after.tabs.length === before.tabs.length && after.active === before.active,
+    { total: [before.total, after.total], tabs: after.tabs });
+
+  // 4) the context-menu action on a cpu.sv block: every name is ambiguous
+  // between the two instances, so nothing is guessed and the status says why
+  await activate('cpu.sv');
+  await selectBlock(19, 1, 20);
+  const cpuSelection = await selection();
+  note('cpu.sv ambiguous block', cpuSelection);
+  before = await counts();
+  const actionLabel = await cdp.eval('window.__qa.editorAction("wave-insight.addSelectionToWave")');
+  await sleep(900);
+  after = await counts();
+  note('context-menu action on the ambiguous block', { actionLabel, status: after.status, total: after.total });
+  check('blockAdd: the monaco action exists with its context-menu label',
+    actionLabel === 'Add signals in selection to the wave', actionLabel);
+  check('blockAdd: an ambiguous block adds nothing and explains why',
+    after.total === before.total && /ambiguous between instances/.test(after.status || ''),
+    { total: [before.total, after.total], status: after.status });
+
+  // 5) a comment block has no signal names: actionable status, nothing added
+  await activate('top.sv');
+  await selectBlock(1, 1, 2);
+  before = await counts();
+  await pressCtrl(cdp, 'w', 'KeyW', 87, false);
+  after = await counts();
+  note('ctrl+w comment block', { status: after.status });
+  check('blockAdd: a comment block reports that the selection has no signal names',
+    after.total === before.total && /no signal names/.test(after.status || ''), { status: after.status });
+
+  // 6) outside the editor Ctrl+W keeps its old meaning: close the active tab
+  const blurred = await cdp.eval('window.__qa.blurEditor()');
+  const tabsBefore = (await state(cdp)).tabs;
+  await pressCtrl(cdp, 'w', 'KeyW', 87, false);
+  const tabsAfter = (await state(cdp)).tabs;
+  note('ctrl+w outside the editor', { blurred, tabsBefore, tabsAfter });
+  check('blockAdd: Ctrl+W outside the editor still closes the active source tab',
+    tabsAfter.length === tabsBefore.length - 1, { before: tabsBefore, after: tabsAfter });
+  check('blockAdd: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-source-block-close.png');
 };
 
 scenarios.waveJump = async (cdp) => {
@@ -2148,7 +2632,8 @@ scenarios.busBench = async (cdp) => {
   await sleep(800);
   const added = await cdp.eval(`(function(){
     const names = Array.from(document.querySelectorAll('.sidebar .sig-row .sig-name'));
-    for (const name of names) name.parentElement.click();
+    // Wave 19a: add through the per-row "+" button (a plain click only selects)
+    for (const name of names) { const add = name.parentElement.querySelector('.sig-add'); if (add) add.click(); }
     return names.length;
   })()`);
   await sleep(3000);
@@ -2806,7 +3291,8 @@ scenarios.virtualization = async (cdp) => {
   s = await state(cdp);
   check('virtualization: clearing the filter restores the whole list', s.sidebarSignals.length > 2000, s.sidebarSignals.length);
   // a row from the window can still be added to the wave view
-  const clicked = await cdp.eval('window.__qa.click(".sidebar .sig-row", 0)');
+  // Wave 19a: the plain row click selects; add through the per-row "+" button
+  const clicked = await cdp.eval('window.__qa.click(".sidebar .sig-row .sig-add", 0)');
   await sleep(800);
   s = await state(cdp);
   check('virtualization: a windowed signal row can still be added', clicked === 'ok' && s.waveNames.length === 1, { clicked: clicked, names: s.waveNames });
@@ -4294,7 +4780,8 @@ scenarios.largeDump = async (cdp) => {
   await boot(cdp);
   const wideLoad = await loadAndWait(wide.file, 120);
   const wideState = await state(cdp);
-  const wideClicked = await cdp.eval('(function(){ const row = document.querySelector(".sidebar .sig-row"); if (!row) return null; row.click(); return true; })()');
+  // Wave 19a: a plain row click selects; add through the per-row "+" button
+  const wideClicked = await cdp.eval('(function(){ const row = document.querySelector(".sidebar .sig-row"); if (!row) return null; const add = row.querySelector(".sig-add"); if (!add) return null; add.click(); return true; })()');
   await sleep(1500);
   const wideAfter = await state(cdp);
   const wideExceptions = await exceptions(cdp);
@@ -4648,7 +5135,7 @@ scenarios.denseDump = async (cdp) => {
       const fstLoadMemory = await mem();
       check('denseDump: a large FST loads inside the wasm policy cap',
         !!fstLoadMemory && fstLoadMemory.wasmBytes <= POLICY_CAP, fstLoadMemory && fstLoadMemory.wasmBytes);
-      const firstSignal = await cdp.eval('(function(){ const name = document.querySelector(".sidebar .sig-row .sig-name"); if (!name) return null; const text = (name.innerText || "").trim().split("[")[0]; name.parentElement.click(); return text; })()');
+      const firstSignal = await cdp.eval('(function(){ const name = document.querySelector(".sidebar .sig-row .sig-name"); if (!name) return null; const text = (name.innerText || "").trim().split("[")[0]; const add = name.parentElement.querySelector(".sig-add"); if (!add) return null; add.click(); return text; })()');
       const fstRest = await settle(8000);
       note('large FST first row', { signal: firstSignal, memory: fstRest });
       check('denseDump: the large FST stays inside the memory policy',

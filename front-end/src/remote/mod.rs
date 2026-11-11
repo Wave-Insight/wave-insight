@@ -24,6 +24,8 @@
 //! * `dump_window { id, signals, start, end, maxChangesPerSignal, show }` -> [WindowDto]
 //! * `dump_value_at { id, signal, time, show }` -> String | null
 //! * `close_dump { id }` -> null
+//! * `close_all_dumps { }` -> usize (called once per page start: the registry
+//!   is process state and a webview reload leaves its ids behind)
 //!
 //! Everything except the IPC calls is plain Rust and host tested.
 
@@ -1082,6 +1084,19 @@ mod ipc {
         call("close_dump", &args).await
     }
 
+    /// Close every native dump and answer how many were closed.
+    ///
+    /// The registry is process state while the session (the ids) lives in the
+    /// webview: a webview reload destroys the only owner of the open ids, so the
+    /// new page cannot close them individually any more. It calls this once on
+    /// start, before it reopens the dumps the previous page had open, so
+    /// repeated reloads cannot pile mappings up to the registry's cap.
+    pub async fn close_all() -> Result<usize, String> {
+        let args = serde_wasm_bindgen::to_value(&serde_json::json!({}))
+            .map_err(|error| error.to_string())?;
+        call("close_all_dumps", &args).await
+    }
+
     /// Open `path` and decide the mode: `Ok(Some(session))` keeps it native,
     /// `Ok(None)` means "small dump, closed again: use the wasm path", and an
     /// error means the native backend could not open it (also wasm path).
@@ -1140,7 +1155,7 @@ mod ipc {
 #[allow(unused_imports)]
 #[cfg(feature = "tauri")]
 pub use ipc::{
-    close, find, hierarchy, memory_stats, open, open_parts, process_memory, try_open,
+    close, close_all, find, hierarchy, memory_stats, open, open_parts, process_memory, try_open,
     try_open_parts, value_at, window,
 };
 
@@ -1197,6 +1212,10 @@ mod browser {
     pub async fn close(_id: u64) -> Result<(), String> {
         Ok(())
     }
+    /// The browser has no native registry: there is never anything to close.
+    pub async fn close_all() -> Result<usize, String> {
+        Ok(0)
+    }
     pub async fn open_parts(_parts: &[String]) -> Result<DumpSummaryDto, String> {
         Err("native dumps need the desktop build".to_string())
     }
@@ -1213,7 +1232,7 @@ mod browser {
 #[cfg(not(feature = "tauri"))]
 #[allow(unused_imports)]
 pub use browser::{
-    close, find, hierarchy, memory_stats, open, open_parts, process_memory, try_open,
+    close, close_all, find, hierarchy, memory_stats, open, open_parts, process_memory, try_open,
     try_open_parts, value_at, window,
 };
 

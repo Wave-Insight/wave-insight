@@ -747,6 +747,21 @@ impl DumpRegistry {
         Ok(rendered)
     }
 
+    /// Close every open dump, freeing all mappings and hierarchies.
+    ///
+    /// The registry lives in the Rust process, the sessions live in the
+    /// webview: a webview reload (Ctrl+Shift+R) destroys the only owner of the
+    /// open ids, so the next page cannot close them any more. The front end
+    /// calls this once when a page starts, before it reopens the dumps that
+    /// page had open, so repeated reloads cannot pile mappings up to
+    /// [`MAX_OPEN_DUMPS`]. Returns how many dumps were closed.
+    pub fn close_all(&self) -> usize {
+        let mut inner = self.lock();
+        let closed = inner.dumps.len();
+        inner.dumps.clear();
+        closed
+    }
+
     /// Close one dump, freeing its mapping and hierarchy.
     pub fn close(&self, id: DumpId) -> Result<(), String> {
         match self.lock().dumps.remove(&id) {
@@ -1257,6 +1272,28 @@ mod tests {
         assert!(second.id > first_id);
         assert_eq!(second.retained_bytes, 0);
         assert!(registry.close(second.id).is_ok());
+    }
+
+    #[test]
+    fn close_all_frees_every_mapping_a_webview_reload_left_behind() {
+        // the registry is process state: a reloaded page has no ids any more, so
+        // it calls close_all before reopening its dumps instead of leaking the
+        // old mappings until the process exits
+        let path = write_small_vcd("close-all");
+        let registry = DumpRegistry::new();
+        let first = registry
+            .open(&path.display().to_string())
+            .expect("open the first session");
+        let second = registry
+            .open(&path.display().to_string())
+            .expect("open the reloaded session");
+        assert_eq!(registry.open_count(), 2);
+        assert_eq!(registry.close_all(), 2);
+        assert_eq!(registry.open_count(), 0);
+        assert!(registry.hierarchy(first.id, 0, 1).is_err());
+        assert!(registry.hierarchy(second.id, 0, 1).is_err());
+        // an empty registry is a no-op, not an error
+        assert_eq!(registry.close_all(), 0);
     }
 
     fn find_value(

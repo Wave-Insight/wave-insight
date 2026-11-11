@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::ipc::Response;
 
+mod companion;
 mod dumps;
 mod process_memory;
 
@@ -223,6 +224,35 @@ fn open_dump_parts(
     registry.open(&path.display().to_string())
 }
 
+/// Resolve the in-app dialog's path parts to the absolute path of the picked
+/// file, without opening anything.
+///
+/// The front end needs the absolute path to remember the dump for the next
+/// desktop start (a webview reload has no file handle, the path is what makes
+/// the reopen possible). A pick through the dialog only carries navigation
+/// parts, so the same resolution the native open uses is performed here and the
+/// display string is returned. Only valid picks are resolved: the containment
+/// rule and the "no path components" error are the ones of
+/// [`resolve_dump_parts`].
+#[tauri::command]
+fn resolve_dump_parts_path(parts: Vec<String>) -> Result<String, String> {
+    let path = resolve_dump_parts(&parts)?;
+    Ok(path.display().to_string())
+}
+
+/// Companion RTL sources next to a dump, for the SpinalHDL layout.
+///
+/// The scan rules live in [`companion::companion_sources`]: the dump's own
+/// directory and up to two ancestors are checked for an `rtl` (or
+/// `generated`/`verilog`) sub-directory, `.v`/`.sv` files are collected flat
+/// or one level deep, sorted, de-duplicated and capped. Nothing found is an
+/// empty list, never an error: companion discovery is a convenience and must
+/// never fail a dump open.
+#[tauri::command]
+fn dump_companion_sources(path: String) -> Vec<String> {
+    companion::companion_sources(Path::new(&path))
+}
+
 /// One page of the flattened hierarchy (scopes and signals) for the sidebar.
 #[tauri::command]
 fn dump_hierarchy(
@@ -341,6 +371,16 @@ fn close_dump(registry: tauri::State<'_, DumpRegistry>, id: u64) -> Result<(), S
     registry.close(id)
 }
 
+/// Close every native dump (a webview reload left their ids behind).
+///
+/// Called once when the front end starts, before it reopens the dumps of the
+/// previous page: the registry is process state, so without this every reload
+/// would keep the old mappings alive until the process exits.
+#[tauri::command]
+fn close_all_dumps(registry: tauri::State<'_, DumpRegistry>) -> usize {
+    registry.close_all()
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(DumpRegistry::new())
@@ -352,6 +392,8 @@ fn main() {
             choose_verilog_absolute,
             open_dump,
             open_dump_parts,
+            resolve_dump_parts_path,
+            dump_companion_sources,
             dump_hierarchy,
             dump_window,
             dump_value_at,
@@ -359,7 +401,8 @@ fn main() {
             dump_find,
             dump_memory_stats,
             process_memory,
-            close_dump
+            close_dump,
+            close_all_dumps
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -411,6 +454,20 @@ mod tests {
             resolved.display()
         );
         assert!(base_dir().is_dir(), "the dialog base is a directory");
+    }
+
+    #[test]
+    fn resolve_dump_parts_path_answers_the_absolute_path_the_dialog_picked() {
+        let resolved =
+            resolve_dump_parts_path(vec!["Downloads".to_string(), "foo.fst".to_string()])
+                .expect("resolve the picked parts");
+        assert!(Path::new(&resolved).is_absolute(), "{resolved}");
+        assert!(
+            resolved.ends_with("Downloads/foo.fst") || resolved.ends_with("Downloads\\foo.fst"),
+            "{resolved}"
+        );
+        // the picks the navigation cannot produce are still refused
+        assert!(resolve_dump_parts_path(Vec::new()).is_err());
     }
 
     #[test]

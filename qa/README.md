@@ -64,6 +64,7 @@ Scenario list (the runner's `--list` prints it, default is all):
 
 `empty`, `vcd`, `fst`, `bothDumps`, `sourcesOnly`, `sourcesAndDump`,
 `clickToAdd`, `waveJump`, `inspector`, `lsp`, `zoomPan`, `cursors`, `formats`,
+`signalsSelect`, `blockAdd`,
 `colourAndDelete`, `layout`, `drop`, `badInputs`, `tabClose`, `deepWave`,
 `deepEditor`, `deepSidebar`, `keysInEditor`, `addWithClosedTabs`, `extras`,
 `tierA`, `layoutRules`, `traceEnd`, `waveTabs`, `navigation`, `busExpand`,
@@ -85,6 +86,22 @@ to prove the row list is restored in order; `wave2` also exports the row as
 a MAT-file and checks its level-5 header; `a11y` checks the listbox/dialog
 semantics, the modal focus trap, Escape behaviour, arrow-key selection and
 the real tab-closer buttons.
+
+`signalsSelect` is the Wave 19a regression for the SIGNALS list, which now
+selects like the module tree instead of adding on a plain click: a plain click
+selects one row (no wave row, `.sig-row.selected`/`aria-selected`, header
+`Add selected (1)` and the sticky footer bar), Ctrl/Cmd+click toggles,
+Shift+click ranges over the filtered order, and adding is explicit through a
+double click, the per-row `+` (`button.sig-add`), the header `Add selected (N)`
+and the footer bar - each one `RowsAdded` batch with the reducer wording
+(`added N signals (M already in the wave)` / `no new signals: M already in the
+wave`). It proves the filter prunes the selection (a hidden row is never
+added), the virtualized list keeps its DOM bounded while Select all still
+takes the whole logical list, and above the 2000-signal cap the button turns
+`over-cap`/`aria-disabled` and the add is refused with
+`— select fewer signals`. `clickToAdd` stays the different, unchanged path:
+a click on an identifier in the Monaco editor adds that signal through the
+candidate picker.
 
 `elaboration` uploads `generate.sv` / `arrayed.sv` with no dump open and
 asserts the sidebar module tree shows the elaborated hierarchy
@@ -295,6 +312,105 @@ unchanged when the selection appears). Above 2000 signals `.tree-add-selected`
 gains `.over-cap` + `aria-disabled="true"` and the bulk bar Add selected is
 still clickable by design, so the actionable refusal is asserted from it.
 
+### Wave 19 signal-list interaction
+
+Since Wave 19a (unreleased on top of 0.21.0) the SIGNALS sidebar list follows
+the module tree's pattern instead of adding a signal on a plain row click
+(`signalsSelect` is the regression):
+
+| gesture | effect |
+|---|---|
+| plain click on a `.sig-row` | selects that row only - **no** wave row (the old click-to-add) |
+| Ctrl/Cmd+click | toggles the row in the selection |
+| Shift+click | selects the range from the anchor over the **filtered** order |
+| double click on a row | adds that one signal (status `added <path> to the waveform`) |
+| per-row `+` (`button.sig-add`, aria-label `Add <name> to the wave`) | adds that one signal |
+| Enter on the focused row | adds the list's selection, or that row when nothing is selected |
+| Signals head `Select all` (`.sig-select-all`) | selects every row of the filtered list |
+| Signals head/footer `Add selected (N)` (`.sig-add-selected` / `.sig-bulk-add`) | adds the whole selection as **one** `RowsAdded` batch |
+| footer `Clear` (`.sig-bulk-clear`) | empties the selection and hides the sticky `.sig-bulk-bar` |
+
+Selection markers are `.sig-row.selected` and `aria-selected="true"`; the
+header `Add selected (N)` is disabled at 0 and above the 2000-signal cap it
+gains `.over-cap` + `aria-disabled="true"` with the "select fewer signal rows"
+title, while the add is still clickable and refused with
+`too many signals to add at once: N (limit 2000) — select fewer signals`.
+The selection is pruned when the filter hides a selected row (it is never
+added invisibly), cleared by a scope change and never persisted; adding does
+not clear it, so a second Add selected reports the dedupe.
+
+The page helper `window.__qa.clickSignal(name)` kept its old "add this one
+signal" contract for the ~40 scenarios that use it: it now presses the row's
+real `+` (`.sig-add`) button instead of the row, still returning `ok` /
+`no-element:<name>`. The new helpers are `__qa.selectSignal(name, ctrl, shift)`
+(a real row click that only selects), `__qa.dblclickSignal(name)` and
+`__qa.signalSelection()` (row markers, header texts/labels/disabled/over-cap,
+the footer bar count/buttons/hint and the logical header/bar counts - the
+DOM only holds the virtualized window).
+
+### Wave 19 block add (Verdi-style "add this code block")
+
+Wave 19c adds every signal mentioned by a selected block of source code. The
+`blockAdd` scenario is the regression:
+
+| gesture | focus / target | effect |
+|---|---|---|
+| Ctrl+W, non-empty editor selection | the Monaco editor | adds the block's resolvable signals as **one** `RowsAdded` batch, status `added N signals (M already in the wave) — from the code selection`; the source tab is **not** closed |
+| Ctrl+Shift+W | the Monaco editor | the same add (web-safe alias) |
+| editor context menu | selection present | **"Add signals in selection to the wave"** (Monaco action id `wave-insight.addSelectionToWave`, group `navigation`, precondition `editorHasSelection`) - this is the guaranteed path in a browser |
+| Ctrl+W, no selection | the Monaco editor | nothing happens (no add, no close: the editor owns its key) |
+| Ctrl+W / Ctrl+F4 | anywhere else in the page | closes the active source tab (pre-Wave-19 behaviour, unchanged) |
+| Ctrl+W | inside `.dump-tabs` | the dump strip still owns it (closes the active dump, `multiDump` unchanged) |
+
+**Browser caveat:** a real browser reserves Ctrl+W for closing its own tab
+before the page can `preventDefault` it; the page still receives the keydown and
+the app routes it, and that listener path is what the matrix exercises through a
+CDP `Input.dispatchKeyEvent` with the Ctrl modifier (the desktop WebView2 build
+is where the shortcut is meant to be used). The context-menu action is the
+reliable browser path and is asserted directly.
+
+The scenario uses the app's own page seam
+`window.__waveInsightEditorSelection()` -> `{file, startLine, startColumn,
+endLine, endColumn, truncated, lines}` or `null` (the same Rust reader the
+Ctrl+W handler uses, so the assertions and the shortcut cannot disagree) and the
+new page helpers `__qa.editorSelection()`, `__qa.selectEditorBlock(...)`,
+`__qa.editorAction(id)` and `__qa.blurEditor()`. Asserted behaviour:
+
+* a top.sv declaration block (lines 9-11: `pc`, `data_out`, `pc16`) adds
+  exactly 3 rows in one batch (render delta <= 2, measured 1) and the tab stays;
+* Ctrl+Shift+W on `assign result[7:0] = data_out;` adds `result` and reports the
+  dedupe (`added 1 signals (1 already in the wave) — from the code selection`;
+  the "1 signals" plural is the pre-existing reducer wording);
+* Ctrl+W with a collapsed cursor in the editor adds and closes nothing;
+* the context-menu action on a cpu.sv block whose names are instantiated twice
+  (`next_pc`, `pc_reg`, `pc`) adds nothing and reports
+  `... ambiguous between instances (...) — click one in the source to pick its
+  signal` (ambiguous names are never guessed; the same plan also counts
+  identifiers the elaborated design does not know, and a selection with no
+  identifier at all says "no signal names");
+* a comment-only block says `... has no signal names ...`;
+* Ctrl+W outside the editor still closes the active source tab;
+* no page exceptions.
+
+The scan is word-based: comments and string literals are masked out, Verilog
+keywords/backtick macros/escaped identifiers/system tasks/based literals are
+skipped, the first/last selected line are clamped to their columns, a single
+selection is capped at 500 lines / 4000 identifiers (`truncated`) and a resolved
+batch above the shared 2000-row cap is refused with an actionable error tone.
+
+### Wave 19 desktop-only behaviour (not drivable by this matrix)
+
+The Wave 19b desktop features - a webview reload (Ctrl+Shift+R) reopening the
+dumps that were open, and SpinalHDL companion RTL autoload from
+`simWorkspace/<design>/rtl/` (also `generated/`/`verilog/`, `.v`/`.sv`
+only) - exist only in the Tauri build (`cfg(feature = "tauri")`). The browser
+build has no dump path and no filesystem, so the browser matrix cannot drive
+them and deliberately asserts nothing about them; the coverage is the Rust
+host tests (`cargo test -p front-end --bins`, `cargo test -p app` for the
+companion scanner/registry, `cargo check -p app` for the shell) plus the
+manual Windows desktop checklist in `qa/artifacts/wave19-desktop.md`. No
+scenario fakes desktop coverage.
+
 `denseDump` covers the dense waveform shape that blew the desktop app up (the
 user's >100 MB FST): a clock that changes on every time step, so the decoded
 history is huge while the file stays moderate. The fixture is generated at run
@@ -356,6 +472,29 @@ Baseline on the Wave 18 build (2026-11-11, 0.21.0, 61 scenarios):
 ```
 === summary: 575 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
 ```
+
+Baseline on the Wave 19 build (2026-11-11, 0.21.0, 63 scenarios):
+`signalsSelect` and `blockAdd` are new (+24 and +11 assertions); the
+`clickSignal` helper and the six raw sidebar-row clicks were migrated, with no
+other assertion count change.
+
+```
+=== summary: 610 passed, 0 failed, 0 pending (R2 layout, run with QA_LAYOUT=1 to enforce), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
+```
+
+The Wave 19 line comes from `node qa/run.mjs --dist front-end/dist-qa19`
+(exit 0); `node qa/run.mjs --layout --dist front-end/dist-qa19` makes the R2
+layout rules required and printed
+`=== summary: 610 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred
+(R2 step 4), 2 retired (canvas rewrite) ===`, and
+`node qa/run.mjs --offline --dist front-end/dist-qa19` passed 9/9 (editor
+mounted, shipped loader, no external request, no failed load, no 404, no
+exception). The two new scenarios ran twice in a row on the same build
+(`--scenarios signalsSelect,blockAdd`) with identical green results. Wave 19 adds 35 assertions over the Wave 18 baseline (24 for
+`signalsSelect`: plain click selects / ctrl toggle / shift range / explicit
+add paths / filter pruning / cap refusal; 11 for `blockAdd`: helper + Ctrl+W
+batch / Ctrl+Shift+W alias / no-selection / context-menu action / ambiguous and
+no-name statuses / close-tab fallback).
 
 The Wave 18 line comes from `node qa/run.mjs --layout --dist front-end/dist-qa`;
 the plain matrix (`node qa/run.mjs --dist front-end/dist-qa`, no `--layout`)
@@ -442,6 +581,11 @@ read `.wave-row polyline|text|line` goes through two seams instead:
   label-cell/value-column geometry, `__qa.splitPaneFrame()` for the parsed
   split-pane `data-frame`, `__qa.dumpSnapshot()` for the reload scenario and
   `__qa.alignProbe()` for the cursor-column/edge-ink pixel probe.
+- Wave 19 adds the waveform-side signal-list seams used by `signalsSelect`:
+  `__qa.signalRow(name)`, `__qa.selectSignal(name, ctrl, shift)`,
+  `__qa.dblclickSignal(name)` and `__qa.signalSelection()`; the legacy
+  `__qa.clickSignal(name)` now clicks the row's `.sig-add` button (Wave 19a
+  made a plain row click a selection, not an add).
 
 `R2` (see `docs/state-store.md`) additionally defines `render_count` on
 `window.__waveDebug`; the splitter assertion uses it as soon as it exists.

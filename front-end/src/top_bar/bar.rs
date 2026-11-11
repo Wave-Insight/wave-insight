@@ -109,7 +109,8 @@ impl Component for TopBar {
                     <kbd>{"ctrl+wheel"}</kbd>{" zoom · "}
                     <kbd>{"shift+wheel"}</kbd>{" rows · "}
                     <kbd>{"n"}</kbd>{" / "}<kbd>{"⇧n"}</kbd>{" transition · "}
-                    <kbd>{"click a name"}</kbd>{" adds it · "}
+                    <kbd>{"click a name"}</kbd>{" in the source adds it · "}
+                    <kbd>{"ctrl+w"}</kbd>{" block · "}
                     <kbd>{"↗"}</kbd>{" declaration · "}
                     <kbd>{"z"}</kbd>{" "}<kbd>{"f"}</kbd>{" fit · "}
                     <kbd>{"del"}</kbd>{" remove selected"}

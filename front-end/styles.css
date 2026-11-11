@@ -523,6 +523,19 @@ html, body {
   white-space: nowrap;
 }
 
+/* Wave 19: the signal list's own selection bar. It is the list's footer (below
+   the rows, above the filter) so opening it never moves the rows. */
+.sig-bulk-bar {
+  border-top: 1px solid var(--accent-line);
+  border-bottom: none;
+}
+
+/* an empty filtered list cannot be selected */
+.tree-select-all:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* the right-click row menu (fixed, opened at the pointer) */
 .row-menu-shield {
   position: fixed;
@@ -596,6 +609,13 @@ html, body {
 
 .sig-row:hover { background: var(--bg-3); color: var(--text-0); }
 
+/* Wave 19: the signal list selects like the module tree (plain / Ctrl / Shift)
+   and "Add selected (N)" adds the selection explicitly. Same highlight as
+   .tree-row.selected so a selection reads the same in both lists. */
+.sig-row.selected { background: var(--accent-soft); color: var(--text-0); }
+
+.sig-row.selected .sig-size { color: var(--text-1); }
+
 .sig-name {
   flex: 1;
   min-width: 0;
@@ -615,15 +635,29 @@ html, body {
   font-size: 10px;
 }
 
+/* the per-row add affordance: a real button (labelled, stops the row click) */
 .sig-add {
-  flex: 0 0 auto;
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  flex: 0 0 16px;
   width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  cursor: pointer;
   text-align: center;
   color: transparent;
+  font-family: var(--font-mono);
   font-size: 12px;
+  line-height: 1;
 }
 
-.sig-row:hover .sig-add { color: var(--accent); }
+.sig-row:hover .sig-add,
+.sig-row.selected .sig-add,
+.sig-add:focus-visible { color: var(--accent); }
+
+.sig-add:hover { background: var(--accent-soft); color: var(--accent); }
 
 .filter-wrap {
   padding: 6px 10px;

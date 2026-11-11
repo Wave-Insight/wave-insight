@@ -29,7 +29,7 @@
 //every one would add aliases that obscure the wasm-bindgen boundary
 #![allow(clippy::type_complexity)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -37,6 +37,9 @@ use js_sys::{Array, Function, Object, Reflect};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::HtmlElement;
+
+use crate::lsp::file_of_uri;
+use crate::nav::selection_add::{EditorSelection, MAX_SELECTION_LINES};
 
 /// The pinned monaco-editor release, shipped with the app (see `monaco/README.md`).
 ///
@@ -266,6 +269,10 @@ impl MonacoEditor {
                         )
                     };
 
+                    // the page-wide selection helpers (Ctrl+W, the QA seam) read
+                    // the editor the source pane is showing
+                    register_active_editor(&handle);
+
                     if let Some(on_click) = on_click {
                         let listener = install_click_listener(&handle, on_click);
                         creator_slot.borrow_mut().listener = Some(listener);
@@ -297,6 +304,37 @@ impl MonacoEditor {
     #[allow(dead_code)] // reserved for direct monaco calls outside the glue
     pub fn editor(&self) -> Option<JsValue> {
         self.slot.borrow().handle.clone()
+    }
+
+    /// The selection this editor has right now, `None` when it has none.
+    ///
+    /// This is what the page-wide keyboard handler asks before it turns Ctrl+W
+    /// into "add the block's signals": the whole selected block, with the full
+    /// text of its first and last line, read synchronously from monaco (see
+    /// [`read_selection`]).
+    #[allow(dead_code)] // the page-wide handler asks `active_selection()`; this is for a caller that holds the handle
+    pub fn selection(&self) -> Option<EditorSelection> {
+        let handle = self.slot.borrow().handle.clone()?;
+        read_selection(&handle)
+    }
+
+    /// Add the monaco context-menu entry "Add signals in selection to the wave".
+    ///
+    /// The action lives in the `navigation` group next to Go to Definition and
+    /// only shows while something is selected (`editorHasSelection`); running it
+    /// reports the selection through `callback` (an empty selection never
+    /// reaches it, and the run itself is guarded so a programmatic run of the
+    /// action is harmless too).
+    pub fn on_add_selection_action(&self, callback: Box<dyn Fn(EditorSelection) + 'static>) {
+        // `on_ready` runs the callback at most once, but it is an `Fn`: the
+        // action is installed on the first (and only) ready call, then dropped
+        let callback = Rc::new(RefCell::new(Some(callback)));
+        self.on_ready(Box::new(move |_monaco, editor| {
+            let Some(callback) = callback.borrow_mut().take() else {
+                return;
+            };
+            install_add_action(editor, callback);
+        }));
     }
 
     /// Run `callback` with the `monaco` namespace and the live editor once both
@@ -486,6 +524,9 @@ impl MonacoEditor {
         // the JS editor no longer exists, so the callbacks can go too
         drop(listener);
         drop(change_listener);
+        // ... and nothing may read a selection from it any more (the source
+        // pane shows one editor at a time, so this cannot hide a newer one)
+        ACTIVE_EDITOR.with(|slot| *slot.borrow_mut() = None);
     }
 }
 
@@ -556,6 +597,215 @@ fn ensure_loaded(callback: ReadyCallback) {
     if start_loading {
         start_load();
     }
+}
+
+// ---------------------------------------------------------------------------
+// The selected block (Verdi: "add every signal of this block")
+// ---------------------------------------------------------------------------
+
+/// The name of the page-wide selection helper.
+///
+/// The Rust side reads the selection through [`active_selection`]; the JS name
+/// exists so the browser QA harness (and any future JS caller) can see exactly
+/// what a Ctrl+W would act on.
+const SELECTION_HELPER: &str = "__waveInsightEditorSelection";
+
+/// Id of the editor action the context menu shows.
+pub const ADD_SELECTION_ACTION_ID: &str = "wave-insight.addSelectionToWave";
+
+thread_local! {
+    /// The editor the page-wide helpers read a selection from. The source pane
+    /// shows one editor; a re-created one replaces the registration and the
+    /// dispose clears it.
+    static ACTIVE_EDITOR: RefCell<Option<JsValue>> = const { RefCell::new(None) };
+    /// Whether `window.__waveInsightEditorSelection` is installed already.
+    static SELECTION_HELPER_INSTALLED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Make `editor` the one the page-wide selection helpers read, and install
+/// `window.__waveInsightEditorSelection()` the first time an editor exists.
+fn register_active_editor(editor: &JsValue) {
+    ACTIVE_EDITOR.with(|slot| *slot.borrow_mut() = Some(editor.clone()));
+    install_selection_helper();
+}
+
+/// The selection of the editor the source pane currently shows, if any.
+///
+/// The page-wide keyboard handler (`CodeReader`) owns no editor handle of its
+/// own, so it asks this: `None` before monaco is ready, when no source is
+/// attached, and after the editor was torn down.
+pub fn active_selection() -> Option<EditorSelection> {
+    let editor = ACTIVE_EDITOR.with(|slot| slot.borrow().clone())?;
+    read_selection(&editor)
+}
+
+/// Read the live selection of `editor`.
+///
+/// Returns the selection only when it covers something: monaco reports a
+/// collapsed selection (a bare cursor) as start == end, which is the state in
+/// which Ctrl+W keeps its old "close the tab" meaning.
+fn read_selection(editor: &JsValue) -> Option<EditorSelection> {
+    let model = js_function(editor, "getModel")?.call0(editor).ok()?;
+    if !model.is_object() {
+        return None;
+    }
+    // a model that is not a design source (monaco's own scratch model) has no
+    // block to add: `file_of_uri` refuses anything that is not a source document
+    let file = file_of_uri(&model_uri(&model)?)?;
+    if file.is_empty() {
+        return None;
+    }
+    let selection = js_function(editor, "getSelection")?.call0(editor).ok()?;
+    if !selection.is_object() {
+        return None;
+    }
+    let field = |key: &str| {
+        Reflect::get(&selection, &JsValue::from_str(key))
+            .ok()
+            .and_then(|value| value.as_f64())
+            .map(|value| (value.max(1.0)) as u32)
+    };
+    let start_line = field("startLineNumber")?;
+    let start_col = field("startColumn")?;
+    let end_line = field("endLineNumber")?;
+    let end_col = field("endColumn")?;
+    if end_line < start_line || (start_line == end_line && end_col <= start_col) {
+        return None;
+    }
+
+    // The scan needs the full text of the first and last line (the selection can
+    // start and stop mid-line), so every line of the range is read, capped: a
+    // select-all must not read a 50k line file into the page synchronously.
+    let get_line = js_function(&model, "getLineContent")?;
+    let total_lines = end_line - start_line + 1;
+    let mut lines = Vec::with_capacity(total_lines.min(MAX_SELECTION_LINES) as usize);
+    for offset in 0..total_lines.min(MAX_SELECTION_LINES) {
+        let line = start_line + offset;
+        let text = get_line
+            .call1(&model, &JsValue::from_f64(f64::from(line)))
+            .ok()?
+            .as_string()?;
+        lines.push(text);
+    }
+    Some(EditorSelection {
+        file,
+        start_line,
+        start_col,
+        end_line,
+        end_col,
+        lines,
+        truncated: total_lines > MAX_SELECTION_LINES,
+    })
+}
+
+/// The selection as the JS object the page-wide helper returns.
+fn selection_to_js(selection: &EditorSelection) -> JsValue {
+    let object = Object::new();
+    set(&object, "file", JsValue::from_str(&selection.file));
+    set(
+        &object,
+        "startLine",
+        JsValue::from_f64(f64::from(selection.start_line)),
+    );
+    set(
+        &object,
+        "startColumn",
+        JsValue::from_f64(f64::from(selection.start_col)),
+    );
+    set(
+        &object,
+        "endLine",
+        JsValue::from_f64(f64::from(selection.end_line)),
+    );
+    set(
+        &object,
+        "endColumn",
+        JsValue::from_f64(f64::from(selection.end_col)),
+    );
+    set(
+        &object,
+        "truncated",
+        JsValue::from_bool(selection.truncated),
+    );
+    let lines = Array::new();
+    for line in &selection.lines {
+        lines.push(&JsValue::from_str(line));
+    }
+    set(&object, "lines", lines.into());
+    JsValue::from(object)
+}
+
+/// Install `window.__waveInsightEditorSelection()` once per page.
+///
+/// The function returns `{file, startLine, startColumn, endLine, endColumn,
+/// truncated, lines}` or `null`; the Rust side uses [`active_selection`] (the
+/// same reader), so the two can never disagree.
+fn install_selection_helper() {
+    if SELECTION_HELPER_INSTALLED.with(|installed| installed.replace(true)) {
+        return;
+    }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let helper = Closure::wrap(Box::new(|| -> JsValue {
+        match active_selection() {
+            Some(selection) => selection_to_js(&selection),
+            None => JsValue::NULL,
+        }
+    }) as Box<dyn FnMut() -> JsValue>);
+    let function: &Function = helper.as_ref().unchecked_ref();
+    let _ = Reflect::set(
+        &window,
+        &JsValue::from_str(SELECTION_HELPER),
+        function.as_ref(),
+    );
+    // a page-long helper: it lives as long as the app (this is the same
+    // intentional leak the AMD loader callbacks use)
+    helper.forget();
+}
+
+/// `editor.addAction`: the context menu entry and its guarded run.
+fn install_add_action(editor: &JsValue, callback: Box<dyn Fn(EditorSelection) + 'static>) {
+    let editor_for_run = editor.clone();
+    let run = Closure::wrap(Box::new(move || -> JsValue {
+        if let Some(selection) = read_selection(&editor_for_run) {
+            callback(selection);
+        }
+        JsValue::UNDEFINED
+    }) as Box<dyn FnMut() -> JsValue>);
+
+    let descriptor = Object::new();
+    set(
+        &descriptor,
+        "id",
+        JsValue::from_str(ADD_SELECTION_ACTION_ID),
+    );
+    set(
+        &descriptor,
+        "label",
+        JsValue::from_str("Add signals in selection to the wave"),
+    );
+    // next to Go to Definition / Go to References
+    set(
+        &descriptor,
+        "contextMenuGroupId",
+        JsValue::from_str("navigation"),
+    );
+    set(&descriptor, "contextMenuOrder", JsValue::from_f64(1.5));
+    // no entry without a selection: there is nothing to add, and Ctrl+W then
+    // keeps closing the tab
+    set(
+        &descriptor,
+        "precondition",
+        JsValue::from_str("editorHasSelection"),
+    );
+    set(&descriptor, "run", run.as_ref().clone());
+
+    if let Some(add_action) = js_function(editor, "addAction") {
+        let _ = add_action.call1(editor, &descriptor);
+    }
+    // monaco holds the function; the closure must outlive this call
+    run.forget();
 }
 
 // ---------------------------------------------------------------------------

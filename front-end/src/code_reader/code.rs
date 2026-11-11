@@ -2,7 +2,9 @@ use wasm_bindgen::JsCast;
 use yew::prelude::*;
 
 use crate::code_reader::code_block::CodeBlock;
+use crate::code_reader::monaco_glue;
 use crate::lsp::LspBridge;
+use crate::nav::selection_add::EditorSelection;
 use crate::nav::{Goto, SourceClick};
 use crate::state::SourcesSlice;
 
@@ -31,6 +33,11 @@ pub struct CodeReaderProps {
     /// The visible buffer changed; the store is the document of record.
     #[prop_or_default]
     pub onchange: Callback<(String, String)>,
+    /// A block of code was selected and the user asked for every signal it
+    /// mentions (Ctrl+W with a selection, Ctrl+Shift+W, or the editor's
+    /// "Add signals in selection to the wave" context-menu entry).
+    #[prop_or_default]
+    pub onaddselection: Callback<EditorSelection>,
 }
 
 pub enum Msg {
@@ -70,19 +77,34 @@ impl Component for CodeReader {
                 false
             }
             Msg::KeyDown(event) => {
-                // Ctrl+W / Ctrl+F4: close the active tab, unless the user is
-                // typing in the editor (the editor owns its keys, and the
-                // browser would close its own tab for Ctrl+W anyway) or the key
-                // started in the dump tab strip, which has its own Ctrl+W
-                if typing_in_editor(&event) || inside_dump_tabs(&event) {
-                    return false;
-                }
-                let key = event.key();
-                let closes = event.ctrl_key() && (key == "w" || key == "W" || key == "F4");
-                if closes && !ctx.props().sources.is_empty() {
-                    event.prevent_default();
-                    ctx.props().onclose.emit(ctx.props().sources.active_index());
-                    return false;
+                // The page-wide shortcuts: Ctrl+W / Ctrl+F4 close the active
+                // source tab, and Ctrl+W (or Ctrl+Shift+W) with a non-empty
+                // editor selection adds the selected block's signals instead
+                // (the Verdi flow). `key_action` holds the whole key table.
+                let action = key_action(
+                    &event.key(),
+                    event.ctrl_key(),
+                    event.shift_key(),
+                    key_target(&event),
+                );
+                match action {
+                    KeyAction::AddSelection => {
+                        // No selection (a bare cursor, or monaco still loading):
+                        // nothing to add. The editor keeps owning its keys, so
+                        // Ctrl+W never closes the tab the user is editing.
+                        let Some(selection) = monaco_glue::active_selection() else {
+                            return false;
+                        };
+                        event.prevent_default();
+                        ctx.props().onaddselection.emit(selection);
+                    }
+                    KeyAction::CloseTab => {
+                        if !ctx.props().sources.is_empty() {
+                            event.prevent_default();
+                            ctx.props().onclose.emit(ctx.props().sources.active_index());
+                        }
+                    }
+                    KeyAction::Ignore => {}
                 }
                 false
             }
@@ -143,6 +165,7 @@ impl Component for CodeReader {
                         onwordclick={props.onwordclick.clone()}
                         onshown={props.onshown.clone()}
                         onchange={props.onchange.clone()}
+                        onaddselection={props.onaddselection.clone()}
                         lsp={props.lsp.clone()} />
                 </div>
             </>
@@ -171,18 +194,84 @@ impl CodeReader {
     }
 }
 
-/// Is the key event aimed at the dump tab strip?
+/// Where a key press started, as far as the page-wide shortcuts care.
 ///
-/// With two tab strips on screen, Ctrl+W belongs to the strip the focus is in:
-/// the dump strip handles it itself (closing the active dump), so the source
-/// strip's page-wide listener must ignore keys that started there.
-fn inside_dump_tabs(event: &web_sys::KeyboardEvent) -> bool {
+/// The DOM ancestor chain is collapsed into this before the key table looks at
+/// it, so the table itself is pure (and host tested).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyTarget {
+    /// The dump tab strip owns Ctrl+W there (it closes the active dump).
+    DumpTabs,
+    /// A plain text field (`<input>`, `<textarea>`, contenteditable, ...).
+    TextField,
+    /// The monaco source editor (its hidden textarea included).
+    Editor,
+    /// Anywhere else in the page.
+    Other,
+}
+
+/// What one key press means for the source pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyAction {
+    /// Close the active source tab (the pre-Wave-19 Ctrl+W / Ctrl+F4).
+    CloseTab,
+    /// Add the signals of the editor's selected block (Ctrl+W with a selection,
+    /// or the Ctrl+Shift+W alias).
+    AddSelection,
+    /// Not ours: the editor, a text field or the dump strip owns the key.
+    Ignore,
+}
+
+/// Decode a key press for the page-wide source-pane shortcuts.
+///
+/// The rules:
+///
+/// * only Ctrl combinations are ours (Ctrl+F4 keeps its old close meaning);
+/// * a plain text field and the dump tab strip own their keys;
+/// * in the **editor** Ctrl+W means "add the selected block", and Ctrl+Shift+W
+///   is the browser-safe alias of the same add; with no selection nothing
+///   happens (the editor owns its keys, so the tab the user is editing is never
+///   closed from under them);
+/// * anywhere else Ctrl+W still closes the active tab, exactly as before.
+///
+/// Pure, so the whole table is host tested.
+pub fn key_action(key: &str, ctrl: bool, shift: bool, target: KeyTarget) -> KeyAction {
+    if !ctrl {
+        return KeyAction::Ignore;
+    }
+    let is_w = key.eq_ignore_ascii_case("w");
+    match target {
+        KeyTarget::DumpTabs | KeyTarget::TextField => KeyAction::Ignore,
+        KeyTarget::Editor => {
+            if is_w {
+                KeyAction::AddSelection
+            } else {
+                KeyAction::Ignore
+            }
+        }
+        KeyTarget::Other => {
+            if key == "F4" || (is_w && !shift) {
+                KeyAction::CloseTab
+            } else {
+                KeyAction::Ignore
+            }
+        }
+    }
+}
+
+/// Where a keyboard event started: the DOM target collapsed to a [`KeyTarget`].
+///
+/// The ancestry is walked once; the first strip/editor/text-field signal wins,
+/// with the dump strip checked first (it has a Ctrl+W handler of its own).
+fn key_target(event: &web_sys::KeyboardEvent) -> KeyTarget {
     let Some(target) = event.target() else {
-        return false;
+        return KeyTarget::Other;
     };
     let Ok(element) = target.dyn_into::<web_sys::Element>() else {
-        return false;
+        return KeyTarget::Other;
     };
+    let mut editor = false;
+    let mut field = false;
     let mut current = Some(element);
     while let Some(element) = current {
         if element
@@ -190,41 +279,101 @@ fn inside_dump_tabs(event: &web_sys::KeyboardEvent) -> bool {
             .map(|class| class.contains("dump-tabs"))
             .unwrap_or(false)
         {
-            return true;
-        }
-        current = element.parent_element();
-    }
-    false
-}
-
-/// Is the key event aimed at the source editor (or any text field)?
-///
-/// The same rule the wave pane uses: the editor owns its keys, so a Ctrl+W
-/// typed into a comment must not close the tab it is written in.
-fn typing_in_editor(event: &web_sys::KeyboardEvent) -> bool {
-    let Some(target) = event.target() else {
-        return false;
-    };
-    let Ok(element) = target.dyn_into::<web_sys::Element>() else {
-        return false;
-    };
-    let mut current = Some(element);
-    while let Some(element) = current {
-        let tag = element.tag_name().to_ascii_lowercase();
-        if tag == "input" || tag == "textarea" || tag == "select" {
-            return true;
-        }
-        if element.has_attribute("contenteditable") {
-            return true;
+            return KeyTarget::DumpTabs;
         }
         if element
             .get_attribute("class")
             .map(|class| class.contains("monaco-editor"))
             .unwrap_or(false)
         {
-            return true;
+            editor = true;
+        }
+        let tag = element.tag_name().to_ascii_lowercase();
+        if tag == "input"
+            || tag == "textarea"
+            || tag == "select"
+            || element.has_attribute("contenteditable")
+        {
+            field = true;
         }
         current = element.parent_element();
     }
-    false
+    if editor {
+        KeyTarget::Editor
+    } else if field {
+        KeyTarget::TextField
+    } else {
+        KeyTarget::Other
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{key_action, KeyAction, KeyTarget};
+
+    #[test]
+    fn ctrl_w_closes_the_tab_outside_the_editor() {
+        assert_eq!(
+            key_action("w", true, false, KeyTarget::Other),
+            KeyAction::CloseTab
+        );
+        // the browser reports the capital letter when Shift is held
+        assert_eq!(
+            key_action("W", true, false, KeyTarget::Other),
+            KeyAction::CloseTab
+        );
+    }
+
+    #[test]
+    fn ctrl_w_in_the_editor_is_the_block_add() {
+        assert_eq!(
+            key_action("w", true, false, KeyTarget::Editor),
+            KeyAction::AddSelection
+        );
+        // ... and the editor/text field/strip keeps owning its keys otherwise
+        assert_eq!(
+            key_action("w", true, false, KeyTarget::TextField),
+            KeyAction::Ignore
+        );
+        assert_eq!(
+            key_action("w", true, false, KeyTarget::DumpTabs),
+            KeyAction::Ignore
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_w_is_the_add_alias_and_never_closes() {
+        assert_eq!(
+            key_action("W", true, true, KeyTarget::Editor),
+            KeyAction::AddSelection
+        );
+        assert_eq!(
+            key_action("W", true, true, KeyTarget::Other),
+            KeyAction::Ignore
+        );
+        assert_eq!(
+            key_action("W", true, true, KeyTarget::TextField),
+            KeyAction::Ignore
+        );
+    }
+
+    #[test]
+    fn ctrl_f4_keeps_its_close_meaning_and_other_keys_are_ignored() {
+        assert_eq!(
+            key_action("F4", true, false, KeyTarget::Other),
+            KeyAction::CloseTab
+        );
+        assert_eq!(
+            key_action("F4", true, false, KeyTarget::Editor),
+            KeyAction::Ignore
+        );
+        assert_eq!(
+            key_action("z", true, false, KeyTarget::Other),
+            KeyAction::Ignore
+        );
+        assert_eq!(
+            key_action("w", false, false, KeyTarget::Other),
+            KeyAction::Ignore
+        );
+    }
 }

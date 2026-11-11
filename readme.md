@@ -134,8 +134,8 @@ a convenient place for a test dump: `test*.vcd` there is git-ignored.)
 
 The end-to-end matrix lives in the repository now: [`qa/`](qa/README.md) drives
 the built `front-end/dist` in headless Chrome over CDP, uploads its own fixtures
-and asserts the user-visible behaviour (the current matrix has **61 scenarios /
-575 assertions**; `--list` prints them). The full matrix is green with the R2
+and asserts the user-visible behaviour (the current matrix has **63 scenarios /
+610 assertions**; `--list` prints them). The full matrix is green with the R2
 layout rules required. The newest scenarios cover the generated/arrayed design
 tree in the sidebar, elaboration diagnostics reaching the editor and the top-bar
 chip, the TXT export matching the CSV for the same row, multi-dump tabs and the
@@ -178,11 +178,11 @@ cd front-end
 CARGO_PROFILE_RELEASE_OPT_LEVEL=s trunk serve --release
 ```
 
-The release wasm with the CI profile is **10,271,400 bytes = 9.80 MiB**
+The release wasm with the CI profile is **10,314,473 bytes = 9.84 MiB**
 (about 2 MB over the wire, because GitHub Pages serves the assets
 gzip-compressed). CI pins trunk 0.22.1 and fails the build if the release wasm
 grows past **10 MiB** (`WASM_SIZE_BUDGET` in the Rust workflow), so a size
-blow-up shows up before it ships; the current build leaves roughly 200 KiB of
+blow-up shows up before it ships; the current build leaves roughly 167 KiB of
 headroom, so a big new dependency needs a budget review. Keep the
 `CARGO_PROFILE_RELEASE_OPT_LEVEL=s`
 part of the command: a plain `trunk build --release` uses the default
@@ -297,8 +297,11 @@ Each plan keeps the breaker list, the steps and the verification that was run.
 ## Usage
 
 Load a `.vcd`, `.fst` or `.ghw` dump and any `.v`/`.sv` sources it came from.
-Click a signal in the sidebar (or an identifier in the source) to add it to the
-wave view; the wheel pans the trace forward and back (Verdi's gesture: wheel down
+Click a signal in the sidebar to select it - double-click it, use its `+`, or
+**Add selected (N)** to put it (or the whole Ctrl/Shift selection) on the wave;
+click an identifier in the source to add that signal directly, or select a block of
+code and press `ctrl+w` to add every signal it names (see **Signal list
+selection** and **Add signals from a source block** below); the wheel pans the trace forward and back (Verdi's gesture: wheel down
 goes forward in time; over the label column a plain wheel still scrolls the
 signal rows, and `shift`+wheel scrolls them from anywhere over the wave),
 `ctrl`+wheel zooms at the pointer, drag to zoom into a range, left/right click to
@@ -420,6 +423,34 @@ shortened with `…` instead of disappearing.
   reports the error instead of a partial add. Limits: the selection is
   session-only and is cleared when the tree rebuilds, bulk add does not move the
   inspector selection, and there is no marquee or Shift+arrow selection yet.
+- **Signal list selection**: the SIGNALS list selects like the module tree. A
+  plain click selects a row (it no longer adds it), Ctrl/Cmd+click toggles,
+  Shift+click selects the filtered range, and **Select all** / **Add selected
+  (N)** in the Signals header add the whole selection in one batch; a sticky
+  footer bar shows the count with **Add selected** / **Clear** and the hint. The
+  selection follows the search filter (hidden rows are dropped from it), is per
+  scope (a new scope clears it) and is not persisted. A double-click, the
+  per-row `+` (a real labelled button), Enter on the focused row or the row
+  menu's **Add signal** still add a single signal immediately. One batch adds
+  everything: dedupe and the remembered settings apply, the row list updates
+  once, the status line says `added N signals (M already in the wave)`, and the
+  same 2000-row cap applies (over-cap the button turns over-cap and the action
+  says `select fewer signals`).
+- **Add signals from a source block**: select the code in the source editor
+  (e.g. an `always`/module block) and press `ctrl+w` (or `ctrl+shift+W`, or
+  right-click and choose **Add signals in selection to the wave** in the editor
+  menu): every identifier the block mentions is resolved through the same design
+  lookup a click uses, and the signals are added in one batch
+  (`added N signals (M already in the wave) — from the code selection`). Names
+  that several instances match are **not guessed** - the status lists them and
+  says to click one to open the picker; names the design does not know are
+  counted; a selection with no signal names says so. `ctrl+w` with no editor
+  selection keeps its old meaning (close the active source tab), and this
+  shortcut is desktop-friendly: a real browser owns `ctrl+w`/its shift variant,
+  so in the web build the editor context-menu entry is the reliable path. Limits:
+  it is a word scanner, not a parser (a macro body is scanned as code; a
+  partially selected word at either end is skipped), the selection is capped at
+  500 lines / 4000 identifiers, and the batch shares the 2000-row cap.
 - **Persistence**: the window layout (sidebar width, editor/wave ratio, sidebar
   visibility) and each signal's display settings (format, fixed point, analog,
   colour) are remembered in the browser's `localStorage` and restored on the next
@@ -432,11 +463,29 @@ shortened with `…` instead of disappearing.
   longer in the dump are skipped and the load line says how many. A future or
   corrupt stored payload, or a browser that denies storage, falls back to the
   defaults.
+- **Desktop reload and companion RTL** (Tauri build): reloading the desktop window
+  (`Ctrl+Shift+R`) reopens the dumps that were open, from the absolute paths
+  remembered in `localStorage` (at most 16, opened oldest-first); a path that no
+  longer exists is dropped from the list and reported in one line, and closing a
+  tab removes it. This is desktop-only - a browser page has no file handle, so the
+  web build keeps its documented row-session restore instead. When a desktop dump
+  is opened, the app also looks for generated RTL next to it following the
+  SpinalHDL layout - `simWorkspace/<design>/rtl/*.v` beside the waveform, and the
+  `rtl`/`generated`/`verilog` directories of the dump's own directory or up to two
+  ancestors - and loads the `.v`/`.sv` files it finds as sources automatically
+  (`loaded N companion RTL source(s) from <dir>`; at most 128 files / 16 MiB,
+  `.vhd`/`.vhdl` companions are skipped because the front end parses
+  Verilog/SystemVerilog only). Limits: the reload restores paths and order, not
+  the previously active tab, and a natively mapped dump (> 64 MiB) comes back as
+  a waveform without replaying its rows (small dumps restore rows and settings).
 
 The keyboard and accessibility contract: `Delete` removes the selected rows,
 `ctrl+A` selects every row, the arrow keys and `Home`/`End` move the row
 selection, `Escape` closes dialogs and the `go to` box without clearing the
-selection, and `ctrl+W`/`ctrl+F4` closes the active source tab. Dialogs are
+selection, `ctrl+W` with no editor selection (and `ctrl+F4`) closes the active
+source tab while `ctrl+W` with a selection adds the selected block's signals,
+and the Signals list rows select with the arrow keys/Enter/Shift/Ctrl like the
+module tree. Dialogs are
 labelled modals (`role="dialog"`, `aria-modal`) that trap Tab, take focus on
 open and give it back to the opener on close; focus rings are visible, the tab
 closer is a real button, and the wave list and candidate picker expose
@@ -633,7 +682,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] export signal values as CSV, TXT or MAT (MAT is one row at a time; x/z bits become NaN)
 - [x] large-dump loading: chunked read with progress and cancel, a readable `parsing ...` step, and a 512 MB size guard
 - [x] language-server diagnostics: editor squiggles plus a top-bar `N problem(s)` chip
-- [x] browser QA suite moved into the repository (`qa/`, now 61 scenarios / 575 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
+- [x] browser QA suite moved into the repository (`qa/`, now 63 scenarios / 610 assertions, own fixtures) with an advisory CI smoke job and a weekly full-matrix workflow
 - [x] generate regions/loops/conditionals with constant bounds are unrolled, and arrayed instances expand to per-element paths (see Known limitations for the remaining gaps)
 - [x] sidebar module tree and signal list virtualization above 80 rows
 - [x] window layout and per-signal display settings persist across reloads (versioned `localStorage`)

@@ -6,6 +6,7 @@ use yew::prelude::*;
 
 use crate::code_reader::monaco_glue::{EditorOptions, MonacoEditor};
 use crate::lsp::{document_uri, file_of_uri, install, LspBridge, LANGUAGE_ID};
+use crate::nav::selection_add::EditorSelection;
 use crate::nav::{Goto, SourceClick};
 
 #[derive(Debug, Properties, PartialEq, Clone)]
@@ -30,6 +31,10 @@ pub struct CodeBlockProps {
     /// The page's language server client: every document the editor shows is
     /// opened (and kept in sync) here, and the monaco providers answer from it.
     pub lsp: LspBridge,
+    /// The context-menu entry "Add signals in selection to the wave" was run:
+    /// the selected block of code, as monaco reports it.
+    #[prop_or_default]
+    pub onaddselection: Callback<EditorSelection>,
 }
 
 pub struct CodeBlock {
@@ -172,6 +177,14 @@ impl CodeBlock {
 
         // definition / references / hover / documentSymbol on `systemverilog`
         install(&editor, props.lsp.clone());
+
+        // Verdi's "add the signals of this block", discoverable without the
+        // Ctrl+W shortcut: monaco's own context menu entry (the shortcut is
+        // handled page-wide by `CodeReader`, see code.rs)
+        let add_selection = props.onaddselection.clone();
+        editor.on_add_selection_action(Box::new(move |selection| {
+            add_selection.emit(selection);
+        }));
 
         if !props.file.is_empty() {
             editor.show_document(&document_uri(&props.file), LANGUAGE_ID, &props.text);

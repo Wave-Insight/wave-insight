@@ -1,4 +1,6 @@
 use std::cell::Cell;
+#[cfg(feature = "tauri")]
+use std::collections::VecDeque;
 
 use yew::prelude::*;
 
@@ -6,6 +8,7 @@ use crate::code_reader::CodeReader;
 use crate::lsp::LspBridge;
 use crate::module_struct::ModuleStruct;
 use crate::module_struct::{RowContext, RowKind, TreeSelect};
+use crate::nav::selection_add::{self, EditorSelection};
 use crate::nav::{match_dump_candidates, PathPicker, SidebarTree, SignalInspector, SourceClick};
 use crate::state::{
     self, Action, Cursors, DumpHandle, DumpId, DumpsTabsSlice, Effect, Focus, Goto, Layout, Picker,
@@ -112,6 +115,9 @@ pub enum Msg {
     Resize,
     /// A signal row was clicked in the sidebar; its hierarchical path.
     SidebarAdd(String),
+    /// Several signal rows were selected in the signal list and explicitly added
+    /// ("Add selected"): their hierarchical paths, dispatched as ONE batch.
+    SidebarAddMany(Vec<String>),
     /// A dump was opened: the handle values are decoded from, plus its time
     /// range so the ruler and the fit-to-trace zoom can be drawn.
     GetWaveform(DumpHandle),
@@ -132,8 +138,34 @@ pub enum Msg {
     /// through the wasm path instead.
     #[cfg(feature = "tauri")]
     RemoteFallback(String),
+    /// A desktop reload is reopening the dumps of the previous page, oldest
+    /// first: the app opens them one at a time, through the same open path a
+    /// drop or a dialog pick takes (see `DesktopRestore`).
+    #[cfg(feature = "tauri")]
+    DesktopRestore(Vec<String>),
+    /// One remembered path could not be reopened (the file is gone, unreadable,
+    /// or not a dump any more). It leaves the reopen list; the failures of one
+    /// restore are reported in one aggregated line, never one error per file.
+    #[cfg(feature = "tauri")]
+    DesktopRestoreFailed(String, String),
+    /// The companion RTL sources next to the opened dump were read (desktop
+    /// build): the app loads them as source documents and says so once.
+    #[cfg(feature = "tauri")]
+    CompanionRtlLoaded {
+        /// The discovery generation this answer belongs to; an answer for a dump
+        /// that was replaced meanwhile is dropped.
+        generation: u32,
+        /// The `rtl` (or `generated`/`verilog`) directory the files came from.
+        dir: String,
+        /// `(absolute path, text)` of each source not already open.
+        files: Vec<(String, String)>,
+    },
     /// A plain click on an identifier in the source editor.
     SourceClick(SourceClick),
+    /// A block of code was selected and the user asked for every signal it
+    /// mentions (Verdi's block add): Ctrl+W with a selection, the Ctrl+Shift+W
+    /// alias, or the editor's context-menu entry. One rows batch.
+    AddSelectionToWave(EditorSelection),
     /// The wave view selected (or cleared) a signal.
     WaveSelect(Option<String>),
     /// The wave view asked where a signal is declared.
@@ -215,6 +247,31 @@ struct ResolvedSignal {
     size: usize,
     load: Vec<String>,
     drive: Vec<String>,
+}
+
+/// The dumps a desktop reload is reopening, one at a time.
+///
+/// A webview reload (Ctrl+Shift+R) throws the wasm state away while the Rust
+/// backend keeps running: the absolute paths of the dumps the previous page had
+/// open are remembered (see [`crate::state::persist::DesktopPaths`]) and this
+/// state machine opens them again through the very same path a drop or a dialog
+/// pick takes — the native backend first, the wasm reader for a small file — so
+/// each dump's remembered rows and per-signal settings come back through the
+/// existing session mechanism. Restores are sequential on purpose: the native
+/// backend is one-dump-at-a-time and the wasm memory budget counts every open.
+#[cfg(feature = "tauri")]
+struct DesktopRestore {
+    /// The paths not tried yet, oldest first.
+    pending: VecDeque<String>,
+    /// How many dumps of the list were opened.
+    opened: usize,
+    /// The paths that could not be opened, with the reason, in list order.
+    failed: Vec<(String, String)>,
+    /// How many paths the list started with (for the aggregate status line).
+    total: usize,
+    /// The path currently being opened. A wasm read reports a failure through
+    /// the normal [`Msg::Error`] path, which uses this to count the dump once.
+    active: Option<String>,
 }
 
 pub struct App {
@@ -301,6 +358,33 @@ pub struct App {
     /// The native dump the desktop build is drawing read-only, when one is open.
     #[cfg(feature = "tauri")]
     remote: Option<crate::remote::RemoteSession>,
+    /// The absolute paths of the dumps the desktop build currently has open,
+    /// oldest first: the list a webview reload reopens. Only the desktop build
+    /// can know paths (a browser `File` handle dies with the page), which is
+    /// why every field of this group is tauri-only.
+    #[cfg(feature = "tauri")]
+    desktop_paths: crate::state::persist::DesktopPaths,
+    /// Where the desktop reopen list is read and written; `None` when the
+    /// browser denies `localStorage` (the list then simply does not survive).
+    #[cfg(feature = "tauri")]
+    desktop_persister: Option<std::rc::Rc<crate::state::persist::Persister>>,
+    /// The path of the native dump that is open, when one is. The native backend
+    /// is one-dump-at-a-time: opening another native dump replaces this one, and
+    /// the replaced dump's path has to leave the reopen list.
+    #[cfg(feature = "tauri")]
+    native_path: Option<String>,
+    /// The absolute path behind each wasm dump tab, by dump identity: closing a
+    /// tab forgets its path (the tab list itself keeps only name + size).
+    #[cfg(feature = "tauri")]
+    tab_paths: Vec<(DumpId, String)>,
+    /// The dumps a desktop reload is currently reopening, one at a time.
+    #[cfg(feature = "tauri")]
+    restore: Option<DesktopRestore>,
+    /// Bumped by every companion-RTL discovery. An answer that arrives for a
+    /// dump that was replaced meanwhile is dropped instead of loading the wrong
+    /// sources next to the new waveform.
+    #[cfg(feature = "tauri")]
+    companion_gen: Cell<u32>,
 }
 
 impl Component for App {
@@ -367,7 +451,19 @@ impl Component for App {
         // settings from the last session and writes committed changes back (see
         // `state::persist`). `browser_persister` is `None` when the browser
         // denies storage (private mode), which simply means "no persistence".
-        let store = Store::with_persister(state::persist::browser_persister());
+        //
+        // Wave 19: the desktop build also restores the absolute paths of the
+        // dumps the previous page had open, so a webview reload can reopen them
+        // (the browser cannot: a `File` handle does not survive a reload). The
+        // read is as forgiving as every other key: an absent or corrupt value is
+        // an empty list.
+        let persister = state::persist::browser_persister();
+        #[cfg(feature = "tauri")]
+        let (desktop_paths, desktop_persister) = match &persister {
+            Some(persister) => (persister.desktop_paths(), Some(persister.clone())),
+            None => (crate::state::persist::DesktopPaths::default(), None),
+        };
+        let store = Store::with_persister(persister);
         // A restored sidebar width may be wider than this window allows (the
         // window was larger last time). Clamp it before the shell reads the
         // slice, so the first render already has a usable width.
@@ -477,6 +573,18 @@ impl Component for App {
             pending_load: None,
             #[cfg(feature = "tauri")]
             remote: None,
+            #[cfg(feature = "tauri")]
+            desktop_paths,
+            #[cfg(feature = "tauri")]
+            desktop_persister,
+            #[cfg(feature = "tauri")]
+            native_path: None,
+            #[cfg(feature = "tauri")]
+            tab_paths: Vec::new(),
+            #[cfg(feature = "tauri")]
+            restore: None,
+            #[cfg(feature = "tauri")]
+            companion_gen: Cell::new(0),
         };
         // a native dump opened through the desktop file dialog arrives here
         #[cfg(feature = "tauri")]
@@ -487,6 +595,28 @@ impl Component for App {
             })));
         }
         this.attach_window_listeners(ctx);
+        // Wave 19: a desktop page start frees the native mappings the previous
+        // page left behind (the registry outlives the page) and then reopens the
+        // dumps that page had open, oldest first. Nothing happens on a browser
+        // start, and nothing happens when the list is empty (the user closed
+        // every dump last session).
+        #[cfg(feature = "tauri")]
+        {
+            let link = ctx.link().clone();
+            let restored = this.desktop_paths.clone();
+            spawn_local(async move {
+                // the registry is process state; the ids of the previous page
+                // went away with it, so close what it left behind before
+                // opening anything new
+                let _ = crate::remote::close_all().await;
+                // let the first paint happen before the IO starts
+                crate::file_load::file::next_tick().await;
+                crate::file_load::file::next_tick().await;
+                if !restored.is_empty() {
+                    link.send_message(Msg::DesktopRestore(restored.paths().to_vec()));
+                }
+            });
+        }
         this
     }
 
@@ -517,6 +647,9 @@ impl Component for App {
         #[cfg(feature = "tauri")]
         {
             crate::remote::set_open_listener(None);
+            // releasing the native session here must NOT touch the desktop
+            // reopen list: this is the teardown of a webview reload (Ctrl+Shift+R),
+            // and the whole point of the list is to open that dump again.
             self.close_remote();
         }
         if let (Some(window), Some(listener)) = (web_sys::window(), self.resize_listener.take()) {
@@ -562,6 +695,7 @@ impl Component for App {
                                 onaddselected={link.callback(|_| Msg::AddSelected)}
                                 onclear={link.callback(|_| Msg::MenuClearSelection)}
                                 onrowcontext={link.callback(Msg::RowMenuOpened)}
+                                onaddmany={link.callback(Msg::SidebarAddMany)}
                                 signaladd={link.callback(|(_name, path): (String, String)| Msg::SidebarAdd(path))}/>
                         </aside>
                         }
@@ -606,7 +740,8 @@ impl Component for App {
                                 onclose={link.callback(Msg::CloseSource)}
                                 onshown={link.callback(Msg::JumpHandled)}
                                 onchange={link.callback(Msg::SourceEdited)}
-                                onwordclick={link.callback(Msg::SourceClick)} />
+                                onwordclick={link.callback(Msg::SourceClick)}
+                                onaddselection={link.callback(Msg::AddSelectionToWave)} />
                         </div>
                         <div class={if self.wave_splitter_start.is_some() {"wave-splitter dragging"} else {"wave-splitter"}}
                             title="Drag to resize, double click to reset"
@@ -1107,6 +1242,10 @@ impl App {
                 false
             }
             Msg::DumpClose(index) => {
+                // Wave 19: the closed dump is no longer open, so its absolute
+                // path leaves the desktop reopen list
+                #[cfg(feature = "tauri")]
+                self.forget_closed_tab(index);
                 self.apply(Action::DumpClosed { index });
                 false
             }
@@ -1117,6 +1256,8 @@ impl App {
                 if event.ctrl_key() && matches!(event.key().as_str(), "w" | "W") {
                     event.prevent_default();
                     let index = self.dump_tabs.active_index();
+                    #[cfg(feature = "tauri")]
+                    self.forget_closed_tab(index);
                     self.apply(Action::DumpClosed { index });
                 }
                 false
@@ -1449,9 +1590,19 @@ impl App {
                 self.add_path(&path, true);
                 true
             }
+            Msg::SidebarAddMany(paths) => {
+                // the signal list's explicit "Add selected (N)": one batch for
+                // the whole selection, no declaration jump (many rows have many
+                // declarations; the first added row becomes the inspector's)
+                self.add_signal_batch(&paths, "signals");
+                false
+            }
             Msg::GetWaveform(waveform) => {
                 // a wasm dump replaces the native one (two modes at once would
-                // draw nothing consistently)
+                // draw nothing consistently); the replaced native dump's path
+                // leaves the desktop reopen list too (Wave 19)
+                #[cfg(feature = "tauri")]
+                self.forget_native_path();
                 self.close_remote();
                 // the loader adds a tab: the name and the size are the identity
                 // the remembered row list is keyed by (the report is emitted
@@ -1465,6 +1616,15 @@ impl App {
                         .unwrap_or_default(),
                     self.pending_load.as_ref().map(|report| report.bytes),
                 );
+                // Wave 19: when the open came through an absolute desktop path
+                // (a drag&drop fallback or a dialog pick the backend resolved)
+                // the app remembers it for the next desktop start. The browser
+                // reports no path, so this is `None` there and nothing happens.
+                #[cfg(feature = "tauri")]
+                let dump_path = self
+                    .pending_load
+                    .as_ref()
+                    .and_then(|report| report.path.clone());
                 // a re-opened dump whose identity (name + size) is already open
                 // reloads in place when its bytes changed (a re-simulated file):
                 // the status line has to say "reloaded" instead of "loaded".
@@ -1489,8 +1649,18 @@ impl App {
                     .store
                     .select(|state| state.dumps.items.iter().any(|entry| entry.id.matches(&id)));
                 if !opened {
+                    // a desktop restore moves on: the memory budget refused this
+                    // dump, nothing was opened and no path is remembered
+                    #[cfg(feature = "tauri")]
+                    self.restore_advance(ctx);
                     return true;
                 }
+                // Wave 19: the dump is open: remember its absolute path for the
+                // next desktop start, and map the tab to it so closing the tab
+                // forgets it. A reload in place (Wave 18 fingerprint) keeps the
+                // same path, which the list already holds.
+                #[cfg(feature = "tauri")]
+                self.remember_opened_dump(dump_path.as_deref(), &id);
                 // GHW has no cheap time-range hint: the store fell back to one
                 // body scan, so say where the ruler's numbers came from instead
                 // of reporting a plain load.
@@ -1563,6 +1733,18 @@ impl App {
                     status
                 };
                 self.note(Status::info(status));
+                #[cfg(feature = "tauri")]
+                {
+                    // a desktop restore counts the dump and opens the next one;
+                    // every desktop dump open (drag&drop, dialog, restored) also
+                    // looks for SpinalHDL companion RTL next to the file
+                    if let Some(restore) = self.restore.as_mut() {
+                        restore.opened += 1;
+                        restore.active = None;
+                    }
+                    self.restore_advance(ctx);
+                    self.discover_companion_rtl(ctx, dump_path);
+                }
                 true
             }
             Msg::GetVerilog((file, text)) => {
@@ -1584,6 +1766,18 @@ impl App {
             Msg::Error(message) => {
                 // a failed open must not leave a stale report behind
                 self.pending_load = None;
+                #[cfg(feature = "tauri")]
+                {
+                    if self.restore.is_some() {
+                        // a dump being reopened failed through its normal error
+                        // path (the wasm read): count it once and move on. The
+                        // aggregate line at the end of the restore names it,
+                        // instead of printing one error per remembered file.
+                        self.restore_failed_current(message);
+                        self.restore_advance(ctx);
+                        return true;
+                    }
+                }
                 self.note(Status::error(message));
                 true
             }
@@ -1640,7 +1834,12 @@ impl App {
                     ));
                     crate::file_load::file::next_tick().await;
                     match crate::file_load::parse_dump(&file, bytes) {
-                        Ok((handle, report)) => {
+                        Ok((handle, mut report)) => {
+                            // Wave 19: this wasm fallback knows the absolute path
+                            // (the native open that declined the file carried it),
+                            // so the app can remember the dump for the next
+                            // desktop start
+                            report.path = Some(file.clone());
                             onreport.emit(report);
                             onwaveform.emit(handle);
                         }
@@ -1651,7 +1850,57 @@ impl App {
             }
             #[cfg(feature = "tauri")]
             Msg::RemoteReady(session) => {
+                let path = session.dump().path.clone();
+                // the native dump replaces the previous native one and is one of
+                // the open dumps now: adopt_remote maintains the reopen list
                 self.adopt_remote(*session);
+                if let Some(restore) = self.restore.as_mut() {
+                    restore.opened += 1;
+                    restore.active = None;
+                }
+                self.restore_advance(ctx);
+                // every desktop dump open looks for companion RTL next to the
+                // file, restored ones included (same path as a manual open)
+                self.discover_companion_rtl(ctx, Some(path));
+                true
+            }
+            #[cfg(feature = "tauri")]
+            Msg::DesktopRestore(paths) => {
+                self.start_restore(ctx, paths);
+                true
+            }
+            #[cfg(feature = "tauri")]
+            Msg::DesktopRestoreFailed(path, message) => {
+                if let Some(restore) = self.restore.as_mut() {
+                    restore.failed.push((path, message));
+                    restore.active = None;
+                }
+                self.restore_advance(ctx);
+                true
+            }
+            #[cfg(feature = "tauri")]
+            Msg::CompanionRtlLoaded {
+                generation,
+                dir,
+                files,
+            } => {
+                // a dump that was replaced while the scan/reads ran invalidates
+                // this answer; the new dump's discovery bumps the generation
+                if generation != self.companion_gen.get() || files.is_empty() {
+                    return false;
+                }
+                let count = files.len();
+                for (file, text) in files {
+                    // the same flow a dropped source takes: the store parses it
+                    // into the design database and asks for the LSP document; the
+                    // per-file "parsed ..." status is replaced by the one line
+                    // below, so the auto-load stays a single feedback line
+                    self.apply(Action::SourceOpened { file, text });
+                }
+                crate::lsp::inlay::refresh();
+                self.note(Status::info(format!(
+                    "loaded {count} companion RTL source(s) from {dir}"
+                )));
                 true
             }
             Msg::SourceClick(click) => {
@@ -1681,6 +1930,54 @@ impl App {
                     }
                 }
                 true
+            }
+            Msg::AddSelectionToWave(selection) => {
+                // Verdi's block add: every identifier the selected code block
+                // mentions, resolved through the same lookup a click takes
+                // (`candidates_at`), then added as ONE rows batch. A name the
+                // design answers ambiguously is not guessed: the status line
+                // names it and points at the click that opens the picker.
+                let found = selection_add::clicks(&selection);
+                if found.clicks.is_empty() {
+                    self.note(Status::info(selection_add::nothing_added(
+                        &selection,
+                        &found,
+                        &selection_add::SelectionPlan::default(),
+                    )));
+                    return false;
+                }
+                let plan = selection_add::plan(&found.clicks, |click| self.candidates_at(click));
+                if plan.is_empty() {
+                    self.note(Status::info(selection_add::nothing_added(
+                        &selection, &found, &plan,
+                    )));
+                    return false;
+                }
+                if plan.paths.len() > crate::state::bulk::BULK_ADD_CAP {
+                    self.note(Status::error(format!(
+                        "the selection resolves to {} signals — more than the {} rows one batch can add; select a smaller block",
+                        plan.paths.len(),
+                        crate::state::bulk::BULK_ADD_CAP
+                    )));
+                    return false;
+                }
+                self.add_signal_batch(&plan.paths, "selection");
+                // the batch already said how many rows it added; append what
+                // the selection contributed besides rows, so an ambiguous or
+                // unknown name is never silent. A refusal keeps its error line.
+                if let Some(status) = self.store.select(state::select::status) {
+                    if !status.is_error() {
+                        let mut text =
+                            format!("{} — {}", status.text, selection_add::success_note(&plan));
+                        if found.truncated {
+                            text.push_str(
+                                " (the selection was too large: only its first part was scanned)",
+                            );
+                        }
+                        self.note(Status::info(text));
+                    }
+                }
+                false
             }
             Msg::WaveSelect(path) => {
                 self.apply(Action::FocusChanged {
@@ -1847,9 +2144,8 @@ impl App {
 
     /// Bulk-add every signal of `scopes` (and their subtrees) in ONE batch.
     ///
-    /// The paths come from the store's sidebar tree; each one is resolved to a
-    /// dump path exactly like a single add, then handed to the reducer as one
-    /// `RowsAdded` (dedupe, row_prefs, one rows-version bump, one session write).
+    /// The paths come from the store's sidebar tree; the shared batch path is
+    /// [`Self::add_signal_batch`].
     fn bulk_add_scopes(&self, scopes: &[String]) {
         // the sidebar may be showing the native hierarchy (desktop build)
         let Some(tree) = self.sidebar_tree() else {
@@ -1865,10 +2161,37 @@ impl App {
             ));
             return;
         }
-        if paths.len() > crate::state::bulk::BULK_ADD_CAP {
+        self.add_signal_batch(&paths, "modules");
+    }
+
+    /// Add a batch of hierarchical signal paths to the wave view in ONE
+    /// `RowsAdded`.
+    ///
+    /// Shared by the module tree's bulk add and the signal list's explicit "Add
+    /// selected (N)": each path is resolved exactly like a single add (the dump
+    /// wins for the width, the design fills in drivers/loads, the desktop build
+    /// resolves against the native session), then the whole batch goes to the
+    /// reducer once — dedupe, remembered display settings, one rows-version bump
+    /// and one session write. `subject` names the user's selection in the status
+    /// lines ("modules"/"signals") so a refusal points at the list to narrow.
+    fn add_signal_batch(&self, paths: &[String], subject: &str) {
+        // a selection never repeats a path, but a scope caller can (a selected
+        // parent and a selected child): dedupe in first-seen order first
+        let mut unique: Vec<String> = Vec::with_capacity(paths.len());
+        let mut seen = std::collections::HashSet::with_capacity(paths.len());
+        for path in paths {
+            if seen.insert(path.as_str()) {
+                unique.push(path.clone());
+            }
+        }
+        if unique.is_empty() {
+            self.note(Status::error("no signals selected".to_string()));
+            return;
+        }
+        if unique.len() > crate::state::bulk::BULK_ADD_CAP {
             self.note(Status::error(format!(
-                "too many signals to add at once: {} (limit {}) — select fewer modules",
-                paths.len(),
+                "too many signals to add at once: {} (limit {}) — select fewer {subject}",
+                unique.len(),
                 crate::state::bulk::BULK_ADD_CAP
             )));
             return;
@@ -1877,13 +2200,13 @@ impl App {
         // batch against the native hierarchy instead
         #[cfg(feature = "tauri")]
         if let Some(session) = &self.remote {
-            let mut rows: Vec<Row> = Vec::with_capacity(paths.len());
+            let mut rows: Vec<Row> = Vec::with_capacity(unique.len());
             let mut unresolved = 0usize;
-            for path in paths {
-                match session.signal_of_path(&path) {
+            for path in &unique {
+                match session.signal_of_path(path) {
                     Some(native) => rows.push(Row {
                         path: path.clone(),
-                        name: path,
+                        name: path.clone(),
                         width: native.width.max(1),
                         setting: state::Settings::new(),
                         chosen: false,
@@ -1918,14 +2241,14 @@ impl App {
             return;
         }
         let dump = self.dump();
-        let mut rows: Vec<Row> = Vec::with_capacity(paths.len());
+        let mut rows: Vec<Row> = Vec::with_capacity(unique.len());
         let mut unresolved = 0usize;
-        for path in paths {
+        for path in &unique {
             let row_path = match &dump {
                 Some(waveform) => {
                     // the dump is the source of values: a path it cannot resolve
                     // would draw nothing, so it is skipped (and counted)
-                    let candidates = match_dump_candidates(waveform.waveform(), &path);
+                    let candidates = match_dump_candidates(waveform.waveform(), path);
                     if candidates.len() != 1 {
                         unresolved += 1;
                         continue;
@@ -2312,6 +2635,10 @@ impl App {
     /// had, install the hierarchy and say which mode the window is in.
     #[cfg(feature = "tauri")]
     fn adopt_remote(&mut self, session: crate::remote::RemoteSession) {
+        // Wave 19: the native backend is one-dump-at-a-time, so this dump
+        // replaces the previous native one; the replaced path is not open any
+        // more and leaves the desktop reopen list.
+        self.forget_native_path();
         self.close_remote();
         // the rows of the dump that was open would resolve to signal indices of
         // the native dump: start empty, like a fresh session
@@ -2323,7 +2650,12 @@ impl App {
         }
         let status = session.status_text();
         let id = session.id();
+        let path = session.dump().path.clone();
         self.remote = Some(session);
+        // and this dump is open now: its absolute path is the only handle a
+        // desktop reload has for it (a native dump has no store tab)
+        self.native_path = Some(path.clone());
+        self.remember_dump_path(Some(&path));
         crate::remote::set_native_active(true);
         // the backend accounting (checkable in __waveDebug.memory.native)
         spawn_local(async move {
@@ -2355,6 +2687,265 @@ impl App {
                 let _ = crate::remote::close(id).await;
             });
         }
+    }
+
+    // --- Wave 19: the desktop reopen list ------------------------------------
+
+    /// Remember `path` as one of the dumps the desktop build has open.
+    ///
+    /// The list is what a webview reload reopens (see
+    /// [`crate::state::persist::DesktopPaths`] for the format and the cap).
+    /// Writing is throttled by the list itself: `open` answers whether the list
+    /// changed, so re-opening the newest dump writes nothing.
+    #[cfg(feature = "tauri")]
+    fn remember_dump_path(&mut self, path: Option<&str>) {
+        let Some(path) = path else {
+            return;
+        };
+        if self.desktop_paths.open(path) {
+            self.save_desktop_paths();
+        }
+    }
+
+    /// Forget one dump path (its tab was closed, or the file disappeared).
+    #[cfg(feature = "tauri")]
+    fn forget_dump_path(&mut self, path: &str) {
+        if self.desktop_paths.close(path) {
+            self.save_desktop_paths();
+        }
+    }
+
+    /// The native dump that is open is being replaced: its path is not open any
+    /// more, so it leaves the reopen list.
+    #[cfg(feature = "tauri")]
+    fn forget_native_path(&mut self) {
+        if let Some(path) = self.native_path.take() {
+            self.forget_dump_path(&path);
+        }
+    }
+
+    /// Write the reopen list through the persister (no-op when the browser
+    /// denies `localStorage`).
+    #[cfg(feature = "tauri")]
+    fn save_desktop_paths(&self) {
+        if let Some(persister) = &self.desktop_persister {
+            persister.save_desktop_paths(&self.desktop_paths);
+        }
+    }
+
+    /// Remember one freshly opened dump: its absolute path (desktop transports
+    /// only; the browser reports none) and the tab identity that closing it
+    /// later needs.
+    #[cfg(feature = "tauri")]
+    fn remember_opened_dump(&mut self, path: Option<&str>, id: &DumpId) {
+        let Some(path) = path else {
+            return;
+        };
+        // re-opening the same tab replaces its mapping instead of duplicating it
+        self.tab_paths.retain(|(tab, _)| tab != id);
+        self.tab_paths.push((id.clone(), path.to_string()));
+        if self.desktop_paths.open(path) {
+            self.save_desktop_paths();
+        }
+    }
+
+    /// Drop the path of the wasm tab at `index` (it is about to be closed).
+    #[cfg(feature = "tauri")]
+    fn forget_closed_tab(&mut self, index: usize) {
+        let id = self
+            .store
+            .select(|state| state.dumps.items.get(index).map(|entry| entry.id.clone()));
+        let Some(id) = id else {
+            return;
+        };
+        if let Some(position) = self.tab_paths.iter().position(|(tab, _)| *tab == id) {
+            let (_, path) = self.tab_paths.remove(position);
+            self.forget_dump_path(&path);
+        }
+    }
+
+    // --- Wave 19: reopening the dumps of the previous desktop page -----------
+
+    /// Start reopening the dumps a previous desktop page had open.
+    #[cfg(feature = "tauri")]
+    fn start_restore(&mut self, ctx: &Context<Self>, paths: Vec<String>) {
+        if paths.is_empty() {
+            return;
+        }
+        self.restore = Some(DesktopRestore {
+            total: paths.len(),
+            pending: paths.into(),
+            opened: 0,
+            failed: Vec::new(),
+            active: None,
+        });
+        self.restore_advance(ctx);
+    }
+
+    /// Open the next remembered dump (one at a time) through the normal open
+    /// path: the native backend decides (native for a large dump, the wasm
+    /// reader for a small one) and the resulting [`Msg::RemoteReady`] /
+    /// [`Msg::GetWaveform`] / [`Msg::Error`] continues the sequence.
+    ///
+    /// A path the native backend cannot even open (missing, unreadable, not a
+    /// dump) is counted through [`Msg::DesktopRestoreFailed`] and the sequence
+    /// moves on; nothing is reported per file, the end of the restore aggregates.
+    #[cfg(feature = "tauri")]
+    fn restore_advance(&mut self, ctx: &Context<Self>) {
+        let Some(restore) = self.restore.as_mut() else {
+            return;
+        };
+        let Some(path) = restore.pending.pop_front() else {
+            self.finish_restore();
+            return;
+        };
+        restore.active = Some(path.clone());
+        let link = ctx.link().clone();
+        spawn_local(async move {
+            match crate::remote::try_open(&path).await {
+                Ok(Some(session)) => link.send_message(Msg::RemoteReady(Box::new(session))),
+                Ok(None) => link.send_message(Msg::RemoteFallback(path)),
+                Err(error) => link.send_message(Msg::DesktopRestoreFailed(path, error)),
+            }
+        });
+    }
+
+    /// Count the dump currently being reopened as failed; the sequence moves on
+    /// with [`Self::restore_advance`].
+    #[cfg(feature = "tauri")]
+    fn restore_failed_current(&mut self, message: String) {
+        let Some(restore) = self.restore.as_mut() else {
+            return;
+        };
+        if let Some(path) = restore.active.take() {
+            restore.failed.push((path, message));
+        }
+    }
+
+    /// The end of one restore: report the failures once and drop them from the
+    /// list (a missing file must not produce an error line on every start).
+    #[cfg(feature = "tauri")]
+    fn finish_restore(&mut self) {
+        let Some(restore) = self.restore.take() else {
+            return;
+        };
+        if restore.failed.is_empty() {
+            // everything came back: the last "waveform loaded" line is enough
+            return;
+        }
+        for (path, _) in &restore.failed {
+            self.forget_dump_path(path);
+        }
+        let (first_path, first_error) = &restore.failed[0];
+        let more = match restore.failed.len() {
+            1 => String::new(),
+            count => format!(" (+{} more)", count - 1),
+        };
+        // one actionable line: how much came back, which file failed first, and
+        // what to do. Never one error per remembered dump.
+        self.note(Status::error(format!(
+            "reopened {} of {} dump(s) from the last session; could not open {}: {} — {}{more}; they were removed from the reopen list — open them again from \"Open file…\" or by dropping them",
+            restore.opened,
+            restore.total,
+            restore.failed.len(),
+            first_path,
+            first_error,
+        )));
+    }
+
+    // --- Wave 19: SpinalHDL companion RTL -------------------------------------
+
+    /// Look for the SpinalHDL companion RTL of a dump and open what is found
+    /// (desktop build only: the browser has no filesystem to scan).
+    ///
+    /// The scan itself is a backend command (see `src-tauri/src/companion.rs`):
+    /// the dump's own directory and up to two ancestors are checked for an
+    /// `rtl` (or `generated`/`verilog`) sub-directory, whose `.v`/`.sv` files
+    /// are collected flat or one level deep, sorted, de-duplicated and capped.
+    /// Each file is read through `choose_verilog_absolute` and handed to the
+    /// normal [`Action::SourceOpened`] flow, exactly as if the user had dropped
+    /// it; files already open (by absolute path or by file name) are skipped, so
+    /// re-running after a reload does not duplicate anything.
+    ///
+    /// Discovery is best effort by design: no path (the browser build), an empty
+    /// answer (no companion directory), an unreadable file or a failed command
+    /// just means nothing is loaded — a dump open never fails because of it. A
+    /// generation counter drops the answer of a dump that was replaced while the
+    /// scan/reads were running.
+    #[cfg(feature = "tauri")]
+    fn discover_companion_rtl(&self, ctx: &Context<Self>, dump_path: Option<String>) {
+        let Some(dump_path) = dump_path else {
+            return;
+        };
+        let generation = self.companion_gen.get().wrapping_add(1);
+        self.companion_gen.set(generation);
+        let link = ctx.link().clone();
+        let store = self.store.clone();
+        spawn_local(async move {
+            #[derive(Serialize)]
+            struct CompanionArgs {
+                path: String,
+            }
+            let Ok(args) = to_value(&CompanionArgs { path: dump_path }) else {
+                return;
+            };
+            let sources: Vec<String> =
+                match from_value(invoke("dump_companion_sources", args).await) {
+                    Ok(sources) => sources,
+                    // a failed command means "no companion sources", never an
+                    // error: the dump itself is already open
+                    Err(_) => return,
+                };
+            if sources.is_empty() {
+                return;
+            }
+            // files that are already open: a dropped source is named by its
+            // absolute path, a dialog one by its file name, so both are checked
+            let open = store.select(|state| {
+                state
+                    .sources
+                    .items
+                    .iter()
+                    .map(|source| source.name.clone())
+                    .collect::<Vec<_>>()
+            });
+            #[derive(Serialize)]
+            struct SourceArgs {
+                path: String,
+            }
+            let mut files: Vec<(String, String)> = Vec::new();
+            let mut dir = String::new();
+            for source in sources {
+                let name = crate::state::persist::desktop_file_name(&source);
+                if open.iter().any(|open| {
+                    open == &source || crate::state::persist::desktop_file_name(open) == name
+                }) {
+                    continue;
+                }
+                let Ok(args) = to_value(&SourceArgs {
+                    path: source.clone(),
+                }) else {
+                    continue;
+                };
+                let text: String =
+                    from_value(invoke("choose_verilog_absolute", args).await).unwrap_or_default();
+                if text.is_empty() {
+                    continue;
+                }
+                if dir.is_empty() {
+                    dir = crate::state::persist::desktop_parent_dir(&source).to_string();
+                }
+                files.push((source, text));
+            }
+            if files.is_empty() {
+                return;
+            }
+            link.send_message(Msg::CompanionRtlLoaded {
+                generation,
+                dir,
+                files,
+            });
+        });
     }
 
     /// The native session handed to the wave pane (none in the browser build).

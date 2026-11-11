@@ -201,6 +201,19 @@ impl Component for FileList {
                                     }
                                 },
                             }
+                            // Wave 19: the app remembers the dump's absolute path
+                            // so a desktop reload can open it again, and the
+                            // dialog only knows the navigation parts. Resolving
+                            // them here cannot fail for a real pick (the parts are
+                            // never empty); a failure only means "this open is
+                            // not remembered", never a failed open.
+                            let resolve_args = to_value(&ResolvePartsArgs {
+                                parts: native_parts,
+                            })
+                            .unwrap_or(JsValue::NULL);
+                            let dump_path: Option<String> =
+                                from_value(invoke("resolve_dump_parts_path", resolve_args).await)
+                                    .ok();
                             // The command returns the whole file as a *raw* IPC
                             // body (tauri::ipc::Response): invoke resolves to an
                             // ArrayBuffer and dump_bytes copies it into a Vec<u8>
@@ -235,7 +248,10 @@ impl Component for FileList {
                             onstatus.emit(progress::parsing_status(&file, size, None));
                             next_tick().await;
                             match parse_dump(&file, bytes) {
-                                Ok((handle, report)) => {
+                                Ok((handle, mut report)) => {
+                                    // the absolute path the app's desktop reopen
+                                    // list stores (Wave 19)
+                                    report.path = dump_path;
                                     onreport.emit(report);
                                     ongetwaveform.emit(handle);
                                     exit.emit(());
@@ -370,6 +386,16 @@ impl Component for FileList {
 #[derive(Serialize, Deserialize)]
 struct GetFileListArgs {
     name: Vec<String>,
+}
+
+/// Arguments of the `resolve_dump_parts_path` command (Wave 19).
+///
+/// The dialog only knows the navigation parts it collected (relative to the
+/// backend's base directory), so the absolute path a desktop restart needs is
+/// resolved by the backend with the same containment rule the native open uses.
+#[derive(Serialize)]
+struct ResolvePartsArgs {
+    parts: Vec<String>,
 }
 
 /// Turn the raw result of a dump command into bytes.

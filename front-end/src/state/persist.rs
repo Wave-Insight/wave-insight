@@ -54,6 +54,17 @@
 //!   error.
 //! * **caps** — [`SESSION_CAP`] dumps (the least recently opened is dropped) and
 //!   [`SESSION_ROW_CAP`] rows per dump (the top of the list is kept).
+//!
+//! A fourth versioned entry is the desktop reopen list:
+//!
+//! * `wave-insight.desktop.v1` — the absolute paths of the dumps the tauri
+//!   build had open, oldest first ([`DesktopPaths`]). A webview reload throws
+//!   the wasm state away, but the desktop build knows the paths, so it can open
+//!   the dumps again on the next start. The browser deliberately never fills
+//!   this list (a `File` handle does not survive a reload); the type, the
+//!   format and the app-facing read/write methods are therefore compiled for
+//!   the desktop feature and for the host unit tests only (see the `desktop`
+//!   module below).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -281,6 +292,186 @@ impl Sessions {
         merged
     }
 }
+
+// --- the desktop reopen list (absolute paths) ------------------------------
+//
+// A fourth versioned entry is the desktop reopen list: the absolute paths of
+// the dumps the tauri build had open, so a webview reload (Ctrl+Shift+R) can
+// open them again. The browser deliberately has no such list (a `File` handle
+// does not survive a reload), which is why the code lives behind a module that
+// only the desktop build and the unit tests compile.
+
+#[cfg(any(feature = "tauri", test))]
+mod desktop {
+    //! The absolute paths of the dumps the desktop build had open, behind a
+    //! module of their own.
+    //!
+    //! The browser build cannot fill this list (a `File` handle does not
+    //! survive a reload), so it is only compiled for the desktop feature — and
+    //! for the unit tests, which run on the host target with the default browser
+    //! feature, so the format, the cap and the de-duplication are covered by the
+    //! normal `cargo test -p front-end --bins`.
+    //!
+    //! A webview reload throws the wasm state away; the desktop build is the
+    //! only one that can reopen the dumps, because it is the only one that
+    //! knows their absolute paths (the browser has no file handle after a
+    //! reload). The rules are the same as for the other entries:
+    //!
+    //! * the payload is a small JSON object that repeats the schema version, so
+    //!   a value written by a future version is *ignored* instead of migrated;
+    //! * every read failure (missing key, denied storage, corrupt JSON) means
+    //!   "nothing was stored": the desktop app then starts empty, exactly like
+    //!   a browser start;
+    //! * an empty path is ignored, a path is never listed twice (opening a
+    //!   remembered path moves it to the newest end) and the list is capped to
+    //!   [`DESKTOP_CAP`] paths, dropping the least recently opened one first;
+    //! * only the app writes the entry (see `Persister::save_desktop_paths`),
+    //!   never the reducer: the absolute path is a property of the transport
+    //!   that opened the dump, not of the wave state the panes render.
+
+    use serde::{Deserialize, Serialize};
+
+    use super::Persister;
+
+    /// `localStorage` key of the desktop reopen list.
+    pub const DESKTOP_KEY: &str = "wave-insight.desktop.v1";
+    /// How many dump paths the reopen list keeps; the oldest is dropped first.
+    pub const DESKTOP_CAP: usize = 16;
+
+    /// The absolute paths of the dumps the desktop build had open, oldest first.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct DesktopPaths {
+        entries: Vec<String>,
+    }
+
+    impl DesktopPaths {
+        /// Remember `path` as open and make it the newest entry.
+        ///
+        /// Returns `true` when the list changed, so the caller only writes to
+        /// storage then. An empty path is ignored; a path that is already in the
+        /// list is moved to the newest end instead of appearing twice (opening
+        /// the same dump again is a focus, not a second copy).
+        pub fn open(&mut self, path: &str) -> bool {
+            if path.is_empty() {
+                return false;
+            }
+            if let Some(index) = self.entries.iter().position(|entry| entry == path) {
+                if index + 1 == self.entries.len() {
+                    // already the newest: nothing to write
+                    return false;
+                }
+                self.entries.remove(index);
+            }
+            self.entries.push(path.to_string());
+            if self.entries.len() > DESKTOP_CAP {
+                let excess = self.entries.len() - DESKTOP_CAP;
+                self.entries.drain(0..excess);
+            }
+            true
+        }
+
+        /// Forget `path` (its tab was closed, or the file disappeared).
+        ///
+        /// Returns `true` when the path was remembered.
+        pub fn close(&mut self, path: &str) -> bool {
+            let before = self.entries.len();
+            self.entries.retain(|entry| entry != path);
+            self.entries.len() != before
+        }
+
+        /// The remembered paths, oldest first; the app reopens them in order.
+        pub fn paths(&self) -> &[String] {
+            &self.entries
+        }
+
+        /// Whether there is anything to reopen.
+        pub fn is_empty(&self) -> bool {
+            self.entries.is_empty()
+        }
+
+        /// Merge a decoded payload through the same rules (`open` de-duplicates
+        /// and caps), so a hand-edited or older payload cannot break the list.
+        fn merge(paths: Vec<String>) -> Self {
+            let mut merged = Self::default();
+            for path in paths {
+                merged.open(&path);
+            }
+            merged
+        }
+    }
+
+    /// The directory part of a desktop path, using either separator.
+    ///
+    /// The desktop build is a wasm target: `std::path` there is the unix
+    /// implementation, so it does not treat `\\` as a separator and cannot
+    /// split a Windows path. Status lines only need "where is this file",
+    /// hence this small string helper (host tested with both spellings).
+    pub fn parent_dir(path: &str) -> &str {
+        match path.rfind(&['/', '\\'][..]) {
+            Some(0) => &path[..1],
+            Some(index) => &path[..index],
+            None => path,
+        }
+    }
+
+    /// The file name part of a desktop path, using either separator.
+    pub fn file_name(path: &str) -> &str {
+        match path.rfind(&['/', '\\'][..]) {
+            Some(index) => &path[index + 1..],
+            None => path,
+        }
+    }
+
+    #[derive(Deserialize, Serialize)]
+    struct DesktopFile {
+        version: u32,
+        paths: Vec<String>,
+    }
+
+    /// Serialize the desktop reopen list (already capped and de-duplicated).
+    pub fn encode_desktop_paths(paths: &DesktopPaths) -> String {
+        serde_json::to_string(&DesktopFile {
+            version: super::SCHEMA_VERSION,
+            paths: paths.entries.clone(),
+        })
+        .unwrap_or_default()
+    }
+
+    /// Parse a stored reopen list; `None` when the payload is not ours.
+    pub fn decode_desktop_paths(raw: &str) -> Option<DesktopPaths> {
+        let file: DesktopFile = serde_json::from_str(raw).ok()?;
+        if file.version != super::SCHEMA_VERSION {
+            return None;
+        }
+        Some(DesktopPaths::merge(file.paths))
+    }
+
+    impl Persister {
+        /// The absolute paths of the dumps the desktop build had open last
+        /// session, oldest first. Reading never fails: anything unreadable is
+        /// an empty list (the app then starts empty).
+        pub fn desktop_paths(&self) -> DesktopPaths {
+            self.storage
+                .get(DESKTOP_KEY)
+                .as_deref()
+                .and_then(decode_desktop_paths)
+                .unwrap_or_default()
+        }
+
+        /// Write the desktop reopen list (called by the app when a dump opens or
+        /// closes through a known absolute path).
+        pub fn save_desktop_paths(&self, paths: &DesktopPaths) {
+            self.storage.set(DESKTOP_KEY, &encode_desktop_paths(paths));
+        }
+    }
+}
+
+#[cfg(any(feature = "tauri", test))]
+#[allow(unused_imports)] // encode/decode are used by the tests, DesktopPaths by the app
+pub use desktop::{
+    decode_desktop_paths, encode_desktop_paths, file_name as desktop_file_name,
+    parent_dir as desktop_parent_dir, DesktopPaths,
+};
 
 // --- the on-disk format ----------------------------------------------------
 //
@@ -626,6 +817,7 @@ impl Storage for MemoryStorage {
 
 #[cfg(test)]
 mod tests {
+    use super::desktop::DESKTOP_CAP;
     use super::*;
     use crate::state::types::{EDITOR_RATIO_MAX, SIDEBAR_MIN, SPLIT_RATIO_DEFAULT};
     use wave_insight_lib::waveform::ShowType;
@@ -1033,5 +1225,152 @@ mod tests {
         assert_eq!(persister.restored_layout(), Layout::default());
         assert!(persister.restored_rows().entries().is_empty());
         assert!(persister.restored_sessions().entries().is_empty());
+    }
+
+    #[test]
+    fn the_desktop_reopen_list_round_trips_in_open_order() {
+        let mut paths = DesktopPaths::default();
+        assert!(paths.open("/dumps/a.vcd"));
+        assert!(paths.open("/dumps/b.fst"));
+        assert!(paths.open("/dumps/c.ghw"));
+        assert_eq!(
+            paths.paths(),
+            vec![
+                "/dumps/a.vcd".to_string(),
+                "/dumps/b.fst".to_string(),
+                "/dumps/c.ghw".to_string()
+            ]
+        );
+        let encoded = encode_desktop_paths(&paths);
+        assert_eq!(decode_desktop_paths(&encoded), Some(paths));
+        // the payload names the schema version, so a future format is
+        // recognisable instead of guessed at
+        assert!(encoded.contains(r#""version":1"#));
+        assert!(encoded.contains(r#""paths":["#));
+    }
+
+    #[test]
+    fn opening_a_remembered_path_moves_it_to_the_newest_end() {
+        let mut paths = DesktopPaths::default();
+        paths.open("/a.vcd");
+        paths.open("/b.vcd");
+        // the first one is already open: opening it again is a focus, not a
+        // second copy, and makes it the one a reload would reopen last (active)
+        assert!(paths.open("/a.vcd"));
+        assert_eq!(
+            paths.paths(),
+            vec!["/b.vcd".to_string(), "/a.vcd".to_string()]
+        );
+        // the newest entry does not change and does not need a write
+        assert!(!paths.open("/a.vcd"));
+        assert_eq!(paths.paths().len(), 2);
+        // an empty path is not a dump
+        assert!(!paths.open(""));
+        assert_eq!(paths.paths().len(), 2);
+    }
+
+    #[test]
+    fn closing_a_path_forgets_it_and_reports_the_change() {
+        let mut paths = DesktopPaths::default();
+        paths.open("/a.vcd");
+        paths.open("/b.vcd");
+        assert!(paths.close("/a.vcd"));
+        assert!(!paths.close("/a.vcd"));
+        assert_eq!(paths.paths(), vec!["/b.vcd".to_string()]);
+        assert!(!paths.is_empty());
+        paths.close("/b.vcd");
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn the_desktop_reopen_list_is_capped_and_drops_the_oldest() {
+        let mut paths = DesktopPaths::default();
+        for index in 0..DESKTOP_CAP + 5 {
+            assert!(paths.open(&format!("/dumps/d{index}.vcd")));
+        }
+        let newest = format!("/dumps/d{}.vcd", DESKTOP_CAP + 4);
+        let remembered = paths.paths();
+        assert_eq!(remembered.len(), DESKTOP_CAP);
+        assert_eq!(remembered[0], "/dumps/d5.vcd");
+        assert_eq!(remembered.last().map(String::as_str), Some(newest.as_str()));
+    }
+
+    #[test]
+    fn corrupt_or_foreign_desktop_reopen_lists_are_ignored() {
+        let cases = [
+            "",
+            "not json",
+            "{}",
+            "null",
+            "[]",
+            // a version this build does not understand
+            r#"{"version":2,"paths":["/a.vcd"]}"#,
+            // the paths are not a list
+            r#"{"version":1,"paths":"nope"}"#,
+            // a path that is not a string
+            r#"{"version":1,"paths":[7]}"#,
+        ];
+        for raw in cases {
+            assert_eq!(decode_desktop_paths(raw), None, "should ignore {raw:?}");
+        }
+        // a decoded payload is merged through the same rules: a duplicate is
+        // dropped (the newest spelling wins)
+        let raw = r#"{"version":1,"paths":["/a.vcd","/b.vcd","/a.vcd"]}"#;
+        assert_eq!(
+            decode_desktop_paths(raw).map(|paths| paths.paths().to_vec()),
+            Some(vec!["/b.vcd".to_string(), "/a.vcd".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_desktop_path_is_split_at_both_separators_for_status_lines() {
+        // Windows spellings (the desktop app is a wasm target, so std::path
+        // there cannot split them) and unix ones
+        assert_eq!(
+            desktop_parent_dir(r"C:\simWorkspace\MyDesign\rtl\top.v"),
+            r"C:\simWorkspace\MyDesign\rtl"
+        );
+        assert_eq!(
+            desktop_file_name(r"C:\simWorkspace\MyDesign\rtl\top.v"),
+            "top.v"
+        );
+        assert_eq!(
+            desktop_parent_dir("/home/sim/run/test.vcd"),
+            "/home/sim/run"
+        );
+        assert_eq!(desktop_file_name("/home/sim/run/test.vcd"), "test.vcd");
+        // a bare name has no directory: the answer is the path itself
+        assert_eq!(desktop_parent_dir("top.v"), "top.v");
+        assert_eq!(desktop_file_name("top.v"), "top.v");
+        // a root-level file keeps the root as its directory
+        assert_eq!(desktop_parent_dir("/top.v"), "/");
+    }
+
+    #[test]
+    fn the_persister_reads_and_writes_the_desktop_reopen_list() {
+        let storage = MemoryStorage::new();
+        let persister = Persister::load(Box::new(storage.clone()));
+        // an absent key is an empty list (a first start / the browser)
+        assert!(persister.desktop_paths().is_empty());
+
+        let mut paths = DesktopPaths::default();
+        paths.open("/dumps/a.vcd");
+        paths.open("/dumps/b.fst");
+        persister.save_desktop_paths(&paths);
+        let stored = storage
+            .raw(super::desktop::DESKTOP_KEY)
+            .expect("the key is written");
+        assert!(stored.contains("/dumps/a.vcd"), "{stored}");
+        assert_eq!(persister.desktop_paths(), paths);
+
+        // a reload (a new persister over the same storage) reads it back
+        let reloaded = Persister::load(Box::new(storage.clone()));
+        assert_eq!(reloaded.desktop_paths(), paths);
+
+        // an unreadable value degrades to "nothing was stored"
+        storage.preload(super::desktop::DESKTOP_KEY, "{broken");
+        assert!(Persister::load(Box::new(storage))
+            .desktop_paths()
+            .is_empty());
     }
 }

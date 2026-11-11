@@ -23,6 +23,8 @@ pub use tree::{SidebarTree, SignalRow};
 
 mod inspector;
 mod picker;
+// Wave 19: the pure half of "add every signal the selected code block mentions".
+pub mod selection_add;
 pub mod tree;
 
 use wasm_bindgen::JsCast;
