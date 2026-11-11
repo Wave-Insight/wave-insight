@@ -314,7 +314,7 @@ still clickable by design, so the actionable refusal is asserted from it.
 
 ### Wave 19 signal-list interaction
 
-Since Wave 19a (unreleased on top of 0.21.0) the SIGNALS sidebar list follows
+Since Wave 19a (released in 0.22.0) the SIGNALS sidebar list follows
 the module tree's pattern instead of adding a signal on a plain row click
 (`signalsSelect` is the regression):
 
@@ -473,7 +473,7 @@ Baseline on the Wave 18 build (2026-11-11, 0.21.0, 61 scenarios):
 === summary: 575 passed, 0 failed, 0 pending (R2 layout, required), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
 ```
 
-Baseline on the Wave 19 build (2026-11-11, 0.21.0, 63 scenarios):
+Baseline on the Wave 19 build (2026-11-11, 0.22.0, 63 scenarios):
 `signalsSelect` and `blockAdd` are new (+24 and +11 assertions); the
 `clickSignal` helper and the six raw sidebar-row clicks were migrated, with no
 other assertion count change.

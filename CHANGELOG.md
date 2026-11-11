@@ -8,6 +8,10 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
+Nothing yet: the next wave lands here.
+
+## [0.22.0] - 2026-11-11
+
 ### Added
 
 - The SIGNALS list now selects like the module tree: a plain click selects a row

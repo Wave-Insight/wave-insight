@@ -8,7 +8,7 @@ does not duplicate them.
 
 ## Where we are
 
-The last tagged release is **0.21.0** (2026-11-11): one-canvas waveform
+The last tagged release is **0.22.0** (2026-11-11): one-canvas waveform
 renderer, R2 state store, Verdi-style navigation, CI gate, fixed-point display,
 search options, CSV/TXT/MAT export, chunked large-dump loading, LSP diagnostics
 and completion, the browser QA suite in `qa/`, generate/arrayed elaboration,
@@ -28,13 +28,13 @@ the first hands-on-feedback pass from the user's test of 0.20.0: Verdi-style
 wheel panning, cursor value columns flush against the waveform, bare digits in
 the wave view (the data views keep the Verilog radix), `…`-truncated band labels,
 crisp 1-bit edge/cursor alignment and in-place reload of a re-simulated dump.
-**Wave 19** is on `main` unreleased: the signal list selects like the module
-tree with an explicit batch `Add selected`, the Verdi block add (select code,
-`Ctrl+W`), the desktop reload reopening the dumps that were open, and the
-SpinalHDL companion-RTL auto-load. The remaining native gaps are export,
-split/multi-dump, the eager hierarchy and a batched values API. The
-`Unreleased` section of [`CHANGELOG.md`](../CHANGELOG.md) is the authoritative
-list of what is on `main` beyond 0.21.0.
+**Wave 19** (this release) is the second hands-on-feedback pass: the signal
+list selects like the module tree with an explicit batch `Add selected`, the
+Verdi block add (select code, `Ctrl+W`), the desktop reload reopening the dumps
+that were open, and the SpinalHDL companion-RTL auto-load. The remaining native
+gaps are export, split/multi-dump, the eager hierarchy and a batched values API.
+The `Unreleased` section of [`CHANGELOG.md`](../CHANGELOG.md) is the
+authoritative list of what is on `main` beyond 0.22.0.
 
 ## How a wave works
 
@@ -75,7 +75,7 @@ cut when the accumulated waves are coherent for users; no wave promises a date.
 | **16** | released in 0.19.0 | native-mode parity: `dump_find` streaming value search (0x/0b/0o, case-insensitive, x/z as text; 98.8 ms forward near the start / 198.1 ms near the end of the 97.5 MB FST debug; no match = full scan, not cancellable), native find box wiring (jump + `found …`/`no match` status), per-display-format `dump_window` groups so row formats change drawn values and the value column, and batched/cached `dump_value_at` cursor readout outside the window (<=64 requests per batch, 512-entry cache) |
 | **17** | shipped in this wave | memory root-cause fix: FST `time_range_hint` reads the time range from the header block (body counters stay 0), `stream_value_before` (and batch `values_before`) answers cursor/inlay/native lookups with O(1) retained memory (FST capped backward probes, VCD forward scan, GHW documented fallback; 64-entry LRU reported in `MemoryStats`), `dump_memory_stats` + `process_memory` and the library/native/process counters in `__waveDebug.memory`; measured 20M-step retained 260,019,306 B -> 15,876-19,235 B, peak 623 -> 196 MB (incl. 120 MB mapped), large.fst 1M-step value_at 812 -> 241-345 ms, peak 36.5 -> 16.4-18 MB; native backend streams lookups with a per-signal cache and no longer silently falls back for possibly-large files |
 | **18** | released in 0.21.0 | the user's hands-on feedback on 0.20.0: Verdi wheel pan (plain wheel pans the time axis, Ctrl+wheel zooms at the pointer, Shift+wheel scrolls rows; split pane follows), cursor value columns that end the label cell flush against the waveform (one width per render from the visible rows, no reserved slot before a cursor, action icons moved before the values), bare digits in the wave view (the inlay/export/find data forms keep the Verilog radix), `…`-truncated band labels instead of dropped ones, crisp-column alignment for a cursor on a 1-bit edge, in-place reload of a re-simulated dump with the same name/byte size (FNV-1a content fingerprint), and QA regression scenarios for all of it |
-| **19** | on `main`, unreleased | the user's second hands-on list: the SIGNALS list selects like the module tree (plain/Ctrl/Shift + explicit `Add selected (N)`, one batch), the Verdi source-block add (`Ctrl+W` / `Ctrl+Shift+W` / editor context menu `Add signals in selection to the wave`), desktop (Tauri) reload reopens the dumps that were open from remembered absolute paths, and SpinalHDL companion RTL (`simWorkspace/<design>/rtl`) auto-loads next to an opened dump; QA 63 scenarios / 610 assertions |
+| **19** | released in 0.22.0 | the user's second hands-on list: the SIGNALS list selects like the module tree (plain/Ctrl/Shift + explicit `Add selected (N)`, one batch), the Verdi source-block add (`Ctrl+W` / `Ctrl+Shift+W` / editor context menu `Add signals in selection to the wave`), desktop (Tauri) reload reopens the dumps that were open from remembered absolute paths, and SpinalHDL companion RTL (`simWorkspace/<design>/rtl`) auto-loads next to an opened dump; QA 63 scenarios / 610 assertions |
 | **20** | chosen for the next wave, not started | remaining native parity: export, split and multi-dump on the native path, lazy hierarchy loading and a batched values API for native/inlay readouts; then the browser worker + OPFS lazy byte source (the browser's mmap analogue) and completion packages as qualifiers |
 | **21** | later candidates | signal bundles (AXI, Avalon, …); SpinalHDL support; inline python over signal values |
 
