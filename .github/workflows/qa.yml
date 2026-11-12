@@ -33,7 +33,7 @@ jobs:
     #advisory: see the header. A failed run still shows as a failed job.
     continue-on-error: true
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     #the toolchain version lives in rust-toolchain.toml, do not repeat it here:
     #`rustup show` downloads it and every later cargo call uses it
@@ -62,7 +62,7 @@ jobs:
           cd front-end
           trunk build --no-default-features --features wasm --release
 
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: 22
 
@@ -81,7 +81,7 @@ jobs:
     #(qa/artifacts is gitignored, so they only exist as a workflow artifact)
     - name: Upload the QA screenshots and log
       if: failure()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: qa-full-matrix-artifacts
         path: qa/artifacts
