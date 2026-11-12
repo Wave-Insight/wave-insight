@@ -1,0 +1,49 @@
+version: 2
+
+updates:
+  #the lockfile is committed and the tree carries 464 packages, so drift is
+  #invisible without this (yew 0.19 / tauri 1.x were two eras behind)
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:40"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      #benchmarks and the supply-chain tools are dev/CI only; group them so a
+      #criterion/cargo-deny bump does not compete with runtime dependency PRs
+      bench-and-audit-tools:
+        patterns: ["criterion", "divan", "cargo-deny", "cargo-audit"]
+    ignore:
+      #tauri 2 is a planned migration (docs/roadmap.md); a major-bump PR would be
+      #unmergeable today, so take 1.x patches only until that migration starts
+      - dependency-name: "tauri"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tauri-build"
+        update-types: ["version-update:semver-major"]
+      #yew 0.19 -> 0.21+ changes the whole component API; the same migration
+      #window owns it, so do not let dependabot open that PR yet
+      - dependency-name: "yew"
+        update-types: ["version-update:semver-major"]
+
+  #workflow actions are pinned to floating major tags today; this bumps them
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:40"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]
