@@ -2,13 +2,10 @@ name: Benchmarks
 
 #ADVISORY ON PURPOSE: this workflow has no push/pull_request trigger, so it can
 #never become a required check - a noisy runner shows up in the report, it does
-#not block a merge. The weekly schedule only compiles the suite: a regression
-#needs two runs to compare, and that is what the dispatch trigger is for.
+#not block a merge. It is manual-only: a regression needs two runs to compare,
+#so dispatch it twice.
 on:
   workflow_dispatch:
-  schedule:
-    #every Monday 06:00 UTC
-    - cron: '0 6 * * 1'
 
 #a new dispatch supersedes the run that is still benchmarking
 concurrency:
