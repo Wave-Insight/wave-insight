@@ -325,7 +325,12 @@ window.__qa = {
       activeTab: this.text('.tab.active .tab-name'),
       modules: seam ? seam.modules.map((name) => String(name).trim()) : this.texts('.tree-row .tree-name').map(s=>s.trim()),
       sidebarSignals: seam ? seam.signals.slice() : this.texts('.sidebar .sig-row .sig-name'),
-      waveNames: this.texts('.wave-name-text'),
+      // Wave 20 (task-4): the label column shows the leaf signal name by
+      // default and keeps the full path in the title tooltip. waveNames stays
+      // the logical row identity (the full path, what the title carries), so
+      // the older assertions keep their meaning; waveLabels is what is drawn.
+      waveNames: this.qa('.wave-name-text').map((e) => e.getAttribute('title') || e.innerText),
+      waveLabels: this.texts('.wave-name-text'),
       status: this.text('.topbar-hint .brand-tag'),
       inspectorHead: textOf('.inspector-panel .panel-head'),
       inspectorBody: body ? body.slice(0, 260) : null,
@@ -763,10 +768,14 @@ scenarios.sourcesAndDump = async (cdp) => {
   await cdp.shot('qa-combo.png');
 };
 
-// Source-editor click-to-add: a click on an identifier in the Monaco editor adds
-// that signal through the candidate picker. This is NOT the sidebar SIGNALS list
-// interaction - since Wave 19a a plain click on a .sig-row only selects (the
-// explicit adds and the multi-selection are covered by scenarios.signalsSelect).
+// Source-editor click-to-add, Wave 20 (task-2) contract: a plain click on an
+// identifier only SELECTS it (inspector focus + a status hint); the explicit
+// add is Ctrl+Enter on the identifier, which adds the signal under the cursor
+// (one candidate) or opens the candidate picker (several instances). This is
+// NOT the sidebar SIGNALS list interaction (signalsSelect). The scenario also
+// covers task-4 (leaf label / Full path checkbox) and task-3 (a wave row click
+// takes the keyboard focus, so Delete removes the row and never edits the
+// source).
 scenarios.clickToAdd = async (cdp) => {
   await boot(cdp);
   await cdp.upload([path.join(FIXTURES, 'top.sv'), path.join(FIXTURES, 'cpu.sv'), path.join(FIXTURES, 'wave.vcd')]);
@@ -784,25 +793,78 @@ scenarios.clickToAdd = async (cdp) => {
   })()`);
   note('token position', token);
   check('clickToAdd: token found in editor', !!token, token);
-  if (token) {
-    await cdp.clickAt(token.x, token.y);
-    await sleep(900);
-    let s = await state(cdp);
-    note('after click', { modal: s.modal, status: s.status });
-    check('clickToAdd: picker opened', (s.modal || '').includes('pc_reg'), s.modal);
-    const rows = await cdp.eval(`window.__qa.texts('.modal .sig-row .sig-name')`);
-    note('picker rows', rows);
-    check('clickToAdd: two candidates', rows.length === 2, rows);
-    await cdp.eval(`window.__qa.click('.modal .sig-row', 0)`);
-    await sleep(1200);
-    s = await state(cdp);
-    note('after picking', { names: s.waveNames, inspector: s.inspectorBody });
-    check('clickToAdd: row added', s.waveNames.length === 1 && s.waveNames[0].includes('pc_reg'), s.waveNames);
-    const addedDebug = await cdp.eval('window.__qa.debug()');
-    check('clickToAdd: values decoded and drawn', !!addedDebug && addedDebug.changes > 0, addedDebug && addedDebug.changes);
-    check('clickToAdd: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
-    await cdp.shot('qa-click-to-add.png');
-  }
+  if (!token) { return; }
+  const editorLines = () => cdp.eval('(function(){ var m = monaco.editor.getEditors()[0].getModel(); return m.getLineCount(); })()');
+  const linesBefore = await editorLines();
+
+  // 1) a plain click only selects: no modal, no row, and the status line names
+  // the add shortcut
+  await cdp.clickAt(token.x, token.y);
+  await sleep(900);
+  let s = await state(cdp);
+  note('after click', { modal: s.modal, status: s.status, rows: s.waveNames });
+  check('clickToAdd: a plain click does not add a row', s.waveNames.length === 0, s.waveNames);
+  check('clickToAdd: a plain click opens no picker', !s.modal, s.modal);
+  check('clickToAdd: a plain click names the add shortcut', /Ctrl\+Enter/.test(s.status || ''), s.status);
+  check('clickToAdd: the click did not edit the source', (await editorLines()) === linesBefore);
+
+  // 2) Ctrl+Enter adds the signal under the cursor: pc_reg has two candidate
+  // instances, so the picker opens (an add never guesses)
+  await pressCtrl(cdp, 'Enter', 'Enter', 13);
+  s = await state(cdp);
+  note('after ctrl+enter', { modal: s.modal, status: s.status });
+  check('clickToAdd: Ctrl+Enter opens the candidate picker', (s.modal || '').includes('pc_reg'), s.modal);
+  check('clickToAdd: Ctrl+Enter did not insert a line in the source', (await editorLines()) === linesBefore);
+  const rows = await cdp.eval(`window.__qa.texts('.modal .sig-row .sig-name')`);
+  note('picker rows', rows);
+  check('clickToAdd: two candidates', rows.length === 2, rows);
+  await cdp.eval(`window.__qa.click('.modal .sig-row', 0)`);
+  await sleep(1200);
+  s = await state(cdp);
+  note('after picking', { names: s.waveNames, labels: s.waveLabels, inspector: s.inspectorBody });
+  check('clickToAdd: row added', s.waveNames.length === 1 && s.waveNames[0].includes('pc_reg'), s.waveNames);
+
+  // 3) the label column shows the leaf signal name; the full path rides in the
+  // title tooltip and comes back with the Full path checkbox
+  check('clickToAdd: the drawn label is the leaf signal name',
+    s.waveLabels.length === 1 && s.waveLabels[0].indexOf('.') < 0 && s.waveLabels[0].indexOf('pc_reg') === 0, s.waveLabels);
+  check('clickToAdd: the tooltip keeps the instance path',
+    s.waveNames.length === 1 && s.waveNames[0].indexOf('.') > 0 && s.waveNames[0].indexOf('pc_reg') >= 0, s.waveNames);
+  const checkbox = await cdp.eval('(function(){ var i = document.querySelector(".dock-option input"); if (!i) return "no-checkbox"; i.click(); return i.checked; })()');
+  await sleep(700);
+  s = await state(cdp);
+  note('full path checkbox', { checked: checkbox, labels: s.waveLabels, names: s.waveNames });
+  check('clickToAdd: the Full path checkbox draws the instance path',
+    checkbox === true && s.waveLabels.length === 1 && s.waveLabels[0].indexOf('.') > 0
+      && s.waveLabels[0] === s.waveNames[0], { labels: s.waveLabels, names: s.waveNames });
+  await cdp.eval('(function(){ var i = document.querySelector(".dock-option input"); if (i) i.click(); })()');
+  await sleep(700);
+  s = await state(cdp);
+  check('clickToAdd: unchecking draws the leaf name again',
+    s.waveLabels.length === 1 && s.waveLabels[0].indexOf('.') < 0, s.waveLabels);
+
+  // 4) task-3: a real click on the wave row moves the keyboard focus into the
+  // pane, so Delete removes the wave row instead of deleting source text (the
+  // old bug: monaco kept the focus and Delete ate the selected identifier)
+  await cdp.eval('(function(){ var e = monaco.editor.getEditors()[0]; if (e) { e.focus(); e.setPosition({lineNumber: 13, column: 6}); } return true; })()');
+  const rowRect = await cdp.eval('window.__qa.rect(".wave-name-text")');
+  const textBefore = await cdp.eval('(function(){ var m = monaco.editor.getEditors()[0].getModel(); return { lines: m.getLineCount(), value: m.getValue() }; })()');
+  await cdp.clickAt(rowRect.x + 8, rowRect.y + rowRect.h / 2);
+  await sleep(600);
+  const focusedId = await cdp.eval('(document.activeElement && document.activeElement.id) || ""');
+  note('focus after the row click', focusedId);
+  check('clickToAdd: a wave row click takes the keyboard focus', focusedId === 'wave-body', focusedId);
+  await cdp.press('Delete', 'Delete', 46);
+  await sleep(900);
+  s = await state(cdp);
+  const textAfter = await cdp.eval('(function(){ var m = monaco.editor.getEditors()[0].getModel(); return { lines: m.getLineCount(), value: m.getValue() }; })()');
+  note('after the Delete key', { rows: s.waveNames, labels: s.waveLabels, lines: [textBefore.lines, textAfter.lines] });
+  check('clickToAdd: Delete removes the selected wave row', s.waveNames.length === 0, s.waveNames);
+  check('clickToAdd: Delete did not delete source text',
+    textAfter.lines === textBefore.lines && textAfter.value === textBefore.value,
+    { lines: [textBefore.lines, textAfter.lines], changed: textAfter.value !== textBefore.value });
+  check('clickToAdd: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-click-to-add.png');
 };
 
 
@@ -1554,16 +1616,41 @@ scenarios.layout = async (cdp) => {
   await cdp.shot('qa-layout.png');
 };
 
+// Wave 20 (task-1): the whole window is the drop zone. A file drag shows a
+// full-window overlay ("drop to load"), leaving the window hides it again, and
+// the drop itself is taken anywhere - here on the wave canvas, far away from
+// the sidebar tile that used to be the only accepted target.
 scenarios.drop = async (cdp) => {
   await boot(cdp);
-  const dropped = await cdp.eval(`(async function(){
+  await cdp.eval(`(async function(){
     const response = await fetch('/fixtures/wave.vcd');
     const text = await response.text();
     const dt = new DataTransfer();
     dt.items.add(new File([text], 'dropped.vcd', {type: 'text/plain'}));
-    const zone = document.querySelector('.file-drop');
-    zone.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer: dt}));
-    zone.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt}));
+    window.__qaDropData = dt;
+    const target = document.querySelector('.wave-canvas') || document.querySelector('.main-pane');
+    target.dispatchEvent(new DragEvent('dragenter', {bubbles: true, cancelable: true, dataTransfer: dt}));
+    return 'entered';
+  })()`);
+  await sleep(700);
+  const overlay = await cdp.eval('(function(){ var o = document.querySelector(".drop-overlay"); return o ? { card: !!o.querySelector(".drop-overlay-card"), title: (o.querySelector(".drop-overlay-title") || {}).innerText || "" } : null; })()');
+  note('drag overlay', overlay);
+  check('drop: a file drag over the wave area shows the full-window overlay', !!overlay && overlay.card === true, overlay);
+  // leaving the window hides the overlay again (dragleave on the page)
+  await cdp.eval(`(function(){
+    const target = document.querySelector('.wave-canvas') || document.querySelector('.main-pane');
+    target.dispatchEvent(new DragEvent('dragleave', {bubbles: true, cancelable: true, dataTransfer: window.__qaDropData}));
+    return 'left';
+  })()`);
+  await sleep(700);
+  const overlayAfterLeave = await cdp.eval('!!document.querySelector(".drop-overlay")');
+  check('drop: leaving the window hides the overlay', overlayAfterLeave === false, overlayAfterLeave);
+  // the drop anywhere in the window loads the file
+  const dropped = await cdp.eval(`(function(){
+    const dt = window.__qaDropData;
+    const target = document.querySelector('.wave-canvas') || document.querySelector('.main-pane');
+    target.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer: dt}));
+    target.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt}));
     return 'dropped';
   })()`);
   note('drop', dropped);
@@ -1571,9 +1658,46 @@ scenarios.drop = async (cdp) => {
   await sleep(800);
   const s = await state(cdp);
   note('state', s);
-  check('drop: drop zone loads a dump', !!ok, s.status);
+  check('drop: a drop away from the sidebar loads the dump', !!ok, s.status);
+  check('drop: the overlay is gone after the drop', (await cdp.eval('!!document.querySelector(".drop-overlay")')) === false);
   check('drop: module tree present', s.modules.length > 0, s.modules);
   check('drop: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+
+  // The loader now stays mounted while the drawer is closed, so the window-wide
+  // drop zone (and the file input the upload path needs) survives a close.
+  await cdp.eval('window.__qa.click(".topbar .icon-btn")');
+  await sleep(700);
+  const drawerHidden = await cdp.eval('(function(){ var s = document.querySelector(".sidebar"); return s ? getComputedStyle(s).display === "none" : false; })()');
+  check('drop: closing the drawer hides the sidebar', drawerHidden === true, drawerHidden);
+  const inputAlive = await cdp.eval('!!document.querySelector("input[type=file]")');
+  check('drop: the file input stays mounted with the drawer closed', inputAlive === true, inputAlive);
+  await cdp.eval(`(async function(){
+    const response = await fetch('/fixtures/top.sv');
+    const text = await response.text();
+    const dt = new DataTransfer();
+    dt.items.add(new File([text], 'top.sv', {type: 'text/plain'}));
+    document.body.dispatchEvent(new DragEvent('dragenter', {bubbles: true, cancelable: true, dataTransfer: dt}));
+    window.__qaDropSource = dt;
+    return 'entered';
+  })()`);
+  await sleep(700);
+  const closedOverlay = await cdp.eval('!!document.querySelector(".drop-overlay")');
+  check('drop: the overlay shows with the drawer closed', closedOverlay === true, closedOverlay);
+  await cdp.eval(`(function(){
+    const dt = window.__qaDropSource;
+    document.body.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer: dt}));
+    document.body.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt}));
+    return 'dropped';
+  })()`);
+  await sleep(2500);
+  const tabsAfterClosedDrop = await cdp.eval(`window.__qa.texts('.tab .tab-name')`);
+  note('tabs after a drop with the drawer closed', tabsAfterClosedDrop);
+  check('drop: a source dropped with the drawer closed still opens',
+    tabsAfterClosedDrop.some((name) => name.indexOf('top.sv') >= 0), tabsAfterClosedDrop);
+  check('drop: no exceptions after the closed-drawer drop', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.eval('window.__qa.click(".topbar .icon-btn")');
+  await sleep(400);
+  await cdp.shot('qa-drop.png');
 };
 
 scenarios.badInputs = async (cdp) => {
@@ -1732,7 +1856,9 @@ scenarios.deepWave = async (cdp) => {
   await cdp.eval(`window.__qa.qa('.wave-more')[3].click()`);   // the "..." of row 1
   await sleep(600);
   s = await state(cdp);
-  const rowsNow = await cdp.eval(`window.__qa.texts('.wave-name-text')`);
+  // Wave 20 (task-4): the drawn label is the leaf name; the title keeps the
+  // full path the settings dialog title uses.
+  const rowsNow = await cdp.eval(`window.__qa.qa('.wave-name-text').map(function(e){ return e.getAttribute('title') || e.innerText; })`);
   note('settings target', { modal: s.modal, rowsNow });
   check('deep: settings open for the row whose button was clicked', (s.modal || '') === (rowsNow[1] || ''), { modal: s.modal, row1: rowsNow[1] });
   await cdp.eval(`window.__qa.click('.overlay')`);
@@ -1764,6 +1890,8 @@ scenarios.deepEditor = async (cdp) => {
   if (token) {
     await cdp.clickAt(token.x, token.y);
     await sleep(800);
+    // Wave 20 (task-2): the click only selects now; Ctrl+Enter opens the picker
+    await pressCtrl(cdp, 'Enter', 'Enter', 13);
     await cdp.eval(`window.__qa.click('.modal .sig-row', 1)`);
     await sleep(1200);
     const s = await state(cdp);
@@ -1996,6 +2124,10 @@ scenarios.extras = async (cdp) => {
   if (token) {
     await cdp.clickAt(token.x, token.y);
     await sleep(700);
+    const afterClick = await state(cdp);
+    check('extras: the source click only selects (no picker)', !afterClick.modal && afterClick.waveNames.length === rowsBefore, { modal: afterClick.modal, rows: afterClick.waveNames.length, rowsBefore });
+    // Wave 20 (task-2): Ctrl+Enter opens the picker; cancelling it adds nothing
+    await pressCtrl(cdp, 'Enter', 'Enter', 13);
     await cdp.eval(`window.__qa.clickText('.modal .btn', 'Cancel')`);
     await sleep(600);
     const after = await state(cdp);
@@ -2510,6 +2642,16 @@ scenarios.navigation = async (cdp) => {
     typeof cursorAfterClick === 'number' && cursorAfterClick !== cursorBeforeClick,
     { cursorBeforeClick, cursorAfterClick });
 
+  // Wave 20 (task-3): a real click on a wave row moves the keyboard focus into
+  // the pane; the Delete-key regression (source text must not change) lives in
+  // clickToAdd, where a source buffer is open.
+  const rowCell = await cdp.eval('window.__qa.rect(".wave-name-cell")');
+  await cdp.clickAt(rowCell.x + 40, rowCell.y + 15);
+  await sleep(500);
+  const focusedAfterRow = await cdp.eval('(document.activeElement && document.activeElement.id) || ""');
+  note('focus after a wave row click', focusedAfterRow);
+  check('navigation: a wave row click takes the keyboard focus', focusedAfterRow === 'wave-body', focusedAfterRow);
+
   // ctrl+a then one Delete removes every row
   await cdp.key('keyDown', 'Control', 'ControlLeft', 17);
   await cdp.press('a', 'KeyA', 65);
@@ -2935,8 +3077,14 @@ scenarios.mismatch = async (cdp) => {
   await cdp.clickAt(token.x, token.y);
   await sleep(900);
   let s = await state(cdp);
-  note('after source click', { modal: s.modal, tab: s.activeTab, editor: s.editor, status: s.status });
-  check('mismatch: the click opens the candidate picker', !!s.modal, s.modal);
+  note('after source click', { modal: s.modal, tab: s.activeTab, editor: s.editor, status: s.status, rows: s.waveNames });
+  // Wave 20 (task-2): a click only selects; Ctrl+Enter is the explicit add
+  check('mismatch: the click only selects, no picker and no row', !s.modal && s.waveNames.length === 0, { modal: s.modal, rows: s.waveNames });
+  check('mismatch: the click names the add shortcut', /Ctrl\+Enter/.test(s.status || ''), s.status);
+  await pressCtrl(cdp, 'Enter', 'Enter', 13);
+  s = await state(cdp);
+  note('after ctrl+enter', { modal: s.modal });
+  check('mismatch: Ctrl+Enter opens the candidate picker', !!s.modal, s.modal);
   await cdp.eval(`window.__qa.clickText('.modal .sig-name', 'top.u_cpu.pc_reg')`);
   await sleep(1100);
   s = await state(cdp);
@@ -2944,9 +3092,9 @@ scenarios.mismatch = async (cdp) => {
   note('after pick', { names: s.waveNames, editor: s.editor, status: s.status, debug: debug && { rows: debug.rows, changes: debug.changes, bands: debug.bands } });
   check('mismatch: the added row carries the dump path', s.waveNames.some((n) => n.indexOf('tb_top.u_cpu.pc_reg') === 0), s.waveNames);
   check('mismatch: the row added from the source decodes and draws', !!debug && debug.rows >= 1 && debug.changes > 0 && debug.bands > 0, debug && { rows: debug.rows, changes: debug.changes, bands: debug.bands });
-  // A plain click on a source name must add the signal and NOT navigate: the
-  // old bug made the app jump to the declaration, which the status line shows
-  // as a `file:line:col` note instead of the "added" note.
+  // Adding from the source must NOT navigate: the old bug made the app jump to
+  // the declaration, which the status line shows as a `file:line:col` note
+  // instead of the "added" note.
   check('mismatch: adding from the source did not jump to the declaration',
     s.activeTab === before.activeTab && /^added /.test(s.status || '') && !/cpu\.sv:\d+:\d+/.test(s.status || ''),
     { tabBefore: before.activeTab, tabAfter: s.activeTab, status: s.status });
@@ -2969,7 +3117,8 @@ scenarios.mismatch = async (cdp) => {
   const added = await addSignal(cdp, 'clk');
   check('mismatch: the extra-scope signal can be added from the sidebar', !!added);
   await sleep(600);
-  const rows = await cdp.eval(`window.__qa.texts('.wave-name-text')`);
+  // the drawn label is the leaf name now; the title carries the dump path
+  const rows = await cdp.eval(`window.__qa.qa('.wave-name-text').map(function(e){ return e.getAttribute('title') || e.innerText; })`);
   note('rows before the ambiguous jump', rows);
   check('mismatch: the added x.clk row carries the dump path', rows.some((row) => row.indexOf('tb_top.x.clk') === 0), rows);
   await cdp.eval(`window.__qa.click('.wave-more', 2)`); // the x.clk row's jump arrow
@@ -3363,6 +3512,35 @@ scenarios.persistence = async (cdp) => {
   note('restored format', active);
   check('persistence: the remembered format is applied to the re-added row',
     !!active && active.indexOf('Bin') >= 0, active);
+
+  // Wave 20 (task-4): the label display option (leaf name vs instance path) is
+  // part of the layout payload and survives a reload. A dump and one row are
+  // open at this point, so the drawn label can be checked directly.
+  const fullPathOn = await cdp.eval('(function(){ var i = document.querySelector(".dock-option input"); if (!i) return null; if (!i.checked) i.click(); return i.checked; })()');
+  await sleep(700);
+  const layoutWithPath = await cdp.eval('window.localStorage.getItem("wave-insight.layout.v1")');
+  const parsedWithPath = layoutWithPath ? JSON.parse(layoutWithPath) : null;
+  let labelsWithPath = await cdp.eval('window.__qa.texts(".wave-name-text")');
+  note('label option', { checked: fullPathOn, stored: parsedWithPath && parsedWithPath.show_path, labels: labelsWithPath });
+  check('persistence: the Full path option is written to the layout',
+    fullPathOn === true && !!parsedWithPath && parsedWithPath.show_path === true, parsedWithPath);
+  check('persistence: checking Full path draws the instance path',
+    labelsWithPath.length === 1 && labelsWithPath[0].indexOf('.') > 0, labelsWithPath);
+  await cdp.send('Page.navigate', { url: APP_URL });
+  await waitFor(cdp, `!!window.__waveInsightLsp && !!document.querySelector('.app')`, 60000);
+  await cdp.eval(PAGE_HELPERS);
+  await sleep(1000);
+  const restoredOption = await cdp.eval('(function(){ var i = document.querySelector(".dock-option input"); return i ? i.checked : null; })()');
+  check('persistence: the Full path option survives a reload', restoredOption === true, restoredOption);
+  await cdp.upload([path.join(FIXTURES, 'wave.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(700);
+  await cdp.eval('window.__qa.clickSignal("pc")');
+  await sleep(900);
+  labelsWithPath = await cdp.eval('window.__qa.texts(".wave-name-text")');
+  note('restored label option', labelsWithPath);
+  check('persistence: the rows draw the saved full path label',
+    labelsWithPath.length === 1 && labelsWithPath[0].indexOf('.') > 0, labelsWithPath);
   check('persistence: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
 };
 

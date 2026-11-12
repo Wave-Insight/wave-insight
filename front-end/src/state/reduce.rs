@@ -43,6 +43,10 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
         Action::SetEditorRatio(ratio) => {
             state.layout.editor_ratio = clamp_ratio(ratio);
         }
+        Action::SetShowPath(show_path) => {
+            // a wave display option, persisted with the rest of the layout
+            state.layout.show_path = show_path;
+        }
         Action::Status(status) => {
             state.nav.status = Some(status);
         }
@@ -1549,11 +1553,14 @@ mod tests {
                 editor_ratio: 0.02,
                 drawer_open: false,
                 split_ratio: 0.9,
+                show_path: true,
             }),
         );
         assert_eq!(state.layout.sidebar_w, 4000.0_f64.max(SIDEBAR_MIN));
         assert_eq!(state.layout.editor_ratio, EDITOR_RATIO_MIN);
         assert!(!state.layout.drawer_open);
+        // the label display option rides along with the layout
+        assert!(state.layout.show_path);
         // the split divider is clamped to its own documented range
         assert_eq!(
             state.layout.split_ratio,

@@ -125,6 +125,11 @@ pub enum Msg {
     GetVerilog((String, String)),
     /// A source tab was closed; the file leaves the source pane.
     CloseSource(usize),
+    /// A file drag entered or left the window: the full-window "drop to load"
+    /// overlay is shown while one is over the app. Fed by the browser loader's
+    /// window listeners and, in the desktop build, by the webview's native
+    /// drag-drop events.
+    DropDragActive(bool),
     /// A file could not be opened, or the design could not be parsed.
     Error(String),
     /// A line of progress or a note from the file loader (info tone).
@@ -162,6 +167,9 @@ pub enum Msg {
     },
     /// A plain click on an identifier in the source editor.
     SourceClick(SourceClick),
+    /// Ctrl+Enter in the source editor: add the signal under the cursor to the
+    /// wave view. The click itself only selects, so this is the explicit add.
+    SourceAddSignal(SourceClick),
     /// A block of code was selected and the user asked for every signal it
     /// mentions (Verdi's block add): Ctrl+W with a selection, the Ctrl+Shift+W
     /// alias, or the editor's context-menu entry. One rows batch.
@@ -355,6 +363,10 @@ pub struct App {
     /// The report the file loader emitted for the load that is about to arrive
     /// in Msg::GetWaveform; consumed there to extend the success line.
     pending_load: Option<LoadReport>,
+    /// A file drag is over the window: the full-window overlay says the files
+    /// can be dropped anywhere. The loader owns the browser drag state, the
+    /// desktop webview its native drag events; both report it here.
+    drop_active: bool,
     /// The native dump the desktop build is drawing read-only, when one is open.
     #[cfg(feature = "tauri")]
     remote: Option<crate::remote::RemoteSession>,
@@ -395,6 +407,8 @@ impl Component for App {
     fn create(ctx: &Context<Self>) -> Self {
         #[cfg(feature = "tauri")]
         let file_drop_callback = ctx.link().callback(Msg::FileDrop);
+        #[cfg(feature = "tauri")]
+        let drag_callback = ctx.link().callback(Msg::DropDragActive);
 
         // Tauri 2 removed the `tauri://file-drop` event: the webview owns the
         // drag-drop API now. `onDragDropEvent` fires for enter/over/drop/leave
@@ -414,8 +428,20 @@ impl Component for App {
                 let kind = js_sys::Reflect::get(&payload, &JsValue::from_str("type"))
                     .ok()
                     .and_then(|kind| kind.as_string());
-                if kind.as_deref() != Some("drop") {
-                    return;
+                match kind.as_deref() {
+                    // the native webview owns the OS drag: these events are what
+                    // draws the same "drop to load" overlay the browser build
+                    // shows (the drop everywhere already works here)
+                    Some("enter") | Some("over") => {
+                        drag_callback.emit(true);
+                        return;
+                    }
+                    Some("leave") => {
+                        drag_callback.emit(false);
+                        return;
+                    }
+                    Some("drop") => drag_callback.emit(false),
+                    _ => return,
                 }
                 let paths: Vec<String> =
                     js_sys::Reflect::get(&payload, &JsValue::from_str("paths"))
@@ -571,6 +597,7 @@ impl Component for App {
             editor_preview: None,
             wave_tab: WaveFrameTab::Waveform,
             pending_load: None,
+            drop_active: false,
             #[cfg(feature = "tauri")]
             remote: None,
             #[cfg(feature = "tauri")]
@@ -681,9 +708,11 @@ impl Component for App {
                 <TopBar store={self.store.clone()}
                     onnavigationiconclick={link.callback(|_| Msg::Action(Action::ToggleDrawer))} />
                 <div class="app-body">
-                    {if self.layout.drawer_open {
-                        html!{
-                        <aside class="sidebar">
+                    // The sidebar stays mounted while it is closed: the file
+                    // loader in it owns the window-wide drop listeners and the
+                    // read queue, and closing the drawer must not disarm them
+                    // (or throw away a read in progress). `hidden` is display:none.
+                    <aside class={if self.layout.drawer_open {"sidebar"} else {"sidebar hidden"}}>
                             {self.file_button(ctx)}
                             <ModuleStruct tree={self.sidebar_tree()}
                                 focus={self.focus.clone()}
@@ -697,11 +726,7 @@ impl Component for App {
                                 onrowcontext={link.callback(Msg::RowMenuOpened)}
                                 onaddmany={link.callback(Msg::SidebarAddMany)}
                                 signaladd={link.callback(|(_name, path): (String, String)| Msg::SidebarAdd(path))}/>
-                        </aside>
-                        }
-                    }else {
-                        html!{}
-                    }}
+                    </aside>
                     {if self.layout.drawer_open {
                         html!{
                             <div class={if self.splitter_start.is_some() {"splitter dragging"} else {"splitter"}}
@@ -721,10 +746,10 @@ impl Component for App {
                                         <div><strong>{"Nothing loaded yet"}</strong></div>
                                         <div>{"Drop a waveform ( "}
                                             <kbd>{".vcd"}</kbd>{" "}<kbd>{".fst"}</kbd>{" "}<kbd>{".ghw"}</kbd>
-                                            {" ) to inspect its signals."}</div>
+                                            {" ) anywhere in this window to inspect its signals."}</div>
                                         <div>{"Drop your "}<kbd>{".sv"}</kbd>{" / "}<kbd>{".v"}</kbd>
-                                            {" sources to get declarations, drivers and loads."}</div>
-                                        <div>{"Use the ＋ button in the sidebar, or drag the files onto it."}</div>
+                                            {" sources as well to get declarations, drivers and loads."}</div>
+                                        <div>{"Or use the ＋ button in the sidebar."}</div>
                                     </div>
                                 </div>
                             }
@@ -741,7 +766,8 @@ impl Component for App {
                                 onshown={link.callback(Msg::JumpHandled)}
                                 onchange={link.callback(Msg::SourceEdited)}
                                 onwordclick={link.callback(Msg::SourceClick)}
-                                onaddselection={link.callback(Msg::AddSelectionToWave)} />
+                                onaddselection={link.callback(Msg::AddSelectionToWave)}
+                                onaddsignal={link.callback(Msg::SourceAddSignal)} />
                         </div>
                         <div class={if self.wave_splitter_start.is_some() {"wave-splitter dragging"} else {"wave-splitter"}}
                             title="Drag to resize, double click to reset"
@@ -815,6 +841,19 @@ impl Component for App {
                                     {"Drivers / loads"}
                                 </button>
                                 {self.remote_badge()}
+                                // The label column shows the leaf signal name by
+                                // default; this checkbox brings the full instance
+                                // path back. The option rides with the layout, so
+                                // it survives a reload.
+                                <label class="dock-option"
+                                    title="Show the full instance path in front of each signal name">
+                                    <input type="checkbox" checked={self.layout.show_path}
+                                        onchange={link.callback(|event: web_sys::Event| {
+                                            let input: web_sys::HtmlInputElement = event.target_unchecked_into();
+                                            Msg::Action(Action::SetShowPath(input.checked()))
+                                        })} />
+                                    {"Full path"}
+                                </label>
                             </div>
                             {if self.dump_tabs.len() >= 2 {
                                 let split_open = self.split.is_some();
@@ -920,6 +959,7 @@ impl Component for App {
                         </div>
                     </main>
                 </div>
+                {self.drop_overlay()}
                 {if let Some(picker) = &self.picker {
                     html!{
                         <PathPicker title={picker.title.clone()}
@@ -1763,6 +1803,13 @@ impl App {
                 self.apply(Action::SourceClosed { index });
                 true
             }
+            Msg::DropDragActive(active) => {
+                if self.drop_active == active {
+                    return false;
+                }
+                self.drop_active = active;
+                true
+            }
             Msg::Error(message) => {
                 // a failed open must not leave a stale report behind
                 self.pending_load = None;
@@ -1904,6 +1951,10 @@ impl App {
                 true
             }
             Msg::SourceClick(click) => {
+                // A click *selects*, it never adds: it points the inspector at
+                // the signal under the cursor and says how to add it. Reading the
+                // source must not grow the wave list by accident — the add is
+                // the explicit Ctrl+Enter below (or a sidebar Add gesture).
                 let candidates = self.candidates_at(&click);
                 match candidates.len() {
                     0 => {
@@ -1913,23 +1964,57 @@ impl App {
                         )));
                     }
                     1 => {
-                        // Verdi behaviour: clicking a name in the source adds it
-                        // to the wave view, and does not move the editor
-                        self.add_path(&candidates[0], false);
+                        self.apply(Action::FocusChanged {
+                            focus: Focus {
+                                signal: Some(candidates[0].clone()),
+                                instance: self.focus.instance.clone(),
+                            },
+                        });
+                        self.note(Status::info(format!(
+                            "`{}` selected — Ctrl+Enter adds it to the waveform",
+                            candidates[0]
+                        )));
                     }
                     _ => {
                         self.note(Status::info(format!(
-                            "{} signals match `{}`",
+                            "{} signals match `{}` — Ctrl+Enter picks one to add",
+                            candidates.len(),
+                            click.word
+                        )));
+                    }
+                }
+                true
+            }
+            Msg::SourceAddSignal(click) => {
+                // Ctrl+Enter: the explicit "add the signal I am looking at".
+                // One match is added straight away; an ambiguous name opens the
+                // picker instead of guessing (the same rule a sidebar add uses).
+                let candidates = self.candidates_at(&click);
+                match candidates.len() {
+                    0 => {
+                        self.note(Status::info(format!(
+                            "`{}` is not a signal of the elaborated design",
+                            click.word
+                        )));
+                    }
+                    1 => self.add_path(&candidates[0], false),
+                    _ => {
+                        self.note(Status::info(format!(
+                            "{} signals match `{}` — choose the one to add",
                             candidates.len(),
                             click.word
                         )));
                         self.apply(Action::PickerOpened {
-                            title: format!("{} signals match `{}`", candidates.len(), click.word),
+                            title: format!(
+                                "{} signals match `{}` — add one",
+                                candidates.len(),
+                                click.word
+                            ),
                             paths: candidates,
                         });
                     }
                 }
-                true
+                false
             }
             Msg::AddSelectionToWave(selection) => {
                 // Verdi's block add: every identifier the selected code block
@@ -2018,8 +2103,8 @@ impl App {
                     .cloned()
                 {
                     self.apply(Action::PickerChosen { index });
-                    // the picker was opened by a click in the source: same rule,
-                    // add without moving the editor
+                    // the picker was opened by Ctrl+Enter in the source (or a
+                    // click, which only selects): add without moving the editor
                     self.add_path(&path, false);
                 }
                 true
@@ -2131,6 +2216,21 @@ impl App {
                 onselect={link.callback(Msg::WaveSelect)}
                 onjump={link.callback(Msg::WaveJump)}
                 onlocate={link.callback(Msg::Locate)} />
+        }
+    }
+
+    /// The full-window "drop to load" overlay while a file drag is over the app.
+    ///
+    /// The browser build learns it from the file loader's window listeners, the
+    /// desktop build from the webview's native drag-drop events; both feed
+    /// `drop_active`. It lives here rather than in the loader because the loader
+    /// sits in the sidebar, and a fixed overlay inside a hidden sidebar would
+    /// not paint.
+    fn drop_overlay(&self) -> Html {
+        if self.drop_active {
+            crate::file_load::drop_overlay_html()
+        } else {
+            html! {}
         }
     }
 
@@ -2399,8 +2499,9 @@ impl App {
     /// of guessing.
     ///
     /// `show_declaration` is for the explicit "add and show me where it is"
-    /// gestures (the sidebar). A click in the source adds the row and leaves the
-    /// editor where it is, which is the Verdi behaviour the user asked for.
+    /// gestures (the sidebar). The source pane's Ctrl+Enter adds the row and
+    /// leaves the editor where it is; a plain click in the source only selects,
+    /// it never adds.
     fn add_path(&mut self, path: &str, show_declaration: bool) {
         // the desktop build may be drawing a native dump: it has no wasm handle
         // to match against, only the hierarchy's path -> signal table
@@ -2997,7 +3098,8 @@ impl App {
                 ongetverilog={ctx.link().callback(Msg::GetVerilog)}
                 onerror={ctx.link().callback(Msg::Error)}
                 onstatus={ctx.link().callback(Msg::Note)}
-                onloadreport={ctx.link().callback(Msg::LoadReport)} />
+                onloadreport={ctx.link().callback(Msg::LoadReport)}
+                ondragstate={ctx.link().callback(Msg::DropDragActive)} />
         }
     }
 }

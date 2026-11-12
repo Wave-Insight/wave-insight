@@ -28,6 +28,10 @@ version = "0.3"
 features = [
     "File",
     "DataTransfer",
+    #file_load: the window-wide file drag & drop (drop anywhere). yew already
+    #enables these transitively, but this crate owns the contract now.
+    "DragEvent",
+    "FileList",
     #measuring the wave canvas
     "Document",
     "Element",

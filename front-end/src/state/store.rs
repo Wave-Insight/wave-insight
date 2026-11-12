@@ -440,6 +440,7 @@ mod tests {
                 editor_ratio: Layout::default().editor_ratio,
                 drawer_open: false,
                 split_ratio: Layout::default().split_ratio,
+                show_path: Layout::default().show_path,
             }
         );
         // reading the stored values back is not a change: nothing is rewritten

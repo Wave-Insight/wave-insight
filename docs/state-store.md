@@ -47,6 +47,8 @@ render). The memory policy is deliberately **not** store state: the global 64 Mi
 decode budget, the free plan, the pre-flight estimate and the
 `__waveDebug.memory` readout live in `wave_show/memory.rs` and read the dump
 handles and the tab slice, so the store's layout/dumps entries are unchanged.
+Wave 20 added `Layout.show_path` (the wave label column's leaf-name vs
+instance-path display option, persisted with the layout) with `SetShowPath`.
 **Step 4 is down to pane wiring**: the panes could subscribe directly instead of
 receiving shell-mirrored props, the picker/dialog props could be pure store reads
 instead of `App`/`WaveShow` mirrors, `Effect::MonacoShow` is still a no-op seam,
@@ -137,7 +139,7 @@ pub struct State {
     pub dump: Dump,            // Option<Rc<Waveform>>, hierarchy meta, end_time
     pub rows: Rows,            // the wave rows, their order and per-row settings
     pub view: Viewport,        // committed zoom/pan + cursors
-    pub layout: Layout,        // sidebar width, editor ratio, drawer
+    pub layout: Layout,        // sidebar width, editor ratio, drawer, label display option
     pub row_prefs: RowPrefs,   // per-signal display settings remembered across sessions
     pub sessions: Sessions,    // remembered row lists, keyed by DumpId (file name + size)
     pub focus: Focus,          // signal selected in the wave view, instance in the sidebar
@@ -151,7 +153,8 @@ pub struct Rows {
     pub version: u64,
 }
 pub struct Row {
-    pub path: String,          // hierarchical path: identity, value key and display name
+    pub path: String,          // hierarchical path: identity, value key and the full label
+                               // (the wave column draws the leaf name unless layout.show_path)
     pub width: usize,          // dump width when present, else declared
     pub is_bool: bool,
     pub index: Option<usize>,  // resolved signal index in the dump (cache, kept for the painter)
@@ -163,8 +166,8 @@ pub struct Row {
 
 Notes that matter:
 
-- **`layout` (including `split_ratio`), `row_prefs` and `sessions` are the
-  persisted slices.**
+- **`layout` (including `split_ratio` and `show_path`), `row_prefs` and
+  `sessions` are the persisted slices.**
   `state/persist.rs` writes them to `wave-insight.layout.v1` /
   `wave-insight.rows.v1` / `wave-insight.sessions.v1` (schema 1, version repeated
   in the payload); a corrupt, future-version or denied store degrades to
@@ -496,6 +499,8 @@ pub struct Layout {
     pub sidebar_w: f64,      // 280.0 default, clamped as today
     pub editor_ratio: f32,   // 0.42 default, clamped to [0.15, 0.75] on every write
     pub drawer_open: bool,
+    pub show_path: bool,     // false (default): leaf signal names in the wave column;
+                             // true: the full instance path (also in the row tooltip)
 }
 // derived, never stored:
 fn collapsed(sources: &Sources) -> bool { sources.items.is_empty() }   // same versioned slice as Rows

@@ -24,6 +24,9 @@ pub enum Action {
     ToggleDrawer,
     /// The editor/wave splitter moved, as a ratio of the main pane height.
     SetEditorRatio(f32),
+    /// The wave label column shows the full instance path in front of each
+    /// signal name (`false` = leaf signal names only, the default).
+    SetShowPath(bool),
     /// One line of feedback for the top bar.
     Status(Status),
     /// Nothing to report any more.

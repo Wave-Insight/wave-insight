@@ -639,6 +639,65 @@ pub fn active_selection() -> Option<EditorSelection> {
     read_selection(&editor)
 }
 
+/// The identifier under the cursor of the source editor.
+///
+/// This is what Ctrl+Enter acts on ("add the signal I am looking at to the
+/// wave"): a click in the source only selects a signal now, and the keyboard
+/// is the explicit add gesture. `col` is the first column of the identifier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorWord {
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+    pub word: String,
+}
+
+/// The identifier under the cursor of the editor the source pane shows.
+///
+/// `None` before monaco is ready, when no source is attached, after the editor
+/// was torn down, or when the cursor is not on an identifier.
+pub fn active_word() -> Option<CursorWord> {
+    let editor = ACTIVE_EDITOR.with(|slot| slot.borrow().clone())?;
+    read_word(&editor)
+}
+
+/// Read the identifier under the cursor of `editor`.
+fn read_word(editor: &JsValue) -> Option<CursorWord> {
+    let model = js_function(editor, "getModel")?.call0(editor).ok()?;
+    if !model.is_object() {
+        return None;
+    }
+    // a model that is not a design source has no signal to add: the same rule
+    // the block add uses
+    let file = file_of_uri(&model_uri(&model)?)?;
+    if file.is_empty() {
+        return None;
+    }
+    let position = js_function(editor, "getPosition")?.call0(editor).ok()?;
+    if !position.is_object() {
+        return None;
+    }
+    let field = |key: &str| {
+        Reflect::get(&position, &JsValue::from_str(key))
+            .ok()
+            .and_then(|value| value.as_f64())
+            .map(|value| (value.max(1.0)) as u32)
+    };
+    let line = field("lineNumber")?;
+    let column = field("column")?;
+    // the identifier may start before the cursor column; the add wants its start
+    let (start, word) = word_at(editor, line, column)?;
+    if word.is_empty() {
+        return None;
+    }
+    Some(CursorWord {
+        file,
+        line,
+        col: start,
+        word,
+    })
+}
+
 /// Read the live selection of `editor`.
 ///
 /// Returns the selection only when it covers something: monaco reports a

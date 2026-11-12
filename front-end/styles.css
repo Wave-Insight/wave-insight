@@ -753,6 +753,24 @@ button:active { background: var(--bg-4); }
   color: var(--text-0);
 }
 
+/* a file drag is over the window: the tile says the drop is meant here too
+   (the whole window accepts it, see .drop-overlay) */
+.file-drop.active {
+  border-color: var(--accent);
+  border-style: solid;
+  background: var(--accent-soft);
+  color: var(--text-0);
+}
+
+.file-drop.active .file-drop-icon {
+  animation: drop-pulse 1s ease-in-out infinite;
+}
+
+@keyframes drop-pulse {
+  0%, 100% { transform: translateY(0); opacity: 0.7; }
+  50% { transform: translateY(-2px); opacity: 1; }
+}
+
 .file-native { display: none; }
 
 .file-drop-icon { color: var(--accent); font-size: 15px; line-height: 1; }
@@ -823,6 +841,29 @@ button:active { background: var(--bg-4); }
   color: var(--text-0);
   border-bottom-color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* the label-column display option, right-aligned in the dock tab strip */
+.dock-option {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 12px;
+  color: var(--text-2);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dock-option:hover { color: var(--text-0); }
+
+.dock-option input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .dock-body {
@@ -1035,6 +1076,9 @@ button:active { background: var(--bg-4); }
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  /* focused programmatically on a press so the keyboard (Delete, arrows) acts
+     on the wave rows; not in the tab order, so no ring is drawn */
+  outline: none;
   /* the wave canvas is an absolute overlay that leaves the scrollbar free, so
      the gutter has to exist before the first scroll */
   scrollbar-gutter: stable;
@@ -1806,4 +1850,59 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
   color: var(--text-2);
   font-size: 10px;
   margin: 0 4px;
+}
+/* ==========================================================================
+   full-window file drop
+   ========================================================================== */
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 12, 18, 0.72);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+
+.drop-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: min(520px, 82vw);
+  padding: 34px 28px;
+  text-align: center;
+  border: 2px dashed var(--accent);
+  border-radius: calc(var(--radius) * 2);
+  background: var(--bg-1);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55), 0 0 24px var(--accent-soft);
+}
+
+.drop-overlay-icon {
+  color: var(--accent);
+  font-size: 30px;
+  line-height: 1;
+  animation: drop-pulse 1s ease-in-out infinite;
+}
+
+.drop-overlay-title {
+  color: var(--text-0);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+
+.drop-overlay-note {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.drop-overlay-note span {
+  color: var(--text-1);
+  white-space: nowrap;
 }

@@ -25,7 +25,7 @@ use super::memory;
 use super::settings::Settings;
 use super::signal::SignalName;
 use super::time::{build_axis, Time as TimeBar};
-use super::util::signal_things::{derive_bit, RowValues, SignalItem, SignalThings};
+use super::util::signal_things::{derive_bit, leaf_name, RowValues, SignalItem, SignalThings};
 use super::windowed::{self, WindowRequest};
 
 /// Rows around the viewport that are kept decoded once they were shown, so a
@@ -295,6 +295,10 @@ pub struct WaveShow {
     resize_callback: Option<Closure<dyn FnMut()>>,
     /// Last `hidden` prop, so `changed` knows whether the *view* has to re-run.
     hidden: bool,
+    /// Whether the label column shows the full instance path. The layout slice
+    /// owns the option (it is persisted with the window layout); it is mirrored
+    /// here so the view never borrows the store.
+    show_path: bool,
 
     /// The native dump being drawn read-only, when the app opened one.
     #[cfg(feature = "tauri")]
@@ -388,6 +392,7 @@ impl Component for WaveShow {
             resize_observer: None,
             resize_callback: None,
             hidden: ctx.props().hidden,
+            show_path: store.select(select::layout).show_path,
             #[cfg(feature = "tauri")]
             remote: ctx.props().remote.clone(),
             #[cfg(feature = "tauri")]
@@ -597,6 +602,11 @@ impl Component for WaveShow {
                     title="Drag to resize the label column, double click to reset"
                     onmousedown={link.callback(Msg::NamesDown)} />
                 <div class="wave-body" id="wave-body"
+                    // Focusable so a press inside the pane can move the keyboard
+                    // focus here (tabindex -1: programmatic only, not in the tab
+                    // order). Without it Delete kept going to monaco's hidden
+                    // textarea and deleted the *source*, not the wave row.
+                    tabindex="-1"
                     onscroll={link.callback(|_| Msg::Scroll)}
                     onwheel={link.callback(Msg::Wheel)}
                     onmousedown={link.callback(Msg::MouseDown)}
@@ -634,8 +644,18 @@ impl Component for WaveShow {
                                     .cursors
                                     .two
                                     .map(|_| self.value_text_at(idx, item, self.cursors.two).unwrap_or_default());
+                                // the full label (instance path + bus range) is
+                                // always the tooltip; the visible text is the
+                                // leaf name unless the "full path" option is on
+                                let full = item.name.clone();
+                                let name = if self.show_path {
+                                    full.clone()
+                                } else {
+                                    leaf_name(&full).to_string()
+                                };
                                 html!{<SignalName
-                                    name={item.name.clone()}
+                                    name={name}
+                                    full={full}
                                     choose={item.choose}
                                     top={idx as f64 * ROW_HEIGHT}
                                     value={value}
@@ -658,7 +678,7 @@ impl Component for WaveShow {
                         <div class="empty-hint">
                             <div>{"No signals yet"}</div>
                             <div>{"Pick one from the signal list, drag a range to zoom, "}<br/>
-                                {"click a name in the source to add it here."}</div>
+                                {"or Ctrl+Enter over a name in the source to add it here."}</div>
                         </div>
                     }}}
                 </div>
@@ -953,6 +973,10 @@ impl WaveShow {
             }
             Msg::MouseDown(e) => {
                 e.prevent_default();
+                // The keyboard follows the mouse: a press in the wave pane moves
+                // the focus here, so Delete removes the selected wave rows instead
+                // of deleting text in the source editor that kept the focus.
+                self.focus_body();
                 let metrics = self.measure();
                 let x = e.x() as f64;
                 // within a few pixels of the label column's edge the press drags
@@ -1163,7 +1187,17 @@ impl WaveShow {
                 }
                 true
             }
-            Msg::Resize => true,
+            Msg::Resize => {
+                // The layout slice also carries the label display option: when
+                // it flips, the name column has to re-render (the message is
+                // named after the resize because that is what it mostly is).
+                let show_path = self.store.select(select::layout).show_path;
+                if show_path != self.show_path {
+                    self.show_path = show_path;
+                    return true;
+                }
+                true
+            }
             Msg::Export((format, scope)) => {
                 // the download is the answer, so the dialog closes either way and
                 // the status line says what happened
@@ -1409,6 +1443,24 @@ impl WaveShow {
         };
         let count = JsValue::from_f64(f64::from(self.pane_render_count.get()));
         let _ = js_sys::Reflect::set(&window, &JsValue::from_str("__wavePaneRenderCount"), &count);
+    }
+
+    /// Move the keyboard focus into the wave pane.
+    ///
+    /// The pane has no input elements: the store owns the row selection and a
+    /// window keydown listener reads the keys. That listener deliberately skips
+    /// keys typed into a text field (monaco's hidden textarea, the settings
+    /// dialog), so without this the focus stayed in the editor and Delete
+    /// deleted the source text under the cursor instead of the wave row.
+    fn focus_body(&self) {
+        let Some(body) = document().and_then(|document| {
+            document
+                .get_element_by_id("wave-body")
+                .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+        }) else {
+            return;
+        };
+        let _ = body.focus();
     }
 
     /// One store change; the resulting snapshot arrives as `Msg::Rows`.

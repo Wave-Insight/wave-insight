@@ -7,7 +7,7 @@
 //! they are unit tested on the host target.
 #[cfg(feature = "tauri")]
 pub use file::parse_dump;
-pub use file::{FileLoad, LoadReport};
+pub use file::{drop_overlay_html, FileLoad, LoadReport};
 #[cfg(feature = "tauri")]
 pub use filelist::current_webview;
 #[cfg(feature = "tauri")]

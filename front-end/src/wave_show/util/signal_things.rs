@@ -198,6 +198,29 @@ fn resolve(path: &str, declared: usize, waveform: Option<&Waveform>) -> Resolved
     }
 }
 
+/// The leaf signal name of a hierarchical path, for the label column.
+///
+/// The wave rows carry the full instance path (`top.u_core.pc`); the default
+/// label is just the signal name (`pc`), and the full path is one checkbox
+/// away (and always in the hover tooltip). Escaped Verilog identifiers may
+/// contain dots (`\foo.bar `), so a dot inside an escaped region is not a
+/// hierarchy separator; the trailing space of an escaped identifier is
+/// trimmed because it is VCD syntax, not part of the name.
+pub fn leaf_name(name: &str) -> &str {
+    let mut in_escaped = false;
+    let mut start = 0usize;
+    for (index, character) in name.char_indices() {
+        match character {
+            '\\' => in_escaped = true,
+            // whitespace terminates an escaped identifier
+            character if character.is_whitespace() => in_escaped = false,
+            '.' if !in_escaped => start = index + 1,
+            _ => {}
+        }
+    }
+    name[start..].trim_end()
+}
+
 /// The history of one bit of a decoded bus.
 ///
 /// Costs one pass over the parent's changes and one small value per time the bit
@@ -514,6 +537,25 @@ mod tests {
         assert_eq!(things[1].name, "top.pc[7:0]");
         assert!(!things[1].is_bool);
         assert_eq!(things[1].declared, 8);
+    }
+
+    #[test]
+    fn the_leaf_name_drops_the_instance_path_but_keeps_the_rest() {
+        // the wave label column shows the signal name by default
+        assert_eq!(leaf_name("top.clk"), "clk");
+        assert_eq!(leaf_name("top.u_core.pc[7:0]"), "pc[7:0]");
+        assert_eq!(leaf_name("top.u_core.pc"), "pc");
+        // a name without a hierarchy is unchanged
+        assert_eq!(leaf_name("clk"), "clk");
+        assert_eq!(leaf_name("pc[7:0]"), "pc[7:0]");
+        // an array element keeps its index: it is part of the signal name
+        assert_eq!(leaf_name("top.u_core.regs[3]"), "regs[3]");
+        // an escaped Verilog identifier may contain dots; they are not hierarchy
+        // separators, and the VCD terminator space is trimmed from the display
+        assert_eq!(leaf_name("top.\\foo.bar "), "\\foo.bar");
+        assert_eq!(leaf_name("\\root.dot "), "\\root.dot");
+        // an empty name stays empty instead of panicking
+        assert_eq!(leaf_name(""), "");
     }
 
     #[test]

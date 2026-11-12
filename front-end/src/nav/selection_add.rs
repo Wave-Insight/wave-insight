@@ -328,9 +328,9 @@ pub struct SelectionPlan {
     pub paths: Vec<String>,
     /// Distinct words the design answered with more than one candidate.
     ///
-    /// A click on such a word opens the picker, so the status line names a few
-    /// of them and says "click one to pick"; adding a guess would be worse than
-    /// a message.
+    /// The picker opens for such a word (Ctrl+Enter after clicking it), so the
+    /// status line names a few of them and says "Ctrl+Enter picks one"; adding a
+    /// guess would be worse than a message.
     pub ambiguous: Vec<String>,
     /// Distinct words no elaborated design knows (a function name, an instance
     /// label, ...).
@@ -392,7 +392,7 @@ pub fn success_note(plan: &SelectionPlan) -> String {
     let mut note = String::from("from the code selection");
     if !plan.ambiguous.is_empty() {
         note.push_str(&format!(
-            "; {} ambiguous ({} — click one to pick)",
+            "; {} ambiguous ({} — Ctrl+Enter picks one)",
             plan.ambiguous.len(),
             word_list(&plan.ambiguous)
         ));
@@ -429,7 +429,7 @@ pub fn nothing_added(
             );
         }
         return format!(
-            "the selection in {file} has no signal names — only keywords, literals and comments were selected; click a name in the source to add it"
+            "the selection in {file} has no signal names — only keywords, literals and comments were selected; click a name in the source and press Ctrl+Enter to add it"
         );
     }
     let ambiguous = plan.ambiguous.len();
@@ -437,18 +437,18 @@ pub fn nothing_added(
     let names = format!("{} identifier(s)", found.clicks.len());
     if ambiguous > 0 && unresolved == 0 {
         return format!(
-            "the {names} of the {file} selection are ambiguous between instances ({}) — click one in the source to pick its signal",
+            "the {names} of the {file} selection are ambiguous between instances ({}) — click one in the source and press Ctrl+Enter to pick it",
             word_list(&plan.ambiguous)
         );
     }
     if ambiguous > 0 {
         return format!(
-            "nothing in the {file} selection is a single signal: {ambiguous} ambiguous ({}), {unresolved} not in the elaborated design — click a name in the source to pick it",
+            "nothing in the {file} selection is a single signal: {ambiguous} ambiguous ({}), {unresolved} not in the elaborated design — click a name in the source and press Ctrl+Enter to pick it",
             word_list(&plan.ambiguous)
         );
     }
     format!(
-        "no signal of the elaborated design is named by the {file} selection ({names}) — click one in the source to see its candidates"
+        "no signal of the elaborated design is named by the {file} selection ({names}) — click one in the source and press Ctrl+Enter to see its candidates"
     )
 }
 
@@ -760,7 +760,7 @@ endmodule
         };
         let note = success_note(&messy);
         assert!(
-            note.contains("1 ambiguous (`gate` — click one to pick)"),
+            note.contains("1 ambiguous (`gate` — Ctrl+Enter picks one)"),
             "{note}"
         );
         assert!(

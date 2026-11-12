@@ -8,7 +8,39 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
-Nothing yet: the next wave lands here.
+### Added
+
+- **Full-window file drop.** Dragging files over the window now shows a
+  full-window overlay ("Drop to load ...") and the files can be released
+  anywhere - the sidebar tile is no longer the only accepted target. The file
+  loader (window drag listeners + read queue) stays mounted while the sidebar
+  drawer is closed, so a closed drawer keeps the drop zone and the file picker
+  alive (browser build; the desktop webview already accepted drops anywhere and
+  now shows the same overlay from its native drag events).
+- Wave label column option: the wave view draws the leaf signal name (`clk`)
+  by default, and a new **Full path** checkbox in the wave tab strip draws the
+  instance path (`top.u_core.clk`) instead. The full path is always in the row
+  tooltip, and the choice persists with the layout (`Layout.show_path`,
+  `wave-insight.layout.v1`; a payload written before it decodes to the
+  leaf-name default).
+
+### Changed
+
+- A plain click on an identifier in the source editor no longer adds the signal
+  to the wave view: it selects it (inspector focus plus a status hint), and
+  `Ctrl+Enter` adds the signal under the cursor (one match adds directly,
+  several instances open the candidate picker). The key is claimed in the
+  capture phase because monaco binds `Ctrl+Enter` to "insert line below".
+  The top-bar hints, the empty-view hints and the ambiguous-name status texts
+  teach the new gesture.
+
+### Fixed
+
+- `Delete` in the waveform no longer deletes the signal name in the source
+  editor: clicking a wave row moves the keyboard focus into the wave pane
+  (`#wave-body`), so Delete removes the selected wave rows. The old bug left
+  the focus in monaco's hidden textarea, which both swallowed the key for the
+  wave view and let monaco delete the selected identifier.
 
 ## [0.22.0] - 2026-11-11
 

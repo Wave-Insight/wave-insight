@@ -6,7 +6,14 @@ pub enum Msg {
 
 #[derive(Debug, Properties, PartialEq, Clone)]
 pub struct SignalNameProps {
+    /// The visible label: the leaf signal name by default, the full instance
+    /// path when the label option is on.
     pub name: String,
+    /// The full label (hierarchical path plus the bus range). It always goes
+    /// into the tooltip, so the path is one hover away even while only the leaf
+    /// name is shown. Empty for callers that have nothing more to show.
+    #[prop_or_default]
+    pub full: String,
     pub choose: bool,
     /// Distance of this row from the top of the row list, in css pixels.
     ///
@@ -64,10 +71,16 @@ impl Component for SignalName {
         let style = format!("top:{:.1}px", ctx.props().top);
         let value = ctx.props().value.clone();
         let value2 = ctx.props().value2.clone();
+        // the path stays discoverable even when only the leaf name is displayed
+        let title = if ctx.props().full.is_empty() {
+            ctx.props().name.clone()
+        } else {
+            ctx.props().full.clone()
+        };
         html! {
             <div class={class} style={style}
                 role="option" aria-selected={if ctx.props().choose {"true"} else {"false"}} tabindex="0">
-                <p class="wave-name-text" title={ctx.props().name.clone()}
+                <p class="wave-name-text" title={title}
                     oncontextmenu={link.callback(Msg::ContextMenu)}
                     onclick={ctx.props().onclick.reform(|_: MouseEvent| ())}>
                     {&ctx.props().name}

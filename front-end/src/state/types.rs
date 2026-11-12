@@ -208,7 +208,7 @@ pub const SPLIT_RATIO_MAX: f32 = 0.75;
 pub const SPLIT_RATIO_DEFAULT: f32 = 0.5;
 
 /// The window layout, i.e. the two CSS variables the panes are sized from plus
-/// the sidebar drawer state.
+/// the sidebar drawer state and the wave label display option.
 ///
 /// `editor_ratio` is the *stored* value; the pixel height is derived from the
 /// measured main-pane height by `App` (never stored, see §3.2 of the design).
@@ -219,6 +219,10 @@ pub struct Layout {
     pub drawer_open: bool,
     /// Width share of the split view's left (interactive) pane, 0.25..=0.75.
     pub split_ratio: f32,
+    /// Whether the wave label column shows the full instance path in front of
+    /// each signal name. The default is the leaf name only (`pc`, not
+    /// `top.u_core.pc`); the full path stays in the hover tooltip.
+    pub show_path: bool,
 }
 
 impl Default for Layout {
@@ -232,6 +236,8 @@ impl Default for Layout {
             editor_ratio: 0.42,
             drawer_open: true,
             split_ratio: SPLIT_RATIO_DEFAULT,
+            // the user's default: signal names, no instance path noise
+            show_path: false,
         }
     }
 }
@@ -244,6 +250,7 @@ impl Layout {
             editor_ratio: clamp_ratio(self.editor_ratio),
             drawer_open: self.drawer_open,
             split_ratio: clamp_split_ratio(self.split_ratio),
+            show_path: self.show_path,
         }
     }
 }
@@ -634,6 +641,8 @@ mod tests {
         // the waveform keeps the larger share of the column it sits in
         assert_eq!(layout.editor_ratio, 0.42);
         assert!(layout.drawer_open);
+        // the wave label column shows leaf signal names unless asked otherwise
+        assert!(!layout.show_path);
         assert_eq!(layout.clamped(), layout);
     }
 

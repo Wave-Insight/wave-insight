@@ -99,9 +99,12 @@ wave`). It proves the filter prunes the selection (a hidden row is never
 added), the virtualized list keeps its DOM bounded while Select all still
 takes the whole logical list, and above the 2000-signal cap the button turns
 `over-cap`/`aria-disabled` and the add is refused with
-`— select fewer signals`. `clickToAdd` stays the different, unchanged path:
-a click on an identifier in the Monaco editor adds that signal through the
-candidate picker.
+`— select fewer signals`. `clickToAdd` is the different source-editor path:
+since Wave 20 a plain click on an identifier only **selects** it (inspector
+focus + a status hint), `Ctrl+Enter` adds the signal under the cursor (one
+candidate adds directly, several instances open the candidate picker), and the
+wave label column draws the leaf signal name by default with the instance path
+in a "Full path" checkbox/tooltip (see **Wave 20** below).
 
 `elaboration` uploads `generate.sv` / `arrayed.sv` with no dump open and
 asserts the sidebar module tree shows the elaborated hierarchy
@@ -384,8 +387,8 @@ new page helpers `__qa.editorSelection()`, `__qa.selectEditorBlock(...)`,
 * Ctrl+W with a collapsed cursor in the editor adds and closes nothing;
 * the context-menu action on a cpu.sv block whose names are instantiated twice
   (`next_pc`, `pc_reg`, `pc`) adds nothing and reports
-  `... ambiguous between instances (...) — click one in the source to pick its
-  signal` (ambiguous names are never guessed; the same plan also counts
+  `... ambiguous between instances (...) — click one in the source and press
+  Ctrl+Enter to pick it` (ambiguous names are never guessed; the same plan also counts
   identifiers the elaborated design does not know, and a selection with no
   identifier at all says "no signal names");
 * a comment-only block says `... has no signal names ...`;
@@ -397,6 +400,41 @@ keywords/backtick macros/escaped identifiers/system tasks/based literals are
 skipped, the first/last selected line are clamped to their columns, a single
 selection is capped at 500 lines / 4000 identifiers (`truncated`) and a resolved
 batch above the shared 2000-row cap is refused with an actionable error tone.
+
+### Wave 20: drop anywhere, Ctrl+Enter add, Delete focus, leaf labels
+
+Four user-reported behaviours are covered by the existing scenarios (no new
+scenario names, the runner's list is unchanged):
+
+* **Drag & drop anywhere** (`drop`): a `dragenter` carrying files dispatched on
+  the wave area shows the full-window `.drop-overlay` ("Drop to load"), a
+  `dragleave` hides it again, and a drop away from the sidebar loads the dump -
+  the sidebar tile is no longer the only accepted target. The scenario then
+  closes the drawer (the top-bar button), re-checks `input[type=file]` is still
+  mounted, and drops a source on `document.body`: the source tab appears, which
+  proves the window listeners and the read queue survived the drawer close (the
+  loader used to be unmounted with the sidebar).
+* **Click selects, Ctrl+Enter adds** (`clickToAdd`): a plain click on `pc_reg`
+  adds no row, opens no picker and names `Ctrl+Enter` on the status line;
+  `Ctrl+Enter` then opens the two-candidate picker (monaco binds Ctrl+Enter to
+  "insert line below", so the app claims it in the capture phase and the
+  scenario asserts the editor line count did not move); picking a candidate adds
+  the row. `deepEditor`, `mismatch` and `extras` follow the same two-step flow.
+* **Delete removes the wave row, not source text** (`clickToAdd` and
+  `navigation`): a real mouse click on a wave row moves the keyboard focus into
+  the pane (`document.activeElement.id === "wave-body"`), then `Delete` removes
+  the selected row while the monaco model value/line count stay byte-identical -
+  the old bug left the focus in monaco's hidden textarea and deleted the source.
+* **Leaf name by default, "Full path" checkbox** (`clickToAdd`,
+  `persistence`): the drawn label (`.wave-name-text.innerText`) is the leaf
+  signal name, its `title` carries the full instance path, the dock-tab
+  `.dock-option input` switches the drawn label to the full path and back, and
+  the option is persisted with the layout (`show_path` in
+  `wave-insight.layout.v1`) so it survives a reload.
+
+The `state()` seam reports `waveNames` as the row identity (the full path, i.e.
+the label's `title`) so the pre-Wave-20 assertions keep their meaning, and
+`waveLabels` as the text actually drawn; label assertions use `waveLabels`.
 
 ### Wave 19 desktop-only behaviour (not drivable by this matrix)
 
@@ -481,6 +519,22 @@ other assertion count change.
 ```
 === summary: 610 passed, 0 failed, 0 pending (R2 layout, run with QA_LAYOUT=1 to enforce), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
 ```
+
+Baseline on the Wave 20 build (2026-11-12, unreleased): the four user-reported
+behaviours are covered by the updated `drop`, `clickToAdd`, `mismatch`,
+`deepEditor`, `extras`, `navigation` and `persistence` scenarios (+27
+assertions over the Wave 19 baseline; see **Wave 20** above). The full matrix ran
+against a debug `trunk build` with headless Edge/Chromium through
+`CHROME=<msedge.exe> node qa/run.mjs`:
+
+```
+=== summary: 637 passed, 0 failed, 0 pending (R2 layout, run with QA_LAYOUT=1 to enforce), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
+```
+
+and `node qa/run.mjs --layout --scenarios empty,vcd,layout,layoutRules,waveTabs,tierA`
+printed `=== summary: 50 passed, 0 failed, 0 pending (R2 layout, required), 0
+deferred (R2 step 4), 0 retired (canvas rewrite) ===` - the always-mounted
+sidebar does not change the layout rules.
 
 The Wave 19 line comes from `node qa/run.mjs --dist front-end/dist-qa19`
 (exit 0); `node qa/run.mjs --layout --dist front-end/dist-qa19` makes the R2

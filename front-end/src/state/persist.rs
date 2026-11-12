@@ -489,6 +489,11 @@ struct LayoutFile {
     /// so the schema version did not have to change.
     #[serde(default = "default_split_ratio")]
     split_ratio: f32,
+    /// Added in wave 20 (the label-column display option): a payload written
+    /// before it decodes as `false`, i.e. signal names without the instance
+    /// path, which is also the default the option ships with.
+    #[serde(default)]
+    show_path: bool,
 }
 
 fn default_split_ratio() -> f32 {
@@ -517,6 +522,7 @@ pub fn encode_layout(layout: &Layout) -> String {
         editor_ratio: layout.editor_ratio,
         drawer_open: layout.drawer_open,
         split_ratio: layout.split_ratio,
+        show_path: layout.show_path,
     })
     .unwrap_or_default()
 }
@@ -534,6 +540,7 @@ pub fn decode_layout(raw: &str) -> Option<Layout> {
             editor_ratio: file.editor_ratio,
             drawer_open: file.drawer_open,
             split_ratio: file.split_ratio,
+            show_path: file.show_path,
         }
         .clamped(),
     )
@@ -856,6 +863,7 @@ mod tests {
             editor_ratio: 0.6,
             drawer_open: false,
             split_ratio: 0.66,
+            show_path: true,
         };
         assert_eq!(decode_layout(&encode_layout(&layout)), Some(layout));
 
@@ -870,6 +878,9 @@ mod tests {
                 // a payload written before the split existed decodes with the
                 // default divider
                 split_ratio: SPLIT_RATIO_DEFAULT,
+                // ... and one written before the label option showed the plain
+                // signal names, which is the default
+                show_path: false,
             })
         );
     }
@@ -907,6 +918,7 @@ mod tests {
                 editor_ratio: 0.5,
                 drawer_open: true,
                 split_ratio: SPLIT_RATIO_DEFAULT,
+                show_path: false,
             })
         );
     }
@@ -1008,6 +1020,7 @@ mod tests {
                 editor_ratio: 0.55,
                 drawer_open: false,
                 split_ratio: 0.4,
+                show_path: true,
             },
             ..State::default()
         };

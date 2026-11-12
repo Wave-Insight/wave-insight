@@ -299,9 +299,15 @@ Each plan keeps the breaker list, the steps and the verification that was run.
 Load a `.vcd`, `.fst` or `.ghw` dump and any `.v`/`.sv` sources it came from.
 Click a signal in the sidebar to select it - double-click it, use its `+`, or
 **Add selected (N)** to put it (or the whole Ctrl/Shift selection) on the wave;
-click an identifier in the source to add that signal directly, or select a block of
-code and press `ctrl+w` to add every signal it names (see **Signal list
-selection** and **Add signals from a source block** below); the wheel pans the trace forward and back (Verdi's gesture: wheel down
+in the source pane a click on an identifier only selects it (the inspector
+follows it), `ctrl+enter` adds the signal under the cursor (a candidate picker
+opens when several instances match), or select a block of code and press
+`ctrl+w` to add every signal it names (see **Signal list
+selection** and **Add signals from a source block** below); files can be
+dropped anywhere in the window (a full-window overlay says so while a file drag
+is over it), the label column shows the leaf signal name by default - the
+`Full path` checkbox in the wave tab strip draws the instance path, which is
+always in the row tooltip - and the wheel pans the trace forward and back (Verdi's gesture: wheel down
 goes forward in time; over the label column a plain wheel still scrolls the
 signal rows, and `shift`+wheel scrolls them from anywhere over the wave),
 `ctrl`+wheel zooms at the pointer, drag to zoom into a range, left/right click to
@@ -443,8 +449,9 @@ shortened with `…` instead of disappearing.
   lookup a click uses, and the signals are added in one batch
   (`added N signals (M already in the wave) — from the code selection`). Names
   that several instances match are **not guessed** - the status lists them and
-  says to click one to open the picker; names the design does not know are
-  counted; a selection with no signal names says so. `ctrl+w` with no editor
+  says to click one in the source and press `ctrl+enter` to pick it (a plain
+  click only selects); names the design does not know are counted; a selection
+  with no signal names says so. `ctrl+w` with no editor
   selection keeps its old meaning (close the active source tab), and this
   shortcut is desktop-friendly: a real browser owns `ctrl+w`/its shift variant,
   so in the web build the editor context-menu entry is the reliable path. Limits:
@@ -479,10 +486,13 @@ shortened with `…` instead of disappearing.
   the previously active tab, and a natively mapped dump (> 64 MiB) comes back as
   a waveform without replaying its rows (small dumps restore rows and settings).
 
-The keyboard and accessibility contract: `Delete` removes the selected rows,
-`ctrl+A` selects every row, the arrow keys and `Home`/`End` move the row
+The keyboard and accessibility contract: clicking a wave row moves the keyboard
+focus into the wave pane, so `Delete` removes the selected rows there (it can
+no longer delete source text while monaco still had the focus), `ctrl+A`
+selects every row, the arrow keys and `Home`/`End` move the row
 selection, `Escape` closes dialogs and the `go to` box without clearing the
-selection, `ctrl+W` with no editor selection (and `ctrl+F4`) closes the active
+selection, `ctrl+enter` in the source editor adds the signal under the cursor,
+`ctrl+W` with no editor selection (and `ctrl+F4`) closes the active
 source tab while `ctrl+W` with a selection adds the selected block's signals,
 and the Signals list rows select with the arrow keys/Enter/Shift/Ctrl like the
 module tree. Dialogs are
@@ -669,7 +679,7 @@ file. What that means in practice:
 Done (shipped):
 
 - [x] signal driver tree and load tree — the `Drivers / loads` tab and the inspector list both, with click-to-jump
-- [x] add a signal to the wave view when clicking an identifier in the source (with a candidate picker when ambiguous)
+- [x] select a signal by clicking an identifier in the source and add it with `ctrl+enter` (a candidate picker when ambiguous) — the click itself no longer adds (Wave 20)
 - [x] show a signal's value in analog form (per-row setting)
 - [x] show cursor values and locate time (`go to` box, next/previous transition, draggable ruler)
 - [x] expand a bus into its bits; per-row formats, colour and multi-select delete
@@ -692,6 +702,7 @@ Done in the next release (unreleased at the time of writing):
 - [x] favicon data-URI, so the `/favicon.ico` 404 console error is gone
 - [x] elaboration diagnostics reach the editor: the language server merges design + elaboration diagnostics per document, deduplicates them and republishes on a top-module change
 - [x] session restore: the row list is remembered per dump identity (name + byte size; 20 dumps / 200 rows, LRU) and skipped rows are reported in one status line
+- [x] Wave 20 (user feedback): drag a file anywhere in the window with a full-window "drop to load" overlay (the sidebar stays mounted, so a closed drawer keeps the drop zone alive), a source click only selects and `ctrl+enter` adds, a wave-row click takes the keyboard focus so `Delete` deletes the wave row instead of source text, and the label column shows the leaf signal name by default with a persisted `Full path` checkbox
 - [x] criterion benchmarks for the waveform hot paths (six groups / twenty benchmarks) with an advisory bench workflow that compiles weekly and runs the hot-path groups on dispatch
 - [x] supply-chain gate: `deny.toml` policy plus a weekly/push `cargo deny` audit workflow (it caught the yanked tokio 1.54.0)
 - [x] find a value in the selected row: type a value in the ruler box and press Enter (Shift+Enter searches backwards) to walk the changes with that formatted value (Verdi find-value flow)

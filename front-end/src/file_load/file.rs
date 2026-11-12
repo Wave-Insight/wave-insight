@@ -235,10 +235,15 @@ pub enum Msg {
     /// Files were picked or dropped; they are queued and read one at a time.
     #[cfg(not(feature = "tauri"))]
     Files(Vec<File>),
+    /// A drag carrying files entered the window: the loader tells the shell,
+    /// which shows the full-window "drop to load" overlay.
     #[cfg(not(feature = "tauri"))]
-    DragOver(DragEvent),
-    /// Files were dropped on the drop zone; the browser has no file handle for
-    /// a drop event, so they go through the same reader as the picker.
+    DragEnter,
+    /// The drag left the window without dropping anything.
+    #[cfg(not(feature = "tauri"))]
+    DragLeave,
+    /// Files were dropped anywhere on the page; the browser has no file handle
+    /// for a drop event, so they go through the same reader as the picker.
     #[cfg(not(feature = "tauri"))]
     FileDrop(DragEvent),
     /// One slice of the current file was read.
@@ -278,7 +283,18 @@ pub struct FileLoadProps {
     /// success line.
     #[prop_or_default]
     pub onloadreport: Callback<LoadReport>,
+    /// A file drag entered or left the window. The loader owns the drag state
+    /// (it installs the window listeners and reads the dropped files); the app
+    /// renders the full-window overlay, because the loader lives in the sidebar
+    /// and a fixed overlay inside a hidden sidebar would not paint.
+    #[prop_or_default]
+    pub ondragstate: Callback<bool>,
 }
+
+/// One window drag listener together with the event name it was registered
+/// under (the name is needed to remove it again in `destroy`).
+#[cfg(not(feature = "tauri"))]
+type DragListener = (&'static str, Closure<dyn FnMut(DragEvent)>);
 
 /// A file waiting for its turn. Only one is read at a time, so at most one set
 /// of bytes is ever in wasm memory.
@@ -315,6 +331,20 @@ pub struct FileLoad {
     /// The window keydown listener that turns Esc into a cancel while reading.
     #[cfg(not(feature = "tauri"))]
     esc: Option<Closure<dyn FnMut(KeyboardEvent)>>,
+    /// Nested `dragenter`/`dragleave` pairs the pointer is currently inside.
+    /// The events fire per element, so a plain bool would flicker as the
+    /// pointer crosses children of the page.
+    #[cfg(not(feature = "tauri"))]
+    drag_depth: u32,
+    /// A file drag is over the window: the sidebar drop zone highlights and the
+    /// shell shows the full-window overlay.
+    #[cfg(not(feature = "tauri"))]
+    drag_active: bool,
+    /// The window `dragenter`/`dragover`/`dragleave`/`drop` listeners: a file
+    /// may be dropped anywhere on the page, not only on the sidebar tile.
+    /// Kept alive (and removed in `destroy`) exactly like the Esc listener.
+    #[cfg(not(feature = "tauri"))]
+    drag_listeners: Vec<DragListener>,
     #[cfg(feature = "tauri")]
     filelist_show: bool,
 }
@@ -323,8 +353,11 @@ impl Component for FileLoad {
     type Message = Msg;
     type Properties = FileLoadProps;
 
-    fn create(_ctx: &Context<Self>) -> Self {
-        Self {
+    #[allow(unused_variables)] // `ctx` is browser-only (the desktop build has no window drag listeners)
+    fn create(ctx: &Context<Self>) -> Self {
+        // `mut` is browser-only too: no drag listeners to attach in the desktop build
+        #[allow(unused_mut)]
+        let mut this = Self {
             #[cfg(not(feature = "tauri"))]
             queue: VecDeque::new(),
             #[cfg(not(feature = "tauri"))]
@@ -335,14 +368,27 @@ impl Component for FileLoad {
             epoch: 0,
             #[cfg(not(feature = "tauri"))]
             esc: None,
+            #[cfg(not(feature = "tauri"))]
+            drag_depth: 0,
+            #[cfg(not(feature = "tauri"))]
+            drag_active: false,
+            #[cfg(not(feature = "tauri"))]
+            drag_listeners: Vec::new(),
             #[cfg(feature = "tauri")]
             filelist_show: false,
-        }
+        };
+        // the drop zone is the whole window, not the tile in the sidebar
+        #[cfg(not(feature = "tauri"))]
+        this.attach_drag_listeners(ctx);
+        this
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
         #[cfg(not(feature = "tauri"))]
-        self.detach_esc();
+        {
+            self.detach_esc();
+            self.detach_drag_listeners();
+        }
     }
 
     #[allow(unused_variables)]
@@ -463,14 +509,33 @@ impl Component for FileLoad {
                 true
             }
             #[cfg(not(feature = "tauri"))]
-            Msg::DragOver(e) => {
-                // without this the browser refuses the drop
-                e.prevent_default();
+            Msg::DragEnter => {
+                self.drag_depth = self.drag_depth.saturating_add(1);
+                if self.drag_active {
+                    return false;
+                }
+                self.drag_active = true;
+                ctx.props().ondragstate.emit(true);
+                true
+            }
+            #[cfg(not(feature = "tauri"))]
+            Msg::DragLeave => {
+                self.drag_depth = self.drag_depth.saturating_sub(1);
+                if self.drag_depth > 0 || !self.drag_active {
+                    return false;
+                }
+                self.drag_active = false;
+                ctx.props().ondragstate.emit(false);
                 true
             }
             #[cfg(not(feature = "tauri"))]
             Msg::FileDrop(e) => {
+                // the drop may happen anywhere: every file of the transfer goes
+                // through the same reader the picker uses
                 e.prevent_default();
+                self.drag_depth = 0;
+                self.drag_active = false;
+                ctx.props().ondragstate.emit(false);
                 let files = e
                     .data_transfer()
                     .and_then(|data| data.files())
@@ -521,9 +586,7 @@ impl Component for FileLoad {
         #[cfg(not(feature = "tauri"))]
         let picker = html! {
             <div class="file-strip">
-                <label class="file-drop"
-                    ondragover={link.callback(Msg::DragOver)}
-                    ondrop={link.callback(Msg::FileDrop)}>
+                <label class={if self.drag_active {"file-drop active"} else {"file-drop"}}>
                     <input class="file-native" type="file" multiple=true onchange={onchangefunc}/>
                     <span class="file-drop-icon">{"＋"}</span>
                     <span class="file-drop-text">{"Load or drop .vcd / .fst / .ghw / .v files"}</span>
@@ -710,6 +773,86 @@ impl FileLoad {
         }
     }
 
+    /// Install the window listeners that turn the whole page into a drop zone.
+    ///
+    /// Registered in the **capture** phase on purpose: monaco and the canvas
+    /// overlays stop the propagation of the events they handle, and a file
+    /// dropped onto the editor or the waveform must still load. Only drags
+    /// that carry files are taken, so dragging a text selection around the
+    /// page keeps working.
+    fn attach_drag_listeners(&mut self, ctx: &Context<Self>) {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let mut listeners: Vec<DragListener> = Vec::new();
+
+        let link = ctx.link().clone();
+        let enter = Closure::<dyn FnMut(DragEvent)>::new(move |event: DragEvent| {
+            if !drag_has_files(&event) {
+                return;
+            }
+            // without this the browser refuses the drop (and may open the file)
+            event.prevent_default();
+            link.send_message(Msg::DragEnter);
+        });
+        listeners.push(("dragenter", enter));
+
+        // dragover fires per pointer move: it only has to keep the drop
+        // allowed, no message (the overlay is shown on dragenter and hidden on
+        // dragleave, so a 60 Hz drag never renders)
+        let over = Closure::<dyn FnMut(DragEvent)>::new(|event: DragEvent| {
+            if !drag_has_files(&event) {
+                return;
+            }
+            event.prevent_default();
+            if let Some(data) = event.data_transfer() {
+                // the browser shows "copy" and lets the drop through
+                data.set_drop_effect("copy");
+            }
+        });
+        listeners.push(("dragover", over));
+
+        let link = ctx.link().clone();
+        let leave = Closure::<dyn FnMut(DragEvent)>::new(move |_event: DragEvent| {
+            // the depth counter makes the per-element leaves harmless
+            link.send_message(Msg::DragLeave);
+        });
+        listeners.push(("dragleave", leave));
+
+        let link = ctx.link().clone();
+        let drop = Closure::<dyn FnMut(DragEvent)>::new(move |event: DragEvent| {
+            if !drag_has_files(&event) {
+                return;
+            }
+            event.prevent_default();
+            link.send_message(Msg::FileDrop(event));
+        });
+        listeners.push(("drop", drop));
+
+        for (name, listener) in &listeners {
+            let _ = window.add_event_listener_with_callback_and_bool(
+                name,
+                listener.as_ref().unchecked_ref(),
+                true,
+            );
+        }
+        self.drag_listeners = listeners;
+    }
+
+    fn detach_drag_listeners(&mut self) {
+        let Some(window) = web_sys::window() else {
+            self.drag_listeners.clear();
+            return;
+        };
+        for (name, listener) in self.drag_listeners.drain(..) {
+            let _ = window.remove_event_listener_with_callback_and_bool(
+                name,
+                listener.as_ref().unchecked_ref(),
+                true,
+            );
+        }
+    }
+
     /// The progress row under the drop zone while a dump is being read; the
     /// cancel button next to the status is the mouse version of Esc.
     fn progress_row(&self, ctx: &Context<Self>) -> Html {
@@ -731,6 +874,49 @@ impl FileLoad {
                 </div>
             </div>
         }
+    }
+}
+
+/// Whether a drag carries files (and not a text selection).
+///
+/// A browser exposes the type list from the first `dragover` on; some only fill
+/// `files()` on the drop itself, so both are checked.
+#[cfg(not(feature = "tauri"))]
+fn drag_has_files(event: &DragEvent) -> bool {
+    let Some(data) = event.data_transfer() else {
+        return false;
+    };
+    let types = data.types();
+    let named =
+        (0..types.length()).any(|index| types.get(index).as_string().as_deref() == Some("Files"));
+    named
+        || data
+            .files()
+            .map(|files| files.length() > 0)
+            .unwrap_or(false)
+}
+
+/// The full-window "drop to load" overlay, shared by both builds.
+///
+/// The browser build shows it from `App` (the loader is always mounted, but its
+/// sidebar can be hidden, and a fixed overlay inside a `display: none` sidebar
+/// would not paint); the desktop build shows it while the webview reports a
+/// native file drag. Pointer events pass through it, so the drop still lands
+/// on whatever is underneath and the window handler sees it.
+pub fn drop_overlay_html() -> Html {
+    html! {
+        <div class="drop-overlay">
+            <div class="drop-overlay-card">
+                <div class="drop-overlay-icon">{"⤓"}</div>
+                <div class="drop-overlay-title">{"Drop to load"}</div>
+                <div class="drop-overlay-note">
+                    {"anywhere in this window — "}
+                    <span>{"wave dumps .vcd / .fst / .ghw"}</span>
+                    {" · "}
+                    <span>{"sources .v / .sv / .vh / .svh"}</span>
+                </div>
+            </div>
+        </div>
     }
 }
 
