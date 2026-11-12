@@ -2,7 +2,7 @@ name: QA (full matrix)
 
 # The browser matrix is the release oracle, but rust.yml only runs a 4-scenario
 # advisory smoke on every push. This workflow runs the FULL matrix (all
-# scenarios, layout rules required) once a week and on demand, so a slow
+# scenarios, layout rules required) on demand, so a slow
 # regression the smoke does not cover still surfaces.
 #
 # It is advisory and can never be a required check: it has no push/pull_request
@@ -10,9 +10,6 @@ name: QA (full matrix)
 # (the job itself still shows red in the run list, and the screenshots + log are
 # uploaded on failure). It is not the per-push gate; rust.yml's qa job is.
 on:
-  schedule:
-    # weekly, Monday 05:00 UTC (an hour before the bench job at 06:00)
-    - cron: '0 5 * * 1'
   workflow_dispatch:
 
 permissions:
