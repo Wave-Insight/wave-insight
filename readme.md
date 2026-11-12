@@ -178,11 +178,11 @@ cd front-end
 CARGO_PROFILE_RELEASE_OPT_LEVEL=s trunk serve --release
 ```
 
-The release wasm with the CI profile is **10,314,482 bytes = 9.84 MiB**
+The release wasm with the CI profile is **10,331,833 bytes = 9.85 MiB**
 (about 2 MB over the wire, because GitHub Pages serves the assets
 gzip-compressed). CI pins trunk 0.22.1 and fails the build if the release wasm
 grows past **10 MiB** (`WASM_SIZE_BUDGET` in the Rust workflow), so a size
-blow-up shows up before it ships; the current build leaves roughly 167 KiB of
+blow-up shows up before it ships; the current build leaves roughly 150 KiB of
 headroom, so a big new dependency needs a budget review. Keep the
 `CARGO_PROFILE_RELEASE_OPT_LEVEL=s`
 part of the command: a plain `trunk build --release` uses the default

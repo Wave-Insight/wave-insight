@@ -13,7 +13,7 @@ resolver = "2"
 #one source of truth for the metadata every member inherits with `field.workspace = true`
 #(the version used to be repeated in five places: four manifests + tauri.conf.json)
 [workspace.package]
-version = "0.22.0"
+version = "0.23.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Wave-Insight/wave-insight"

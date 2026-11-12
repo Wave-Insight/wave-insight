@@ -8,6 +8,10 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
+Nothing yet: the next wave lands here.
+
+## [0.23.0] - 2026-11-12
+
 ### Added
 
 - **Full-window file drop.** Dragging files over the window now shows a

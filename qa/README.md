@@ -520,21 +520,22 @@ other assertion count change.
 === summary: 610 passed, 0 failed, 0 pending (R2 layout, run with QA_LAYOUT=1 to enforce), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
 ```
 
-Baseline on the Wave 20 build (2026-11-12, unreleased): the four user-reported
+Baseline on the Wave 20 build (2026-11-12, 0.23.0): the four user-reported
 behaviours are covered by the updated `drop`, `clickToAdd`, `mismatch`,
 `deepEditor`, `extras`, `navigation` and `persistence` scenarios (+27
 assertions over the Wave 19 baseline; see **Wave 20** above). The full matrix ran
-against a debug `trunk build` with headless Edge/Chromium through
-`CHROME=<msedge.exe> node qa/run.mjs`:
+on the 0.23.0 CI-profile release bundle (10,331,833 B = 9.85 MiB;
+`CARGO_PROFILE_RELEASE_OPT_LEVEL=s trunk build --release`) with headless
+Edge/Chromium through `CHROME=<msedge.exe> node qa/run.mjs`:
 
 ```
 === summary: 637 passed, 0 failed, 0 pending (R2 layout, run with QA_LAYOUT=1 to enforce), 0 deferred (R2 step 4), 2 retired (canvas rewrite) ===
 ```
 
 and `node qa/run.mjs --layout --scenarios empty,vcd,layout,layoutRules,waveTabs,tierA`
-printed `=== summary: 50 passed, 0 failed, 0 pending (R2 layout, required), 0
-deferred (R2 step 4), 0 retired (canvas rewrite) ===` - the always-mounted
-sidebar does not change the layout rules.
+on the same release bundle printed `=== summary: 50 passed, 0 failed, 0 pending
+(R2 layout, required), 0 deferred (R2 step 4), 0 retired (canvas rewrite) ===` -
+the always-mounted sidebar does not change the layout rules.
 
 The Wave 19 line comes from `node qa/run.mjs --dist front-end/dist-qa19`
 (exit 0); `node qa/run.mjs --layout --dist front-end/dist-qa19` makes the R2
