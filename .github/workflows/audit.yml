@@ -3,13 +3,10 @@ name: Audit
 # Supply-chain gate: cargo-deny over Cargo.lock with the policy in deny.toml
 # (advisories + licenses + bans + sources).
 #
-# It runs weekly on purpose: a new RustSec advisory must surface even when the
-# tree has not changed. deny.toml carries the reasoned ignores for the three
-# unmaintained tauri-1.x crates; vulnerabilities are never ignored there.
+# It runs on push to main and on demand. deny.toml carries the reasoned ignores
+# for the three unmaintained tauri-1.x crates; vulnerabilities are never
+# ignored there.
 on:
-  schedule:
-    # weekly, Monday 04:23 UTC
-    - cron: '23 4 * * 1'
   push:
     branches: [ main ]
   workflow_dispatch:
