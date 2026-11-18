@@ -140,7 +140,14 @@ pub fn post_ready() {
     let Ok(post) = post.dyn_into::<js_sys::Function>() else {
         return;
     };
-    let message = serde_wasm_bindgen::to_value(&serde_json::json!({ "type": "wave-dsh-ready" }))
-        .unwrap_or(JsValue::UNDEFINED);
-    let _ = post.call2(&parent, &message, &JsValue::from_str("*"));
+    // A plain object, not a serde_wasm_bindgen value: `to_value` turns a JSON
+    // map into a JS `Map`, and the parent reads `event.data.type` — which is
+    // undefined on a Map, so every handshake was silently dropped.
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("wave-dsh-ready"),
+    );
+    let _ = post.call2(&parent, &message.into(), &JsValue::from_str("*"));
 }
