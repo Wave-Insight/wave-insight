@@ -1,6 +1,6 @@
 {
   "name": "@wave-insight/dsh-plugin",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Wave Insight waveform tools and a live side panel for DeepSeek Harness",
   "license": "Apache-2.0",
@@ -24,6 +24,7 @@
     "cordis.patch.yml",
     "locale/*.json",
     "README.md",
+    "CHANGELOG.md",
     "icon.svg",
     "bin/dsh-bridge-windows-x64.exe",
     "bin/dsh-bridge-linux-x64",

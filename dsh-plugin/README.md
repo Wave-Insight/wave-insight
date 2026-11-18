@@ -9,6 +9,7 @@ beside the browser and desktop builds.
 - Opens VCD, FST and GHW dumps through the project's native memory-mapped reader.
 - Exposes eight model-facing tools: `load_waveform`, `find_signals`, `add_signals`,
   `remove_signals`, `set_time_range`, `set_cursors`, `get_changes`, `list_waveform`.
+  `get_changes` returns bounded time/value pairs to the model, not just counts.
 - Opens the **Wave Insight** tab in DSH's right sidebar when a tool result first
   carries a dump. Later tool calls update the panel through a session projection.
 - The tab can also be opened from the right-bar guide after it was closed.
