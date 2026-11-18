@@ -10,6 +10,15 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.23.4] - 2026-11-18
+
+### Fixed
+
+- The Tauri `beforeBuildCommand`/`beforeDevCommand` now cd into `../front-end`,
+  matching the directory the Tauri CLI uses as its working directory. The
+  previous `cd front-end` made every `v*` release fail with "No such file or
+  directory" on macOS/Windows.
+
 ## [0.23.3] - 2026-11-18
 
 ### Fixed

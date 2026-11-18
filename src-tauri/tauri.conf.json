@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "wave_insight_tauri",
-  "version": "0.23.3",
+  "version": "0.23.4",
   "identifier": "com.waveinsight.tauri",
   "mainBinaryName": "app",
   "build": {
-    "beforeBuildCommand": "cd front-end && trunk build --no-default-features --release --features tauri",
-    "beforeDevCommand": "cd front-end && trunk serve --no-default-features --release --features tauri",
+    "beforeBuildCommand": "cd ../front-end && trunk build --no-default-features --release --features tauri",
+    "beforeDevCommand": "cd ../front-end && trunk serve --no-default-features --release --features tauri",
     "devUrl": "http://localhost:8080",
     "frontendDist": "../front-end/dist"
   },
