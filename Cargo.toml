@@ -6,6 +6,7 @@ members = [
     "back-end",
     "src-tauri",
     "dsh-bridge",
+    "web-backend",
 ]
 
 #crates here are edition 2021, keep feature unification the way it is meant to be

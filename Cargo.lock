@@ -5248,6 +5248,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wave-insight-web-backend"
+version = "0.23.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wave-insight-lib",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"

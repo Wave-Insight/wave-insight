@@ -1,0 +1,19 @@
+[package]
+name = "wave-insight-web-backend"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# A small loopback-only HTTP backend for the Web / DSH front end. It reuses the
+# desktop build's pure-Rust dump registry verbatim, so the browser never needs
+# filesystem access and the waveform bytes never enter the wasm heap.
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wave-insight-lib = { path = "../wave-insight-lib" }
