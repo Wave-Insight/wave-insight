@@ -9,6 +9,7 @@ const dump = path.join(root, 'test.vcd')
 
 const tools = []
 const disposers = []
+const sessionDisposed = []
 let projection
 const ctx = {
   effect: (callback) => {
@@ -19,6 +20,10 @@ const ctx = {
   tools: { register: (definition) => { tools.push(definition); return () => {} } },
   sessionProjections: { register: async (definition) => { projection = definition; return { dispose() {} } } },
   systemPrompt: { section: () => () => {} },
+  on: (name, handler) => {
+    if (name === 'session/disposed') sessionDisposed.push(handler)
+    return () => {}
+  },
 }
 
 try {
@@ -66,6 +71,13 @@ try {
   state = fold(state, cursor)
   assert.deepEqual(state.cursors, { one: 1200, two: 1800 })
   console.log('projected cursors:', JSON.stringify(state.cursors))
+
+  // session/disposed must evict the derived working snapshot.
+  assert.ok(sessionDisposed.length === 1, 'session/disposed listener registered')
+  sessionDisposed.forEach((handler) => handler({ id: 'smoke' }))
+  const afterDispose = await call('list_waveform', {})
+  assert.equal(afterDispose.value.state.dump, null, 'working cache was evicted')
+  console.log('session cache evicted on dispose')
 
   const missing = tools.find((tool) => tool.name === 'load_waveform')
   await assert.rejects(
