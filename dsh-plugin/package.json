@@ -16,11 +16,13 @@
     ".": "./index.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "client.js",
+    "host/**/*",
     "cordis.patch.yml",
     "locale/*.json",
     "README.md",
@@ -31,12 +33,10 @@
     "bin/dsh-bridge-linux-x64",
     "bin/dsh-bridge-macos-arm64",
     "bin/wave-insight-web-backend-windows-x64.exe",
-    "bin/wave-insight-web-backend-linux-x64",
-    "bin/wave-insight-web-backend-macos-arm64",
     "ui/**/*"
   ],
-  "dependencies": {
-    "zod": "4.6.6"
+  "engines": {
+    "dsh": ">=0.2.2-rc.3"
   },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },

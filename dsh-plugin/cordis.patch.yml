@@ -1,3 +1,6 @@
 - insert:
     - id: wave-insight-dsh
       name: '@wave-insight/dsh-plugin'
+      # No required settings: the bundled binaries are used, and the viewer
+      # degrades to a message instead of failing activation when it is missing.
+      config: {}
