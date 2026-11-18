@@ -742,10 +742,8 @@ impl Component for App {
                 false
             }
         };
-        let empty = self.dump().is_none()
-            && !native_open
-            && self.sources.is_empty()
-            && self.tree.is_none();
+        let empty =
+            self.dump().is_none() && !native_open && self.sources.is_empty() && self.tree.is_none();
         // R2 step 2/4: with no sources the editor collapses to the tab strip and
         // the wave pane takes the rest (design doc §3.1, constants §3.4)
         let collapsed = self.sources.is_empty();
