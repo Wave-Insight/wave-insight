@@ -4,6 +4,25 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.1.4] - 2026-11-18
+
+### Added
+
+- `helperPath` and `backendPath` are declared in a validated `Config`.
+- The package ships its Apache-2.0 LICENSE and a focused CI workflow that runs
+  the Host and backend smoke tests plus both front-end feature checks.
+
+### Changed
+
+- The Host no longer persists decoded waveform values: the embedded viewer
+  fetches its own bounded windows from the loopback backend. This removes up to
+  ~240 KB of state from every tool result and speeds up `load_waveform`.
+- `add_signals` validates paths with a zero-capacity query instead of a cached
+  set capped at 500/10 000 signals; signals beyond those limits now work, and
+  a dropped row over the 40-row cap is reported.
+- The right-sidebar dictionaries register under DSH's built-in `zh` locale id,
+  so the Chinese UI is actually translated.
+
 ## [0.1.3] - 2026-11-18
 
 ### Added
