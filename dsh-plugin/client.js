@@ -16,13 +16,24 @@ window.__ModuleLoader__.load({
     let sessions = null
     let translate = (key) => key
     const opened = new Set()
+    const pending = new Set()
+    let warned = false
 
     function openPanel() {
-      if (!sidebar) return
+      if (!sidebar) return false
       try {
         sidebar.openTab(KIND)
-      } catch {
-        // No mounted session yet; the next projection frame will retry.
+        warned = false
+        return true
+      } catch (error) {
+        // openTab throws when no Session surface is mounted yet. Keep the
+        // failure visible and leave the Session pending so the retry loop can
+        // open the tab later instead of silently never showing the panel.
+        if (!warned) {
+          console.warn('[wave-insight] could not open the tab yet, retrying:', error)
+          warned = true
+        }
+        return false
       }
     }
 
@@ -34,8 +45,11 @@ window.__ModuleLoader__.load({
       const check = () => {
         const value = face.getSnapshot?.()
         if (!value?.dump || opened.has(sessionId)) return
-        opened.add(sessionId)
-        openPanel()
+        pending.add(sessionId)
+        if (openPanel()) {
+          opened.add(sessionId)
+          pending.delete(sessionId)
+        }
       }
       const unsubscribe = face.subscribe?.(check)
       check()
@@ -339,6 +353,7 @@ window.__ModuleLoader__.load({
           let stopWatching = () => {}
           const sync = () => {
             stopWatching()
+            pending.clear()
             const sessionId = sidebar?.mounted?.getSnapshot?.()
             stopWatching = watchSession(sessionId)
           }
@@ -349,6 +364,29 @@ window.__ModuleLoader__.load({
             stopWatching()
           }
         }, 'wave-insight: auto-open')
+
+        // A failed openTab is retried on the mounted Session until it succeeds.
+        // Without this, marking the Session opened before the call left the
+        // panel unreachable after a transient "no mounted surface" failure.
+        ctx.effect(() => {
+          const retry = () => {
+            const sessionId = sidebar?.mounted?.getSnapshot?.()
+            if (!sessionId || opened.has(sessionId)) return
+            if (!pending.has(sessionId)) {
+              // The projection face can arrive after the mounted Session; the
+              // face subscription set up then would have been a no-op.
+              const face = sessions?.binding?.(sessionId)?.session?.projections?.faceOf?.('waveInsight')
+              if (!face?.getSnapshot?.()?.dump) return
+              pending.add(sessionId)
+            }
+            if (!openPanel()) return
+            opened.add(sessionId)
+            pending.delete(sessionId)
+          }
+          if (ctx.timer?.interval) return ctx.timer.interval(retry, 500)
+          const id = setInterval(retry, 500)
+          return () => clearInterval(id)
+        }, 'wave-insight: open retry')
       },
     }
   },
