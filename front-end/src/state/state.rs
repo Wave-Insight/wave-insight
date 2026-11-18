@@ -59,6 +59,11 @@ pub struct Nav {
     /// The module-tree multi-selection (bulk add). `focus.instance` stays the
     /// single selection the inspector follows.
     pub tree_selection: TreeSelection,
+    /// Width of the wave surface in css pixels, as the pane last measured it.
+    /// A [`View`](super::types::View) only covers a time range together with
+    /// this width; `0` means "not measured yet" and callers fall back to a
+    /// default (the AI tools report the width they used).
+    pub wave_width: f64,
 }
 
 /// The single source of truth.

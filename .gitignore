@@ -17,6 +17,9 @@
 .DS_Store
 node_modules/
 
+#agent tooling session state (never part of the app)
+/.commandcode/
+
 #browser QA artifacts: the staged build, the chrome profile and the screenshots
 /qa/.stage/
 /qa/artifacts/

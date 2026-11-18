@@ -570,6 +570,27 @@ impl View {
         self.x_axis = (anchor - px / self.scale()).max(0.0);
     }
 
+    /// The view that draws `[start, end]` across `surface_width` css pixels.
+    ///
+    /// The inverse of [`View::window`], for calls that know a *time range*
+    /// rather than a pixel band (the AI's "show me t=1000 to 2000"). A
+    /// degenerate or unusable input degrades to the widest sensible view
+    /// instead of a zero scale: an empty range shows one step, a missing
+    /// measurement uses 800 px.
+    ///
+    /// The browser build has no MCP server, so the only caller there is the
+    /// test below; the desktop build calls it from `Msg::AgentCommand`.
+    #[cfg_attr(not(feature = "tauri"), allow(dead_code))]
+    pub fn from_time_range(start: Time, end: Time, surface_width: f64) -> Self {
+        let span = end.saturating_sub(start).max(1) as f64;
+        let width = if surface_width.is_finite() && surface_width > 0.0 {
+            surface_width
+        } else {
+            800.0
+        };
+        Self::new(start as f64, (width / span).max(1e-9))
+    }
+
     /// Zoom so that the range `[from_px, to_px]` fills the surface again.
     ///
     /// Both x positions are in css pixels of the current view; the left edge
@@ -650,6 +671,32 @@ mod tests {
     fn status_keeps_its_tone() {
         assert!(!Status::info("parsed top.sv").is_error());
         assert!(Status::error("top.sv: not utf-8").is_error());
+    }
+
+    #[test]
+    fn a_time_range_becomes_the_view_that_draws_it() {
+        // [100, 200] across 500 px: 100 steps over 500 px = 5 px per step, and
+        // the left edge sits on the start tick.
+        let view = View::from_time_range(100, 200, 500.0);
+        assert_eq!(view.x_axis, 100.0);
+        assert_eq!(view.size, 5.0);
+        // the inverse: the same view draws exactly the requested window
+        assert_eq!(view.window(500.0), (100, 200));
+    }
+
+    #[test]
+    fn a_degenerate_time_range_still_yields_a_usable_view() {
+        // start == end keeps one step visible instead of dividing by zero
+        let view = View::from_time_range(7, 7, 400.0);
+        assert!(view.size.is_finite() && view.size > 0.0);
+        assert_eq!(view.window(400.0), (7, 8));
+        // an unmeasured surface falls back to 800 px, and a garbage width is
+        // ignored the same way
+        assert_eq!(View::from_time_range(0, 100, 0.0).size, 8.0);
+        assert_eq!(View::from_time_range(0, 100, f64::NAN).size, 8.0);
+        // very large ticks stay finite (f64 has 53 bits of exact integers)
+        let view = View::from_time_range(u64::MAX / 2, u64::MAX / 2 + 1000, 1000.0);
+        assert_eq!(view.size, 1.0);
     }
 
     #[test]

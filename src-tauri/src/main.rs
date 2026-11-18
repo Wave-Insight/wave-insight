@@ -15,7 +15,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use tauri::ipc::Response;
+use tauri::Manager;
 
+mod agent;
 mod companion;
 mod dumps;
 mod process_memory;
@@ -384,6 +386,16 @@ fn close_all_dumps(registry: tauri::State<'_, DumpRegistry>) -> usize {
 fn main() {
     tauri::Builder::default()
         .manage(DumpRegistry::new())
+        .setup(|app| {
+            // The AI/MCP server: loopback-only, token-protected, and always on
+            // so the panel can report it. Data tools open their own mappings;
+            // the UI's native registry above is untouched.
+            let server = agent::server::AgentServer::new(app.handle().clone());
+            app.manage(server.clone());
+            app.manage(server.bridge());
+            server.start();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_file_list,
             choose_vcd,
@@ -402,7 +414,9 @@ fn main() {
             dump_memory_stats,
             process_memory,
             close_dump,
-            close_all_dumps
+            close_all_dumps,
+            agent::server::mcp_info,
+            agent::server::agent_reply
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

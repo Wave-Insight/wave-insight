@@ -412,6 +412,18 @@ design (`SourceOpened { file, text }`, `CursorsChanged(Cursors)`,
 currently a no-op seam: the editor already follows `nav.goto`, so focusing the
 editor explicitly is left to step 4.
 
+Wave 23 adds two pieces the AI integration needed, both through the same
+contract. `Action::WaveSurfaceWidth(f64)` records the wave pane's measured
+surface width in `Nav.wave_width`: a `View` only covers a time range together
+with that width, so `View::from_time_range(start, end, width)` (the inverse of
+`View::window`) is what turns "show t=1000 to 2000" into a viewport. The action
+has no subscriber and ignores sub-pixel moves, so it cannot re-render anything.
+The MCP control tools do **not** get an `Effect`: they enter as
+`Msg::AgentCommand` (a Tauri event from the backend), run the ordinary store
+actions in `App::handle_agent_command` and answer through `agent_reply`, which
+keeps the reducer pure and the store the only owner of the view. See
+[`design/ai-mcp.md`](design/ai-mcp.md).
+
 `reduce` is pure: no `Waveform` calls, no DOM, no LSP. It may *ask* for outside
 work through `Effect`s, which `App::update` drains after the dispatch:
 

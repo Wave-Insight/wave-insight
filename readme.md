@@ -501,6 +501,54 @@ open and give it back to the opener on close; focus rings are visible, the tab
 closer is a real button, and the wave list and candidate picker expose
 `listbox`/`option` semantics.
 
+## AI access (desktop build)
+
+The desktop app runs a **Model Context Protocol (MCP)** server on
+`127.0.0.1`, so an AI assistant running in an external MCP client (Claude Code,
+Cursor, ...) can read the waveforms and change what the window shows. The model
+stays in the client: this app only exposes tools, and the browser build has no
+server at all. Open the `AI / MCP` dock tab (next to `Drivers / loads`) to see
+the endpoint, the token and a ready-to-paste client config:
+
+```bash
+claude mcp add --transport http wave-insight http://127.0.0.1:7437/mcp \
+  --header "Authorization: Bearer <token from the panel>"
+```
+
+Then ask for things like "list the open waveforms", "add `top.pc` and
+`top.state`", "show t=1000 to 2000", "what is `top.pc` at t=1500", "summarize
+`top.pc` over the whole trace" or "extract `top.pc` from 1000 to 2000 as CSV".
+
+- **Data tools** (`list_dumps`, `find_signals`, `get_values`, `get_changes`,
+  `search_value`, `summarize_signals`, `extract_changes`) open the dump
+  themselves (memory-mapped for large files) and answer bounded queries, so a
+  multi-hundred-megabyte FST never enters the webview's memory just because it
+  was asked about. Any local `.vcd`/`.fst`/`.ghw` can be analysed by `path`,
+  whether or not it is open. `extract_changes` streams a range to a CSV in the
+  system temp directory (long format `time,signal,value`, with a sidecar
+  `.meta.json`, row/byte budgets and a preview) - that is the tool for a whole
+  trace, because it never materialises the history.
+- **Control tools** (`add_signals`, `remove_signals`, `set_time_range`,
+  `set_cursors`) drive the same store the UI does, so the waveform, the ruler
+  and the cursors stay consistent. They act on the displayed dump only; the
+  view is clamped to that dump's time range and the answer says what was
+  applied. Extracting data and adding rows are logged on the status line with an
+  `AI:` prefix.
+- **Security and limits.** The listener is loopback-only (ports 7437-7446; the
+  panel shows the one in use) and every request needs the bearer token from the
+  app config directory (`mcp-token`; it is regenerated if you delete it). The
+  token is the permission: it lets the client read the waveform files it is
+  pointed at and change the current view, and the only files it writes are
+  extractions under `wave-insight-agent/` in the temp directory. Tools never
+  execute anything and never edit sources. Cursors are stored as `i32` time
+  steps, so use `set_time_range` beyond that; `search_value` can scan a whole
+  trace and an extraction stops only at its budget. A webview reload makes
+  in-flight tool calls time out - call again.
+
+The design, the tool catalogue, the wire protocol between the backend and the
+webview and the verification gaps are in
+[`docs/design/ai-mcp.md`](docs/design/ai-mcp.md).
+
 ## Memory and very large dumps
 
 The browser build runs the whole engine (parser, hierarchy, decode cache, canvas

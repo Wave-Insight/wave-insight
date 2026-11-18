@@ -68,6 +68,10 @@ pub struct DumpSummaryDto {
     pub path: String,
     pub bytes: u64,
     pub format: String,
+    /// Human-readable timescale, when the backend reports one (newer backends
+    /// do; a stored/older reply simply omits the field).
+    #[serde(default)]
+    pub timescale: Option<String>,
     pub time_range: Option<TimeRangeDto>,
     pub signal_count: usize,
     pub scope_count: usize,
@@ -127,6 +131,8 @@ pub struct RemoteDump {
     pub path: String,
     pub bytes: u64,
     pub format: String,
+    /// Human-readable timescale (e.g. "1 ns"), when the format reports one.
+    pub timescale: Option<String>,
     pub range: Option<(Time, Time)>,
     pub signal_count: usize,
     pub scope_count: usize,
@@ -143,6 +149,7 @@ impl RemoteDump {
             path: dto.path,
             bytes: dto.bytes,
             format: dto.format,
+            timescale: dto.timescale,
             range: dto.time_range.map(|range| (range.start, range.end)),
             signal_count: dto.signal_count,
             scope_count: dto.scope_count,
@@ -1275,6 +1282,7 @@ mod tests {
             path: "/tmp/large.fst".to_string(),
             bytes: 102_000_000,
             format: "FST".to_string(),
+            timescale: Some("1 ns".to_string()),
             range: Some((0, 1_000)),
             signal_count: 4,
             scope_count: 2,

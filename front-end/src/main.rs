@@ -1,5 +1,7 @@
 use app::App;
 
+#[cfg(feature = "tauri")]
+mod agent;
 mod app;
 mod code_reader;
 mod file_load;

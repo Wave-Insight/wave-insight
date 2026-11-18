@@ -164,6 +164,14 @@ pub enum Action {
     /// active dump, this never re-renders the shell: only that dump's pane
     /// subscribes to its viewport.
     ViewCommittedFor { dump: usize, view: View },
+
+    /// The wave surface was measured: how many css pixels one time window is
+    /// drawn across. The visible time range of a [`View`] is only meaningful
+    /// together with this width (an AI command that asks for "time X to Y" has
+    /// to be turned into pixels per time step), and the pane is the only place
+    /// that knows it. No subscriber reads this slice, so the action never
+    /// re-renders anything.
+    WaveSurfaceWidth(f64),
 }
 
 /// Work the reducer may not do itself: I/O, the LSP, the editor.

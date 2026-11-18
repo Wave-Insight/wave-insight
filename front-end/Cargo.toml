@@ -67,7 +67,10 @@ features = [
     #state/persist: layout and per-signal display settings survive a reload
     "Storage",
     #nav: the modal focus trap walks the focusable elements with querySelectorAll
-    "NodeList",]
+    "NodeList",
+    #agent: the AI/MCP panel copies the client config to the clipboard
+    "Navigator",
+    "Clipboard",]
 
 [features]
 default = ["wasm"]

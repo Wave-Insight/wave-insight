@@ -8,7 +8,54 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
-Nothing yet: the next wave lands here.
+### Added
+
+- **AI access through a local MCP server (desktop build).** The Tauri backend
+  now runs a Model Context Protocol server on `127.0.0.1` (ports 7437-7446, one
+  bearer token stored in the app config directory), so an external MCP client
+  (Claude Code, Cursor, ...) can both **read** the waveforms and **change what
+  the window shows**. A new `AI / MCP` dock tab reports the endpoint and token
+  and copies the client config. It is the first feature that speaks a protocol
+  other than the app's own IPC; see
+  [`docs/design/ai-mcp.md`](docs/design/ai-mcp.md).
+
+  Data tools read files through their own registry (memory-mapped when the
+  platform allows it), so a 500 MiB FST never enters wasm memory just because an
+  assistant asked about one signal, and a query can neither block nor evict the
+  dump on screen: `list_dumps` (displayed dump, tabs, time range, visible range,
+  cursors, rows), `find_signals` (case-insensitive contains/prefix/exact with an
+  optional scope, returns the full paths the other tools take), `get_values`
+  (batch reads at up to 256 times for 32 signals, reporting the change time),
+  `get_changes` (capped per signal with `next_start` to page a dense signal),
+  `search_value` (text or `0x`/`0b`/`0o`), `summarize_signals` (one streaming
+  pass for counts and endpoints) and `extract_changes` (streams a range to a
+  long-format CSV plus a `.meta.json`, with row/byte budgets and a preview - the
+  tool for a whole trace, because it never materialises the history).
+
+  Control tools go through the webview's reducer, which stays the only owner of
+  the view: `add_signals` (one rows batch, the same path as the sidebar's bulk
+  add), `remove_signals`, `set_time_range` (clamped to the displayed dump, the
+  answer reports what was applied) and `set_cursors`. They address the
+  displayed dump only, so no tool can silently retarget the view.
+
+  The wire format between the two halves is `wave_insight_lib::agent`
+  (`UiCommand`/`UiResult`/`UiReply`/`AgentSnapshot`/`McpInfo`), shared and
+  round-trip tested; the backend emits `wave-agent-command` and the webview
+  answers through `agent_reply`, with a 5 s timeout so a reloaded page produces
+  a readable error instead of a hung tool call. The token is the permission (it
+  can read the files it is pointed at and change the current view), the
+  listener is loopback-only with a loopback `Host` check and rmcp's Origin
+  validation, and the only writes are extractions into the system temp
+  directory. Supporting changes: `DumpSummary.timescale`, a
+  `DumpRegistry::with_waveform` accessor, `View::from_time_range` (the inverse
+  of `View::window`) with `Nav.wave_width` reported by the pane, and a fix for
+  the wave pane's first-paint fit overwriting a view committed before it.
+  `rmcp`/`axum`/`tokio` are desktop-only: the browser build and the wasm size
+  budget are unchanged apart from the shared DTOs. Verified with host tests,
+  including a full `initialize` -> `tools/list` -> `tools/call` exchange over
+  the real router (401/403 cases included); the GUI path (real MCP client,
+  drag-free token flow, native-mode queries) is compile- and host-verified only
+  and needs the desktop checklist in the design note.
 
 ## [0.23.0] - 2026-11-12
 

@@ -712,6 +712,14 @@ impl WaveShow {
                 // the value column shows the cursor values, so a *cursor* commit
                 // has to re-render the name column once.
                 let cursors_changed = viewport.cursors != self.cursors;
+                // A view that did not come from this pane (the AI's
+                // `set_time_range`) must not be replaced by the first-paint fit
+                // below: the fit is only for "nobody chose a view for this dump
+                // yet", and a committed view is exactly that choice.
+                if viewport.view != self.view {
+                    self.fitted = true;
+                    self.fit_committed = true;
+                }
                 self.view = viewport.view;
                 self.cursors = viewport.cursors;
                 if cursors_changed {
@@ -2108,6 +2116,13 @@ impl WaveShow {
             self.values_need_render = true;
         }
         self.trim_cache(draw.clone());
+        // The store needs the surface width to turn a *time range* into a view
+        // (the AI's "show t=1000 to 2000"): a window is only meaningful in
+        // pixels. Reported from the one place that measures it; the action has
+        // no subscriber, so it cannot re-render anything.
+        if (metrics.surface_w - self.store.select(|state| state.nav.wave_width)).abs() > 0.5 {
+            self.dispatch(state::Action::WaveSurfaceWidth(metrics.surface_w));
+        }
         // native mode: refresh the backend memory snapshot for the debug hook
         // (throttled to 1/s; the command only reads cached counters)
         #[cfg(feature = "tauri")]

@@ -98,6 +98,11 @@ pub struct DumpSummary {
     pub bytes: u64,
     /// "VCD", "FST" or "GHW".
     pub format: String,
+    /// Human-readable timescale (e.g. "1 ns"), when the format reports one.
+    /// The AI tools quote it with every time value, because a bare tick count
+    /// means nothing without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timescale: Option<String>,
     /// None when the format cannot report it cheaply (GHW).
     pub time_range: Option<TimeRangeDto>,
     pub signal_count: usize,
@@ -332,6 +337,12 @@ fn signal_kind_name(kind: SignalKind) -> &'static str {
     }
 }
 
+/// The `signal_kind` label the DTOs use ("bit_vector", "event", "real",
+/// "string"), shared with the AI tools.
+pub(crate) fn signal_kind_label(kind: SignalKind) -> &'static str {
+    signal_kind_name(kind)
+}
+
 #[derive(Default)]
 struct RegistryInner {
     next_id: DumpId,
@@ -414,6 +425,7 @@ impl DumpRegistry {
             path: path.display().to_string(),
             bytes: metadata.len(),
             format: waveform.file_format().name().to_string(),
+            timescale: waveform.timescale().map(|timescale| timescale.to_string()),
             time_range: time_range.map(TimeRangeDto::from),
             signal_count: waveform.signal_count(),
             scope_count: scopes.len(),
@@ -800,6 +812,23 @@ impl DumpRegistry {
         })
     }
 
+    /// Run `f` against the open dump's waveform, outside the registry lock.
+    ///
+    /// The AI tools need the read-only `Waveform` (signal lookup by path,
+    /// metadata, whole-history streaming) rather than one of the fixed query
+    /// shapes above. The `Arc<NativeDump>` is cloned and the registry lock is
+    /// dropped before `f` runs, exactly like every other query here, so a
+    /// caller may hold the waveform for as long as it needs without blocking
+    /// other dumps.
+    pub fn with_waveform<T>(
+        &self,
+        id: DumpId,
+        f: impl FnOnce(&Waveform) -> T,
+    ) -> Result<T, String> {
+        let dump = self.dump(id)?;
+        Ok(f(&dump.waveform))
+    }
+
     fn dump(&self, id: DumpId) -> Result<Arc<NativeDump>, String> {
         self.lock()
             .dumps
@@ -811,7 +840,7 @@ impl DumpRegistry {
 
 /// Open the waveform: memory mapped when possible, read through the OS cache
 /// otherwise.
-fn open_waveform(path: &Path) -> Result<Waveform, String> {
+pub(crate) fn open_waveform(path: &Path) -> Result<Waveform, String> {
     match Waveform::open_path_mmap(path) {
         Ok(waveform) => Ok(waveform),
         Err(WaveformError::Io(error)) => {
@@ -866,7 +895,7 @@ fn flatten_scope(
 /// Render one value to the text the webview shows. Bit vectors go through the
 /// library's ShowType; real/string/event values have no bit pattern and get the
 /// library's own textual form.
-fn render_value(value: &WaveValue, width: u32, show: &ShowType) -> String {
+pub(crate) fn render_value(value: &WaveValue, width: u32, show: &ShowType) -> String {
     if let Some(text) = value.render(width as usize, show) {
         return text;
     }
@@ -953,7 +982,7 @@ fn normalize_digits(text: &str) -> String {
     }
 }
 
-fn parse_show_type(show: Option<&str>) -> Result<ShowType, String> {
+pub(crate) fn parse_show_type(show: Option<&str>) -> Result<ShowType, String> {
     match show
         .map(|value| value.trim().to_ascii_lowercase())
         .as_deref()

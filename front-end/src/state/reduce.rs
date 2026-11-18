@@ -516,6 +516,17 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
             viewport.view = view;
             state.set_viewport(viewport);
         }
+        Action::WaveSurfaceWidth(width) => {
+            // Only a real measurement is worth keeping, and a sub-pixel move is
+            // noise: nothing reads this slice, so writing it is free but must
+            // not churn on every resize observer tick.
+            if width.is_finite() && width > 0.0 {
+                let current = state.nav.wave_width;
+                if (width - current).abs() > 0.5 {
+                    state.nav.wave_width = width;
+                }
+            }
+        }
         Action::CursorsChanged(cursors) => {
             let mut viewport = state.viewport_slice();
             viewport.cursors = cursors;
@@ -1828,6 +1839,32 @@ mod tests {
         );
         assert_eq!(state.viewport.cursors.one, Some(10));
         assert_eq!(state.viewport.cursors.two, None);
+    }
+
+    #[test]
+    fn the_wave_surface_width_is_kept_but_ignores_noise() {
+        let mut state = state();
+        assert_eq!(state.nav.wave_width, 0.0);
+        reduce(&mut state, Action::WaveSurfaceWidth(812.0));
+        assert_eq!(state.nav.wave_width, 812.0);
+        // a sub-pixel resize observer tick does not churn the slice
+        reduce(&mut state, Action::WaveSurfaceWidth(812.2));
+        assert_eq!(state.nav.wave_width, 812.0);
+        reduce(&mut state, Action::WaveSurfaceWidth(900.0));
+        assert_eq!(state.nav.wave_width, 900.0);
+        // an unmeasured or garbage width never replaces a real one
+        reduce(&mut state, Action::WaveSurfaceWidth(0.0));
+        reduce(&mut state, Action::WaveSurfaceWidth(f64::NAN));
+        assert_eq!(state.nav.wave_width, 900.0);
+    }
+
+    #[test]
+    fn a_committed_view_can_be_expressed_as_a_time_range() {
+        let mut state = state();
+        reduce(&mut state, Action::WaveSurfaceWidth(500.0));
+        let view = crate::state::types::View::from_time_range(1000, 2000, state.nav.wave_width);
+        reduce(&mut state, Action::ViewCommitted(view));
+        assert_eq!(state.viewport.view.window(500.0), (1000, 2000));
     }
 
     #[test]

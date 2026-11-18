@@ -198,6 +198,10 @@ pub enum Msg {
     WaveSplitterUp,
     /// A tab of the wave frame was chosen (the waveform or the load/drive view).
     WaveFrameTab(WaveFrameTab),
+    /// The MCP server sent a UI command (desktop build): it is executed against
+    /// the store here and answered through `agent_reply`.
+    #[cfg(feature = "tauri")]
+    AgentCommand(crate::agent::AgentCommand),
 }
 
 /// Which view the wave frame shows.
@@ -210,6 +214,10 @@ pub enum Msg {
 pub enum WaveFrameTab {
     Waveform,
     LoadDrive,
+    /// The AI / MCP panel: endpoint, token and the client snippet. Desktop
+    /// only, because only the desktop build runs the MCP server.
+    #[cfg(feature = "tauri")]
+    Mcp,
 }
 
 impl WaveFrameTab {
@@ -397,6 +405,9 @@ pub struct App {
     /// sources next to the new waveform.
     #[cfg(feature = "tauri")]
     companion_gen: Cell<u32>,
+    /// Keeps the `wave-agent-command` event listener alive for the page.
+    #[cfg(feature = "tauri")]
+    agent_listener: Option<Closure<dyn FnMut(wasm_bindgen::JsValue)>>,
 }
 
 impl Component for App {
@@ -612,6 +623,8 @@ impl Component for App {
             restore: None,
             #[cfg(feature = "tauri")]
             companion_gen: Cell::new(0),
+            #[cfg(feature = "tauri")]
+            agent_listener: None,
         };
         // a native dump opened through the desktop file dialog arrives here
         #[cfg(feature = "tauri")]
@@ -622,6 +635,11 @@ impl Component for App {
             })));
         }
         this.attach_window_listeners(ctx);
+        // desktop build: the MCP server sends its UI commands as Tauri events
+        #[cfg(feature = "tauri")]
+        {
+            this.agent_listener = crate::agent::attach_agent_listener(ctx.link());
+        }
         // Wave 19: a desktop page start frees the native mappings the previous
         // page left behind (the registry outlives the page) and then reopens the
         // dumps that page had open, oldest first. Nothing happens on a browser
@@ -840,6 +858,7 @@ impl Component for App {
                                     onclick={link.callback(|_| Msg::WaveFrameTab(WaveFrameTab::LoadDrive))}>
                                     {"Drivers / loads"}
                                 </button>
+                                {self.mcp_tab(link)}
                                 {self.remote_badge()}
                                 // The label column shows the leaf signal name by
                                 // default; this checkbox brings the full instance
@@ -923,7 +942,7 @@ impl Component for App {
                                 {if let Some(split) = self.split {
                                     let ratio = self.split_preview.unwrap_or(self.layout.split_ratio);
                                     html!{
-                                    <div class="split-view" ref={self.split_view.clone()}
+                                    <div class={if self.mcp_tab_active() {"split-view hidden"} else {"split-view"}} ref={self.split_view.clone()}
                                         style={format!("--split-ratio:{ratio:.3}")}>
                                         {self.wave_pane(link)}
                                         <div class={if self.split_drag.is_some() {"split-separator dragging"} else {"split-separator"}}
@@ -955,6 +974,7 @@ impl Component for App {
                                     version={design_version}
                                     path={self.focus.signal.clone()}
                                     ongoto={link.callback(Msg::Goto)} />
+                                {self.mcp_panel()}
                             </div>
                         </div>
                     </main>
@@ -1624,6 +1644,13 @@ impl App {
                 // zoom and scroll, it is only hidden
                 true
             }
+            #[cfg(feature = "tauri")]
+            Msg::AgentCommand(command) => {
+                // A command never re-renders by itself: the store actions it
+                // dispatches reach their subscribers the normal way.
+                self.handle_agent_command(command);
+                false
+            }
             Msg::SidebarAdd(path) => {
                 // the sidebar is the explicit "add and show me where it is"
                 // gesture, unlike a click in the source
@@ -2216,6 +2243,255 @@ impl App {
                 onselect={link.callback(Msg::WaveSelect)}
                 onjump={link.callback(Msg::WaveJump)}
                 onlocate={link.callback(Msg::Locate)} />
+        }
+    }
+
+    /// The `AI / MCP` dock tab (desktop build only: the browser has no server).
+    fn mcp_tab(&self, link: &yew::html::Scope<Self>) -> Html {
+        #[cfg(feature = "tauri")]
+        {
+            html! {
+                <button type="button"
+                    class={WaveFrameTab::Mcp.class(self.wave_tab)}
+                    title="Point an MCP client (Claude Code, Cursor, ...) at this window"
+                    onclick={link.callback(|_| Msg::WaveFrameTab(WaveFrameTab::Mcp))}>
+                    {"AI / MCP"}
+                </button>
+            }
+        }
+        #[cfg(not(feature = "tauri"))]
+        {
+            let _ = link;
+            html! {}
+        }
+    }
+
+    /// The AI / MCP panel; it stays mounted like the inspector does, so a
+    /// switch back does not refetch the status.
+    fn mcp_panel(&self) -> Html {
+        #[cfg(feature = "tauri")]
+        if self.mcp_tab_active() {
+            return html! { <crate::agent::AgentPanel /> };
+        }
+        html! {}
+    }
+
+    fn mcp_tab_active(&self) -> bool {
+        #[cfg(feature = "tauri")]
+        {
+            self.wave_tab == WaveFrameTab::Mcp
+        }
+        #[cfg(not(feature = "tauri"))]
+        {
+            false
+        }
+    }
+
+    /// Execute one MCP UI command against the store and answer it.
+    #[cfg(feature = "tauri")]
+    fn handle_agent_command(&mut self, command: crate::agent::AgentCommand) {
+        use wave_insight_lib::agent::{CursorMove, UiCommand, UiResult};
+        let id = command.id;
+        match command.command {
+            UiCommand::Snapshot => {
+                let surfaces = crate::agent::snapshot::Surfaces {
+                    tab_paths: self.tab_paths.clone(),
+                };
+                let native = self.remote.as_ref().map(|session| {
+                    let dump = session.dump();
+                    crate::agent::snapshot::NativeDumpView {
+                        name: &dump.name,
+                        path: &dump.path,
+                        format: &dump.format,
+                        timescale: dump.timescale.as_deref(),
+                        range: dump.range,
+                        signal_count: dump.signal_count,
+                    }
+                });
+                let snapshot = self.store.select(|state| {
+                    crate::agent::snapshot::snapshot(state, native.as_ref(), &surfaces)
+                });
+                crate::agent::send_reply(id, UiResult::Snapshot(snapshot));
+            }
+            UiCommand::AddSignals { signals } => {
+                let before: Vec<String> = self
+                    .store
+                    .select(state::select::rows)
+                    .items
+                    .iter()
+                    .map(|row| row.path.clone())
+                    .collect();
+                if self.remote.is_none() && self.dump().is_none() {
+                    crate::agent::reply::send_reply_error(
+                        id,
+                        "no waveform is displayed: open a dump, then add signals",
+                    );
+                    return;
+                }
+                self.add_signal_batch(&signals, "AI");
+                let after: Vec<String> = self
+                    .store
+                    .select(state::select::rows)
+                    .items
+                    .iter()
+                    .map(|row| row.path.clone())
+                    .collect();
+                let added: Vec<String> = after
+                    .iter()
+                    .filter(|path| !before.iter().any(|existing| existing == *path))
+                    .cloned()
+                    .collect();
+                let already_present: Vec<String> = signals
+                    .iter()
+                    .filter(|path| before.iter().any(|existing| existing == *path))
+                    .cloned()
+                    .collect();
+                let not_found: Vec<String> = signals
+                    .iter()
+                    .filter(|path| !after.iter().any(|existing| existing == *path))
+                    .filter(|path| !already_present.contains(path))
+                    .cloned()
+                    .collect();
+                let status = self
+                    .store
+                    .select(state::select::status)
+                    .map(|status| status.text)
+                    .unwrap_or_else(|| "AI: rows updated".to_string());
+                // the UI's own line says "added N signals"; name the request so
+                // the transcript makes sense without the tool answer
+                self.note(Status::info(format!("AI: {status}")));
+                crate::agent::send_reply(
+                    id,
+                    UiResult::AddSignals(wave_insight_lib::agent::AddSignalsResult {
+                        added,
+                        already_present,
+                        not_found,
+                        total_rows: after.len(),
+                        status,
+                    }),
+                );
+            }
+            UiCommand::RemoveSignals { signals } => {
+                let rows = self.store.select(state::select::rows);
+                let mut indices = Vec::new();
+                let mut removed: Vec<String> = Vec::new();
+                let mut not_found = Vec::new();
+                for path in &signals {
+                    // an expanded bus has one row per bit, all sharing the path:
+                    // the whole group leaves, but the path is reported once
+                    let mut found = false;
+                    for (index, row) in rows.items.iter().enumerate() {
+                        if &row.path == path {
+                            indices.push(index);
+                            found = true;
+                        }
+                    }
+                    if found {
+                        if !removed.contains(path) {
+                            removed.push(path.clone());
+                        }
+                    } else {
+                        not_found.push(path.clone());
+                    }
+                }
+                if !indices.is_empty() {
+                    self.apply(Action::RowsRemoved { indices });
+                }
+                let total_rows = self.store.select(state::select::rows).items.len();
+                crate::agent::send_reply(
+                    id,
+                    UiResult::RemoveSignals(wave_insight_lib::agent::RemoveSignalsResult {
+                        removed,
+                        not_found,
+                        total_rows,
+                    }),
+                );
+            }
+            UiCommand::SetTimeRange { start, end } => {
+                // the displayed dump's own range clamps the request: the native
+                // session owns its range in the desktop large-file mode, the
+                // store owns the wasm tabs' one
+                let range = self
+                    .remote
+                    .as_ref()
+                    .and_then(|session| session.dump().range)
+                    .or_else(|| {
+                        self.store
+                            .select(state::select::time_range)
+                            .map(|range| (range.start, range.end))
+                    });
+                let (applied_start, applied_end, clamped) = match range {
+                    Some((dump_start, dump_end)) => {
+                        let applied_start = start.clamp(dump_start, dump_end);
+                        let applied_end = end.clamp(applied_start, dump_end);
+                        (
+                            applied_start,
+                            applied_end,
+                            applied_start != start || applied_end != end,
+                        )
+                    }
+                    None => (start, end, false),
+                };
+                let width = self.store.select(|state| state.nav.wave_width);
+                let view = state::View::from_time_range(applied_start, applied_end, width);
+                self.apply(Action::ViewCommitted(view));
+                let dump = self
+                    .remote
+                    .as_ref()
+                    .map(|session| session.dump().name.clone())
+                    .or_else(|| self.store.select(state::select::dump_name));
+                crate::agent::send_reply(
+                    id,
+                    UiResult::SetTimeRange(wave_insight_lib::agent::SetTimeRangeResult {
+                        dump,
+                        requested: wave_insight_lib::agent::AgentTimeRange { start, end },
+                        applied: wave_insight_lib::agent::AgentTimeRange {
+                            start: applied_start,
+                            end: applied_end,
+                        },
+                        clamped,
+                        surface_width: width,
+                    }),
+                );
+            }
+            UiCommand::SetCursors { one, two } => {
+                let mut cursors = self.store.select(state::select::cursors);
+                let apply = |movement: Option<CursorMove>,
+                             slot: &mut Option<i32>|
+                 -> Result<(), String> {
+                    match movement {
+                        None => Ok(()),
+                        Some(CursorMove::Clear) => {
+                            *slot = None;
+                            Ok(())
+                        }
+                        Some(CursorMove::Set { time }) => {
+                            if time > i32::MAX as u64 {
+                                return Err(format!(
+                                    "time {time} does not fit a cursor (max {}); use set_time_range for larger times",
+                                    i32::MAX
+                                ));
+                            }
+                            *slot = Some(time as i32);
+                            Ok(())
+                        }
+                    }
+                };
+                if let Err(error) =
+                    apply(one, &mut cursors.one).and_then(|()| apply(two, &mut cursors.two))
+                {
+                    crate::agent::reply::send_reply_error(id, error);
+                    return;
+                }
+                self.apply(Action::CursorsChanged(cursors));
+                crate::agent::send_reply(
+                    id,
+                    UiResult::SetCursors(wave_insight_lib::agent::SetCursorsResult {
+                        one: cursors.one,
+                        two: cursors.two,
+                    }),
+                );
+            }
         }
     }
 

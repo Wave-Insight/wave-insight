@@ -6,6 +6,7 @@
 //`List<..>: Sync`"
 #![recursion_limit = "512"]
 
+pub mod agent;
 pub mod design;
 pub mod lsp;
 pub mod waveform;
