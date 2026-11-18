@@ -42,9 +42,11 @@ the helper from the repository with `cargo build -p dsh-bridge` and set the
 
 The embedded UI needs the matching `wave-insight-web-backend` binary (same
 platform list) and the built viewer in `ui/`. Override the backend with the
-`backendPath` config or `WAVE_WEB_BACKEND` environment variable. If either the
-backend or the UI is unavailable, the Host tools keep working and the tab shows
-the reason instead of a blank panel.
+`backendPath` config or `WAVE_WEB_BACKEND` environment variable. Both
+`helperPath` and `backendPath` are declared in the plugin's `Config`, so they
+can be set in the bundle's `cordis.patch.yml` row. If either the backend or the
+UI is unavailable, the Host tools keep working and the tab shows the reason
+instead of a blank panel.
 
 ## Limits
 

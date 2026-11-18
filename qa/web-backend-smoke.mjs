@@ -10,7 +10,8 @@ const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const binary = path.join(root, 'target', 'release', process.platform === 'win32'
   ? 'wave-insight-web-backend.exe'
   : 'wave-insight-web-backend')
-const uiDir = path.join(root, 'front-end', 'dist')
+// Exercise the same UI directory that ships inside the DSH plugin.
+const uiDir = path.join(root, 'dsh-plugin', 'ui')
 const dump = path.join(root, 'test.vcd')
 
 const child = spawn(binary, ['--ui-dir', uiDir, '--port', '0'], {
