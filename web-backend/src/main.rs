@@ -16,7 +16,7 @@
 //! Command names and payloads are the Tauri IPC ones the existing front-end
 //! remote layer already knows (`open_dump`, `dump_hierarchy`, `dump_window`,
 //! `dump_value_at`, `dump_values_at`, `dump_find`, `close_dump`,
-//! `close_all_dumps`).
+//! `close_all_dumps`, plus empty `dump_memory_stats` / `process_memory`).
 
 // The registry is plain Rust (no Tauri types); include it verbatim so both the
 // desktop app and this daemon use the same dump semantics.
@@ -224,6 +224,12 @@ async fn dispatch(state: &AppState, request: InvokeRequest) -> Value {
             Err(error) => error,
         },
         "close_all_dumps" => ok(json!(state.registry.close_all())),
+        // The viewer asks for these right after adopting a dump. The desktop
+        // answers from OS calls this daemon does not make; the empty shapes let
+        // the memory readout stay blank instead of logging a failed command on
+        // every open.
+        "dump_memory_stats" => ok(Value::Null),
+        "process_memory" => ok(json!({ "current_bytes": null, "peak_bytes": null })),
         other => fail(format!("unknown command: {other}")),
     }
 }
@@ -278,7 +284,9 @@ async fn invoke(
     if !trusted_request(&state, &headers) {
         return (
             StatusCode::FORBIDDEN,
-            Json(fail("unauthorized: request was not addressed to this viewer")),
+            Json(fail(
+                "unauthorized: request was not addressed to this viewer",
+            )),
         )
             .into_response();
     }
@@ -294,7 +302,8 @@ async fn invoke(
 
 /// Liveness probe for the DSH panel: no token, no dump access, no caching.
 async fn health() -> Response {
-    let mut response = Json(json!({ "ok": true, "service": "wave-insight-web-backend" })).into_response();
+    let mut response =
+        Json(json!({ "ok": true, "service": "wave-insight-web-backend" })).into_response();
     let headers = response.headers_mut();
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,

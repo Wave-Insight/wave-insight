@@ -150,6 +150,15 @@ test('open, hierarchy, window, value, find and close', async () => {
   const value = await invoke('dump_value_at', { id, signal: 0, time: 100, show: 'hex' })
   assert.equal(value.json?.ok, true, value.json?.error)
 
+  // The viewer asks for these on every adopt; the daemon answers empty shapes
+  // instead of failing, so the panel's memory readout stays blank.
+  const stats = await invoke('dump_memory_stats', { id })
+  assert.equal(stats.json?.ok, true, stats.json?.error)
+  assert.equal(stats.json.result, null)
+  const memory = await invoke('process_memory')
+  assert.equal(memory.json?.ok, true, memory.json?.error)
+  assert.deepEqual(memory.json.result, { current_bytes: null, peak_bytes: null })
+
   // dump_find takes the ShowType unit-variant name, unlike the commands above.
   const find = await invoke('dump_find', { id, signal: 0, query: '1', from: 0, backwards: false, show: 'Bin' })
   assert.equal(find.json?.ok, true, find.json?.error)
