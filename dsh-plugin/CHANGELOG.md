@@ -4,6 +4,16 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.3] - 2026-11-19
+
+### Changed
+
+- The version gate accepts the 0.2.1 desktop line (`engines.dsh:
+  ">=0.2.1-rc.5"`). It required `>=0.2.2-rc.3`, and the Desktop app's updater
+  offers a 0.2.1-rc.5 build — a lower version that would have blocked the whole
+  bundle from loading after the update. The plugin's Host APIs are the same on
+  both lines.
+
 ## [0.2.2] - 2026-11-19
 
 ### Fixed

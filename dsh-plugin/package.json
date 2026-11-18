@@ -1,6 +1,6 @@
 {
   "name": "@wave-insight/dsh-plugin",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "description": "Wave Insight waveform tools and a live side panel for DeepSeek Harness",
   "license": "Apache-2.0",
@@ -36,10 +36,12 @@
     "ui/**/*"
   ],
   "engines": {
-    "dsh": ">=0.2.2-rc.3"
+    "dsh": ">=0.2.1-rc.5"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
