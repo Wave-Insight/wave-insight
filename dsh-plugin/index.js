@@ -4,7 +4,7 @@
 // attaches that view to its `tool/result` meta; the `waveInsight` projection
 // folds those results and the framework streams the view to the Client panel.
 import { spawn } from 'node:child_process'
-import { chmodSync } from 'node:fs'
+import { chmodSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { z } from 'zod'
@@ -20,6 +20,12 @@ const BUNDLED_HELPERS = {
   darwin: { arm64: 'dsh-bridge-macos-arm64' },
 }
 
+const BUNDLED_WEB_BACKENDS = {
+  win32: { x64: 'wave-insight-web-backend-windows-x64.exe' },
+  linux: { x64: 'wave-insight-web-backend-linux-x64' },
+  darwin: { arm64: 'wave-insight-web-backend-macos-arm64' },
+}
+
 export const inject = ['tools', 'sessionProjections', 'systemPrompt']
 
 const stateSchema = z.object({
@@ -29,6 +35,8 @@ const stateSchema = z.object({
   cursors: z.any(),
   waves: z.record(z.string(), z.any()),
   status: z.string(),
+  uiUrl: z.string().nullable(),
+  uiError: z.string().optional(),
   inheritedEventCount: z.number().optional(),
 })
 
@@ -47,6 +55,7 @@ const emptyView = () => ({
   cursors: { one: null, two: null },
   waves: {},
   status: 'No waveform loaded. Call load_waveform with a .vcd, .fst or .ghw path.',
+  uiUrl: null,
 })
 
 // Per-session working state. The durable state lives in the session log; this
@@ -78,6 +87,9 @@ function stateFor(key, exec) {
     working.set(key, state)
     known.set(key, new Set(state.rows))
   }
+  // The backend URL belongs to this Host process, not to the durable session.
+  state.uiUrl = backend?.url ?? null
+  if (backendError) state.uiError = backendError
   return state
 }
 
@@ -102,6 +114,70 @@ function helperPath(config) {
     )
   }
   return path.join(path.dirname(fileURLToPath(import.meta.url)), 'bin', name)
+}
+
+let backend = null
+let backendError = null
+
+function webBackendPath(config) {
+  if (config?.backendPath) return config.backendPath
+  if (process.env.WAVE_WEB_BACKEND) return process.env.WAVE_WEB_BACKEND
+  const name = BUNDLED_WEB_BACKENDS[process.platform]?.[process.arch]
+  if (!name) {
+    throw new WaveInsightError(
+      `no bundled web backend for ${process.platform}/${process.arch}; set WAVE_WEB_BACKEND to a built wave-insight-web-backend`,
+      'UI_UNAVAILABLE',
+    )
+  }
+  const file = path.join(path.dirname(fileURLToPath(import.meta.url)), 'bin', name)
+  if (!existsSync(file)) {
+    throw new WaveInsightError(`web backend is missing: ${file}`, 'UI_UNAVAILABLE')
+  }
+  return file
+}
+
+// One loopback backend serves the embedded UI for the whole Host process. Its
+// dump registry is shared, so sessions get stable dump ids and one server.
+async function ensureBackend(config) {
+  if (backend) return backend
+  if (backendError) return null
+  try {
+    const exe = webBackendPath(config)
+    if (process.platform !== 'win32') {
+      try { chmodSync(exe, 0o755) } catch { /* read-only install */ }
+    }
+    const uiDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ui')
+    const child = spawn(exe, ['--ui-dir', uiDir, '--port', '0'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const url = await new Promise((resolve, reject) => {
+      let text = ''
+      const timer = setTimeout(() => reject(new Error('web backend did not report a port in 10s')), 10_000)
+      const onData = (chunk) => {
+        text += chunk.toString()
+        const match = text.match(/LISTENING (\d+)/)
+        if (match) {
+          clearTimeout(timer)
+          resolve(`http://127.0.0.1:${match[1]}/`)
+        }
+      }
+      child.stdout.on('data', onData)
+      child.once('error', (error) => { clearTimeout(timer); reject(error) })
+      child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`web backend exited early (${code})`)) })
+    })
+    backend = { child, url }
+    child.once('exit', () => { if (backend?.child === child) backend = null })
+    return backend
+  } catch (error) {
+    backendError = error instanceof Error ? error.message : String(error)
+    return null
+  }
+}
+
+function stopBackend() {
+  backend?.child.kill()
+  backend = null
+  backendError = null
 }
 
 function callHelper(config, request, signal) {
@@ -224,6 +300,8 @@ function viewOf(state) {
     cursors: { ...state.cursors },
     waves: { ...state.waves },
     status: state.status,
+    uiUrl: state.uiUrl,
+    ...(state.uiError ? { uiError: state.uiError } : {}),
   }
 }
 
@@ -299,8 +377,14 @@ export async function apply(ctx, config) {
       return { ...state, ...meta.state, inheritedEventCount: state.inheritedEventCount }
     },
     wire: { viewSchema: stateSchema, view: (state) => state, summary: false },
-    stateVersion: 1,
+    stateVersion: 2,
   })
+
+  // The embedded UI is optional: a missing backend/UI must not disable the
+  // Host tools. Its URL is published through the projection so the Client can
+  // open the native viewer as soon as it is ready.
+  await ensureBackend(config)
+  ctx.effect(() => () => stopBackend(), 'wave-insight: backend')
 
   const tools = [
     defineTool({
