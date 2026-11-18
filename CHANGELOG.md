@@ -10,6 +10,14 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.23.3] - 2026-11-18
+
+### Fixed
+
+- The DSH plugin packaging job no longer waits for the desktop build, so a
+  desktop build failure cannot prevent the plugin tarball from being attached
+  to the release tag.
+
 ## [0.23.2] - 2026-11-18
 
 ### Changed

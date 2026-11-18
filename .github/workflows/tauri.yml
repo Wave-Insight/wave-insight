@@ -144,9 +144,10 @@ jobs:
 
   dsh-plugin:
     if: startsWith(github.ref, 'refs/tags/')
-    # The release is created by the desktop build job; wait for it before
-    # attaching the plugin tarball to the same tag.
-    needs: [build, dsh-plugin-binaries]
+    # Do not depend on `build`: a desktop-build flake must not skip the plugin
+    # tarball. softprops/action-gh-release attaches to the existing tag (and
+    # creates the release if the desktop job did not).
+    needs: [dsh-plugin-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
