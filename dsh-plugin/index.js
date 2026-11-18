@@ -27,6 +27,14 @@ const stateSchema = z.object({
   inheritedEventCount: z.number().optional(),
 })
 
+class WaveInsightError extends Error {
+  constructor(message, code = 'WAVE_INSIGHT_ERROR') {
+    super(message)
+    this.name = 'WaveInsightError'
+    this.code = code
+  }
+}
+
 const emptyView = () => ({
   dump: null,
   rows: [],
@@ -79,8 +87,9 @@ function helperPath(config) {
   if (process.env.WAVE_DSH_BRIDGE) return process.env.WAVE_DSH_BRIDGE
   const name = BUNDLED_HELPERS[process.platform]?.[process.arch]
   if (!name) {
-    throw new Error(
+    throw new WaveInsightError(
       `no bundled dsh-bridge for ${process.platform}/${process.arch}; set WAVE_DSH_BRIDGE to a helper built from dsh-bridge`,
+      'UNSUPPORTED_PLATFORM',
     )
   }
   return path.join(path.dirname(fileURLToPath(import.meta.url)), 'bin', name)
@@ -102,9 +111,11 @@ function callHelper(config, request) {
     maxBuffer: 64 * 1024 * 1024,
   })
   const line = stdout.split(/\r?\n/).find((part) => part.trim().length > 0)
-  if (!line) throw new Error('wave-insight helper returned no response')
+  if (!line) throw new WaveInsightError('wave-insight helper returned no response', 'HELPER_NO_RESPONSE')
   const response = JSON.parse(line)
-  if (!response.ok) throw new Error(response.error || 'wave-insight helper error')
+  if (!response.ok) {
+    throw new WaveInsightError(response.error || 'wave-insight helper error', 'HELPER_ERROR')
+  }
   return response
 }
 
@@ -163,10 +174,13 @@ function defineTool({ name, description, parameters, run }) {
       try {
         return await run(args, exec, key)
       } catch (error) {
-        const state = stateFor(key, exec)
+        // DSH marks a tool result as failed only when execute throws. Returning
+        // a value with "Error:" in it looks like a success to the model, to the
+        // UI and to session telemetry, and bypasses the projection's isError
+        // guard. Preserve AbortError so cancellation keeps its own identity.
+        if (error instanceof WaveInsightError || error?.name === 'AbortError') throw error
         const message = error instanceof Error ? error.message : String(error)
-        state.status = `error: ${message}`
-        return result(`Error: ${message}`, state, key)
+        throw new WaveInsightError(message, 'WAVE_INSIGHT_TOOL_ERROR')
       }
     },
   }
@@ -248,7 +262,7 @@ export async function apply(ctx, config) {
       },
       run: (args, exec, key) => {
         const state = stateFor(key, exec)
-        if (!state.path) throw new Error('load a waveform first')
+        if (!state.path) throw new WaveInsightError('load a waveform first', 'NO_WAVEFORM')
         const found = callHelper(config, {
           cmd: 'find',
           path: state.path,
@@ -282,7 +296,7 @@ export async function apply(ctx, config) {
       },
       run: (args, exec, key) => {
         const state = stateFor(key, exec)
-        if (!state.path) throw new Error('load a waveform first')
+        if (!state.path) throw new WaveInsightError('load a waveform first', 'NO_WAVEFORM')
         ensureKnown(state, key, config)
         const paths = known.get(key) ?? new Set()
         const wanted = [...new Set(args.signals.map((signal) => String(signal)))]
@@ -333,7 +347,7 @@ export async function apply(ctx, config) {
       },
       run: (args, exec, key) => {
         const state = stateFor(key, exec)
-        if (!state.path) throw new Error('load a waveform first')
+        if (!state.path) throw new WaveInsightError('load a waveform first', 'NO_WAVEFORM')
         const full = state.dump?.time_range ?? { start: 0, end: Number.MAX_SAFE_INTEGER }
         const requested = { start: Math.floor(args.start), end: Math.floor(args.end) }
         const start = Math.max(full.start, Math.min(requested.start, full.end))
@@ -383,7 +397,7 @@ export async function apply(ctx, config) {
       },
       run: (args, exec, key) => {
         const state = stateFor(key, exec)
-        if (!state.path) throw new Error('load a waveform first')
+        if (!state.path) throw new WaveInsightError('load a waveform first', 'NO_WAVEFORM')
         const start = Math.floor(args.start ?? state.visible?.start ?? 0)
         const end = Math.floor(args.end ?? state.visible?.end ?? start)
         const response = callHelper(config, {
