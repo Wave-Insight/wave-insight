@@ -1,143 +1,233 @@
-// Client half: a right-bar tab hosting the real Wave Insight UI.
-// The Host starts a loopback web backend, publishes its URL through the
-// `waveInsight` projection, and this component renders that UI in an iframe.
-// View changes from Host tools are forwarded as one-way commands.
-// React comes from the browser module table; no second React installation.
+// Client half: the Wave Insight tab in the right sidebar.
+//
+// The Host starts a loopback backend that hosts the real Wave Insight viewer and
+// publishes its URL through the `waveInsight` session projection; this module
+// registers the tab type and iframes that URL. Tool calls change the projection,
+// and this module forwards the difference as one-way `wave-dsh` commands.
+//
+// Two rules keep the panel honest:
+//   * the URL is Host-process local, so it is probed before it is trusted — a
+//     resumed session can carry a port from a previous run;
+//   * a command is only sent while the viewer is known to be listening, tracked
+//     by the `wave-dsh-ready` handshake rather than by optimistic timing.
 window.__ModuleLoader__.load({
   id: '@wave-insight/dsh-plugin',
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const { useEffect, useRef } = React
+    const { useCallback, useEffect, useRef, useState } = React
 
-    const TAB_ID = '@wave-insight/dsh-plugin'
     const KIND = 'wave-insight'
+    const TAB_ID = '@wave-insight/dsh-plugin'
+    const PROJECTION_KEY = 'waveInsight'
+    const NAMESPACE = 'waveInsight'
+    const MESSAGE_TYPE = 'wave-dsh'
+    const READY_TYPE = 'wave-dsh-ready'
+    /** Failed health probes before the panel gives up on one URL. */
+    const HEALTH_ATTEMPTS = 8
+    /** Bounded retries for opening the tab before a Session surface exists. */
+    const OPEN_ATTEMPTS = 10
+    const BINDING_ATTEMPTS = 10
 
-    let sidebar = null
-    let sessions = null
-    let translate = (key) => key
-    const opened = new Set()
-    const pending = new Set()
-    let warned = false
-
-    function openPanel() {
-      if (!sidebar) return false
-      try {
-        sidebar.openTab(KIND)
-        warned = false
-        return true
-      } catch (error) {
-        // openTab throws when no Session surface is mounted yet. Keep the
-        // failure visible and leave the Session pending so the retry loop can
-        // open the tab later instead of silently never showing the panel.
-        if (!warned) {
-          console.warn('[wave-insight] could not open the tab yet, retrying:', error)
-          warned = true
-        }
-        return false
-      }
+    const STRINGS = {
+      en: {
+        title: 'Wave Insight',
+        waiting: 'Waiting for the waveform viewer…',
+        connecting: 'Starting the waveform viewer…',
+        unavailable: 'The waveform viewer is unavailable',
+        emptyHint: 'Ask the AI to load a waveform file.',
+      },
+      zh: {
+        title: 'Wave Insight',
+        waiting: '正在等待波形界面…',
+        connecting: '正在启动波形界面…',
+        unavailable: '波形界面不可用',
+        emptyHint: '让 AI 加载一个波形文件。',
+      },
     }
 
-    function watchSession(sessionId) {
-      if (!sessionId || opened.has(sessionId)) return () => {}
-      const binding = sessions?.binding?.(sessionId)
-      const face = binding?.session?.projections?.faceOf?.('waveInsight')
-      if (!face) return () => {}
-      const check = () => {
-        const value = face.getSnapshot?.()
-        if (!value?.dump || opened.has(sessionId)) return
-        pending.add(sessionId)
-        if (openPanel()) {
-          opened.add(sessionId)
-          pending.delete(sessionId)
-        }
+    /**
+     * Operations that move the viewer from `previous` to `next`.
+     *
+     * `open_path` is not part of this list: opening replaces the viewer's dump
+     * asynchronously and the app announces readiness afterwards, so the caller
+     * sends it alone and replays the rest on the next handshake.
+     * @param {{rows?: string[], visible?: {start:number,end:number}|null, cursors?: {one:number|null,two:number|null}}} [previous]
+     * @param {{rows?: string[], visible?: {start:number,end:number}|null, cursors?: {one:number|null,two:number|null}}} next
+     */
+    function viewCommands(previous, next) {
+      if (!next) return []
+      const commands = []
+      const before = previous?.rows ?? []
+      const after = next.rows ?? []
+      const removed = before.filter((row) => !after.includes(row))
+      if (removed.length > 0) commands.push({ kind: 'remove_signals', signals: removed })
+      const added = after.filter((row) => !before.includes(row))
+      if (added.length > 0) commands.push({ kind: 'add_signals', signals: added })
+      if (next.visible && !sameRange(previous?.visible, next.visible)) {
+        commands.push({ kind: 'set_time_range', start: next.visible.start, end: next.visible.end })
       }
-      const unsubscribe = face.subscribe?.(check)
-      check()
-      return () => unsubscribe?.()
+      if (!sameCursors(previous?.cursors, next.cursors)) {
+        commands.push({
+          kind: 'set_cursors',
+          one: cursorCommand(next.cursors?.one),
+          two: cursorCommand(next.cursors?.two),
+        })
+      }
+      return commands
     }
 
-    function NativePanel({ useProjection }) {
-      const wave = useProjection ? useProjection('waveInsight') : undefined
-      const frame = useRef(null)
-      const ready = useRef(false)
-      const last = useRef(null)
-      const view = useRef(wave)
-      view.current = wave
+    /** @param {unknown} left @param {unknown} right */
+    function sameRange(left, right) {
+      if (!left || !right) return left === right
+      return left.start === right.start && left.end === right.end
+    }
 
-      function send(command) {
-        const url = view.current?.uiUrl
-        const target = frame.current?.contentWindow
-        if (!url || !target) return
-        try {
-          target.postMessage({ type: 'wave-dsh', command }, new URL(url).origin)
-        } catch (error) {
-          console.warn('[wave-insight] could not send a view command:', error)
+    /** @param {{one?:number|null,two?:number|null}} [left] @param {{one?:number|null,two?:number|null}} [right] */
+    function sameCursors(left, right) {
+      return (left?.one ?? null) === (right?.one ?? null) && (left?.two ?? null) === (right?.two ?? null)
+    }
+
+    /** @param {number|null|undefined} time */
+    function cursorCommand(time) {
+      return typeof time === 'number' ? { action: 'set', time } : { action: 'clear' }
+    }
+
+    /**
+     * Probe a published viewer URL and return it once it answers.
+     * A URL that never answers is reported as `null`, so a stale port from a
+     * previous Host run shows "starting" instead of a blank iframe.
+     * @param {string|null|undefined} source
+     * @returns {string|null}
+     */
+    function useViewerUrl(source) {
+      const [live, setLive] = useState(null)
+      useEffect(() => {
+        setLive(null)
+        if (!source) return undefined
+        let cancelled = false
+        let timer = null
+        let attempts = 0
+        const probe = () => {
+          attempts += 1
+          fetch(new URL('health', source), { cache: 'no-store', credentials: 'omit' })
+            .then((response) => {
+              if (cancelled) return
+              if (!response.ok) throw new Error(`HTTP ${response.status}`)
+              setLive(source)
+            })
+            .catch(() => {
+              if (cancelled) return
+              if (attempts >= HEALTH_ATTEMPTS) return
+              timer = setTimeout(probe, Math.min(4000, 250 * 2 ** attempts))
+            })
         }
-      }
+        probe()
+        return () => {
+          cancelled = true
+          if (timer) clearTimeout(timer)
+        }
+      }, [source])
+      return live
+    }
 
-      function pushView(value) {
-        if (!value?.dump?.path) return
-        const previous = last.current
-        if (!previous || previous.dump?.path !== value.dump.path) {
-          // Opening is async in the app; the rest of the view is replayed when
-          // the app reports that the new dump has been adopted.
-          ready.current = false
-          send({ kind: 'open_path', path: value.dump.path })
-          last.current = value
+    /**
+     * @param {{ useProjection?: (key: string) => any, t?: (key: string) => string }} props
+     */
+    function WavePanel(props) {
+      // `useProjection` is a standard prop of this session-scoped slot.
+      const view = typeof props.useProjection === 'function' ? props.useProjection(PROJECTION_KEY) : undefined
+      const t = props.t ?? ((key) => STRINGS.en[key] ?? key)
+      const source = view?.ui?.url ?? null
+      const url = useViewerUrl(source)
+
+      const frameRef = useRef(null)
+      const readyRef = useRef(false)
+      const openedPathRef = useRef(null)
+      const sentRef = useRef(null)
+      const viewRef = useRef(view)
+      viewRef.current = view
+
+      const send = useCallback(
+        (command) => {
+          const target = frameRef.current?.contentWindow
+          if (!url || !target) return
+          try {
+            target.postMessage({ type: MESSAGE_TYPE, command }, new URL(url).origin)
+          } catch (error) {
+            console.warn('[wave-insight] could not send a viewer command:', error)
+          }
+        },
+        [url],
+      )
+
+      const sync = useCallback(() => {
+        const current = viewRef.current
+        const path = current?.dump?.path
+        if (!path) return
+        if (openedPathRef.current !== path) {
+          // A new dump: the app opens it asynchronously and announces when it
+          // can accept commands, so nothing else is sent until then.
+          openedPathRef.current = path
+          sentRef.current = null
+          readyRef.current = false
+          send({ kind: 'open_path', path })
           return
         }
-        if (!ready.current) return
-        const rowsBefore = previous.rows ?? []
-        const removed = rowsBefore.filter((row) => !value.rows.includes(row))
-        if (removed.length) send({ kind: 'remove_signals', signals: removed })
-        const added = value.rows.filter((row) => !rowsBefore.includes(row))
-        if (added.length) send({ kind: 'add_signals', signals: added })
-        if (
-          !previous.visible ||
-          previous.visible.start !== value.visible?.start ||
-          previous.visible.end !== value.visible?.end
-        ) {
-          send({ kind: 'set_time_range', start: value.visible.start, end: value.visible.end })
-        }
-        if (JSON.stringify(previous.cursors) !== JSON.stringify(value.cursors)) {
-          const cursor = (time) =>
-            typeof time === 'number' ? { action: 'set', time } : { action: 'clear' }
-          send({
-            kind: 'set_cursors',
-            one: cursor(value.cursors?.one),
-            two: cursor(value.cursors?.two),
-          })
-        }
-        last.current = value
-      }
+        if (!readyRef.current) return
+        for (const command of viewCommands(sentRef.current, current)) send(command)
+        sentRef.current = current
+      }, [send])
 
       useEffect(() => {
+        sync()
+      }, [view?.dump?.path, view?.rows, view?.visible, view?.cursors, url, sync])
+
+      useEffect(() => {
+        if (!url) return undefined
+        const origin = new URL(url).origin
         const onMessage = (event) => {
-          if (event.data?.type !== 'wave-dsh-ready') return
-          ready.current = true
-          last.current = null
-          pushView(view.current)
+          if (event.origin !== origin) return
+          const frame = frameRef.current
+          if (!frame || event.source !== frame.contentWindow) return
+          if (event.data?.type !== READY_TYPE) return
+          // The page announces once after load and the app announces again
+          // after adopting a dump. Both mean "commands may be sent now"; the
+          // opened path above keeps this from re-opening the same dump.
+          readyRef.current = true
+          sync()
         }
         window.addEventListener('message', onMessage)
         return () => window.removeEventListener('message', onMessage)
-      }, [])
+      }, [url, sync])
 
-      useEffect(() => {
-        pushView(wave)
-      }, [wave?.dump?.path, wave?.rows, wave?.visible, wave?.cursors, wave?.uiUrl])
+      const onFrameLoad = useCallback(() => {
+        readyRef.current = false
+        openedPathRef.current = null
+        sentRef.current = null
+        sync()
+      }, [sync])
 
-      if (!wave?.uiUrl) {
+      if (!source) {
         return h(
           'div',
           { style: { padding: 16, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } },
-          wave?.uiError ? `Wave Insight UI unavailable: ${wave.uiError}` : translate('waiting'),
+          t('waiting'),
+        )
+      }
+      if (!url) {
+        const reason = view?.ui?.error
+        return h(
+          'div',
+          { style: { padding: 16, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } },
+          reason ? `${t('unavailable')}: ${reason}` : t('connecting'),
         )
       }
       return h('iframe', {
-        ref: frame,
-        src: wave.uiUrl,
-        title: translate('title'),
+        ref: frameRef,
+        src: url,
+        title: t('title'),
+        onLoad: onFrameLoad,
         style: {
           width: '100%',
           height: '100%',
@@ -148,53 +238,116 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /**
+     * Open the tab when the on-screen session first carries a dump.
+     *
+     * Retries are bounded and driven by the projection / mounted-session
+     * subscriptions; there is deliberately no page-lifetime polling loop.
+     * @param {any} ctx
+     */
+    function watchForDumps(ctx) {
+      /** @type {Set<string>} */
+      const opened = new Set()
+      /** @type {Set<string>} */
+      const warned = new Set()
+      /** @type {null | (() => void)} */
+      let stopFace = null
+      /** @type {ReturnType<typeof setTimeout> | null} */
+      let timer = null
+
+      const cancel = () => {
+        if (timer) {
+          clearTimeout(timer)
+          timer = null
+        }
+      }
+      const later = (run, delay) => {
+        cancel()
+        timer = setTimeout(run, delay)
+      }
+
+      /** @param {string} sessionId @param {number} attempt */
+      const openTab = (sessionId, attempt) => {
+        if (opened.has(sessionId)) return
+        try {
+          const controller = ctx.sidebarRight
+          if (typeof controller.openTabIn === 'function') controller.openTabIn(sessionId, KIND)
+          else controller.openTab(KIND)
+          opened.add(sessionId)
+          return
+        } catch {
+          // No Session surface is mounted yet; retry briefly.
+        }
+        if (attempt >= OPEN_ATTEMPTS) {
+          if (!warned.has(sessionId)) {
+            warned.add(sessionId)
+            console.warn('[wave-insight] could not open the sidebar tab; open it from the right-bar guide instead')
+          }
+          return
+        }
+        later(() => openTab(sessionId, attempt + 1), Math.min(1500, 120 * (attempt + 1)))
+      }
+
+      /** @param {string} sessionId @param {number} attempt */
+      const watch = (sessionId, attempt) => {
+        stopFace?.()
+        stopFace = null
+        cancel()
+        if (!sessionId || opened.has(sessionId)) return
+        const face = ctx.sessions?.binding?.(sessionId)?.session?.projections?.faceOf?.(PROJECTION_KEY)
+        if (!face) {
+          // The borrowed binding can appear just after the Session mounts.
+          if (attempt < BINDING_ATTEMPTS) later(() => watch(sessionId, attempt + 1), 200)
+          return
+        }
+        const check = () => {
+          if (opened.has(sessionId)) return
+          if (!face.getSnapshot?.()?.dump) return
+          openTab(sessionId, 0)
+        }
+        stopFace = face.subscribe?.(check) ?? null
+        check()
+      }
+
+      const sync = () => watch(ctx.sidebarRight.mounted.getSnapshot(), 0)
+      const unsubscribe = ctx.sidebarRight.mounted.subscribe(sync)
+      sync()
+      return () => {
+        unsubscribe?.()
+        stopFace?.()
+        cancel()
+      }
+    }
+
     return {
       inject: ['slots', 'sidebarRight', 'sidebarRightTabs', 'sessions', 'locale'],
       apply(ctx) {
-        sidebar = ctx.sidebarRight
-        sessions = ctx.sessions
-        try {
-          const strings = {
-            en: {
-              title: 'Wave Insight',
-              waiting: 'Waiting for the waveform UI…',
-              emptyHint: 'Ask the AI to load a waveform file.',
-            },
-            zh: {
-              title: 'Wave Insight',
-              waiting: '正在启动波形界面…',
-              emptyHint: '让 AI 加载一个波形文件。',
-            },
+        // Dictionaries are fiber-scoped: disposing the fiber removes them, so a
+        // reload cannot fail with "already has locale".
+        ctx.effect(() => {
+          const disposers = [
+            ctx.locale.register(NAMESPACE, 'en', STRINGS.en),
+            ctx.locale.register(NAMESPACE, 'zh', STRINGS.zh),
+          ]
+          return () => {
+            for (const dispose of disposers) dispose()
           }
-          // DSH's built-in locale ids are `en` and `zh`; `zh-cn` is also
-          // registered for browsers that report a regional Chinese tag.
-          strings['zh-cn'] = strings.zh
-          ctx.locale.register('waveInsight', 'en', strings.en)
-          ctx.locale.register('waveInsight', 'zh', strings.zh)
-          ctx.locale.register('waveInsight', 'zh-cn', strings['zh-cn'])
-          translate = ctx.locale.bind('waveInsight')
-        } catch {
-          translate = (key) =>
-            ({
-              title: 'Wave Insight',
-              waiting: 'Waiting for the waveform UI…',
-              emptyHint: 'Ask the AI to load a waveform file.',
-            })[key] ?? key
-        }
+        }, 'wave-insight: dictionaries')
+        const t = ctx.locale.bind(NAMESPACE)
 
         ctx.effect(
           () =>
             ctx.sidebarRightTabs.register({
               id: TAB_ID,
               kind: KIND,
-              title: () => translate('title'),
+              title: () => t('title'),
               priority: 'extension',
               guide: [
                 {
                   id: TAB_ID,
                   order: 900,
-                  title: () => translate('title'),
-                  description: () => translate('emptyHint'),
+                  title: () => t('title'),
+                  description: () => t('emptyHint'),
                 },
               ],
             }),
@@ -204,51 +357,17 @@ window.__ModuleLoader__.load({
         ctx.effect(
           () =>
             ctx.slots.inject('sidebar.right.pane.tab', () =>
-              ctx.slots.register(
-                { name: 'sidebar.right.pane.tab', key: TAB_ID },
-                NativePanel,
-              ),
+              ctx.slots.register({ name: 'sidebar.right.pane.tab', key: TAB_ID, locale: NAMESPACE }, WavePanel),
             ),
           'wave-insight: panel body',
         )
 
-        // Open the tab when a projection first carries a dump. This avoids
-        // replacing the host's tool-call cards with a custom tool view.
-        ctx.effect(() => {
-          let stopWatching = () => {}
-          const sync = () => {
-            stopWatching()
-            pending.clear()
-            const sessionId = sidebar?.mounted?.getSnapshot?.()
-            stopWatching = watchSession(sessionId)
-          }
-          const unsubscribe = sidebar?.mounted?.subscribe?.(sync)
-          sync()
-          return () => {
-            unsubscribe?.()
-            stopWatching()
-          }
-        }, 'wave-insight: auto-open')
-
-        // A failed openTab is retried on the mounted Session until it succeeds.
-        ctx.effect(() => {
-          const retry = () => {
-            const sessionId = sidebar?.mounted?.getSnapshot?.()
-            if (!sessionId || opened.has(sessionId)) return
-            if (!pending.has(sessionId)) {
-              const face = sessions?.binding?.(sessionId)?.session?.projections?.faceOf?.('waveInsight')
-              if (!face?.getSnapshot?.()?.dump) return
-              pending.add(sessionId)
-            }
-            if (!openPanel()) return
-            opened.add(sessionId)
-            pending.delete(sessionId)
-          }
-          if (ctx.timer?.interval) return ctx.timer.interval(retry, 500)
-          const id = setInterval(retry, 500)
-          return () => clearInterval(id)
-        }, 'wave-insight: open retry')
+        ctx.effect(() => watchForDumps(ctx), 'wave-insight: auto-open')
       },
+      // Test seam: the pure view-diff helpers, with no runtime effect. The
+      // loader ignores unknown exports; `qa/dsh-plugin-client.test.mjs` drives
+      // them without a DOM.
+      __test: { viewCommands, sameRange, sameCursors, cursorCommand, STRINGS },
     }
   },
 })
