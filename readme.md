@@ -555,19 +555,27 @@ There is a third front end besides the browser and desktop builds: a local DSH
 bundle in [`dsh-plugin/`](dsh-plugin/). Once installed in a DeepSeek Harness
 profile, the AI gets `load_waveform`, `find_signals`, `add_signals`,
 `remove_signals`, `set_time_range`, `set_cursors`, `get_changes` and
-`list_waveform`. Calling any of them opens the **Wave Insight** tab in DSH's
-right sidebar; the panel then follows the session projection, so adding a
-signal, changing the visible range or placing a cursor updates it immediately.
+`list_waveform`. Calling one opens the **Wave Insight** tab in DSH's right
+sidebar; the panel follows the session projection, so adding a signal, changing
+the visible range or placing a cursor updates it immediately.
 
-The bundle talks to a small JSON-lines helper, `dsh-bridge`
-([`dsh-bridge/`](dsh-bridge/)), which opens dumps with the same native reader
-as the desktop build and answers bounded window queries. Helpers for Windows x64, Linux x64 and macOS ARM64 are bundled in
-`dsh-plugin/bin/`, so no external binary install is needed; the CI workflow
-`.github/workflows/dsh-plugin-binaries.yml` rebuilds them. Other platforms can
-build with `cargo build -p dsh-bridge` and set `WAVE_DSH_BRIDGE` (or the
-bundle's `helperPath` config). Install the bundle with Plugins > Add plugin, selecting
-`dsh-plugin/`. The first version draws up to 40 rows and 256 sampled changes
-per row; it is a live inspection surface, not a replacement for the full viewer.
+Two native pieces sit behind the bundle:
+
+- `dsh-bridge` ([`dsh-bridge/`](dsh-bridge/)) answers the model-facing tools in
+  JSON lines, opening dumps with the same native reader as the desktop build and
+  returning bounded window queries. Helpers for Windows x64, Linux x64 and macOS
+  ARM64 are bundled in `dsh-plugin/bin/`, so no external binary install is
+  needed; `.github/workflows/dsh-plugin-binaries.yml` rebuilds them. Other
+  platforms can build with `cargo build -p dsh-bridge` and set
+  `WAVE_DSH_BRIDGE` (or the bundle's `helperPath` config).
+- `wave-insight-web-backend` ([`web-backend/`](web-backend/)) serves the built
+  web-remote viewer and its `/invoke` route on loopback, so the tab renders the
+  real Wave Insight UI instead of a sketch. Only the Windows x64 build is
+  committed; Linux and macOS build it with
+  `cargo build -p wave-insight-web-backend --release` and point the bundle's
+  `backendPath` at it.
+
+Install the bundle with Plugins > Add plugin, selecting `dsh-plugin/`.
 
 ## Memory and very large dumps
 

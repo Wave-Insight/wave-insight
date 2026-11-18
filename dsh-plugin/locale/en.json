@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Wave Insight waveforms",
-    "description": "Gives the AI waveform tools for VCD, FST and GHW dumps and shows the real Wave Insight viewer in a right-sidebar tab. Start with load_waveform(path), then use find_signals, add_signals, set_time_range, set_cursors, get_changes and list_waveform. Tool calls forward the view to the embedded UI. A loopback backend serves the native viewer and reads dumps through the memory-mapped reader; binaries for Windows x64, Linux x64 and macOS ARM64 are bundled."
+    "description": "Gives the AI waveform tools for VCD, FST and GHW dumps and shows the real Wave Insight viewer in a right-sidebar tab. load_waveform(path) opens a dump; find_signals, add_signals, remove_signals, set_time_range, set_cursors, get_changes and list_waveform act on it, and every tool result updates the panel. The viewer is served by a loopback backend that the plugin starts and that reads dumps through the native memory-mapped reader. The Windows x64 backend is bundled; Linux x64 and macOS ARM64 bundles include the model-facing helper and need a locally built viewer backend."
   }
 }

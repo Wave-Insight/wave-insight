@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Wave Insight 波形",
-    "description": "为 AI 提供 VCD、FST、GHW 波形的读取与控制工具，并在右侧边栏中显示真正的 Wave Insight 波形界面。先用 load_waveform(path) 加载文件，再用 find_signals、add_signals、set_time_range、set_cursors、get_changes、list_waveform 操作；工具调用会把视图同步给内嵌界面。本地回环后端负责托管原生界面并通过内存映射读取波形；已内置 Windows x64、Linux x64 和 macOS ARM64 三个平台的二进制。"
+    "description": "为 AI 提供 VCD、FST、GHW 波形的读取与控制工具，并在右侧边栏中显示真正的 Wave Insight 波形界面。先用 load_waveform(path) 加载文件，再用 find_signals、add_signals、remove_signals、set_time_range、set_cursors、get_changes、list_waveform 操作；每次工具结果都会更新界面。界面由插件启动的本地回环后端托管，并通过内存映射读取波形。已内置 Windows x64 的界面后端；Linux x64 与 macOS ARM64 包内附带模型侧 helper，需要自行构建界面后端。"
   }
 }
