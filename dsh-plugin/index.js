@@ -35,11 +35,23 @@ export const Config = z.object({
   backendPath: z.string().optional(),
 })
 
+const timeRangeSchema = z.object({ start: z.number(), end: z.number() })
+
 const stateSchema = z.object({
-  dump: z.any().nullable(),
+  dump: z
+    .object({
+      name: z.string(),
+      path: z.string(),
+      format: z.string(),
+      timescale: z.string().nullish(),
+      time_range: timeRangeSchema.nullish(),
+      signal_count: z.number(),
+      signals_truncated: z.boolean().optional(),
+    })
+    .nullable(),
   rows: z.array(z.string()),
-  visible: z.any().nullable(),
-  cursors: z.any(),
+  visible: timeRangeSchema.nullable(),
+  cursors: z.object({ one: z.number().nullable(), two: z.number().nullable() }),
   status: z.string(),
   uiUrl: z.string().nullable(),
   uiError: z.string().optional(),
@@ -367,7 +379,7 @@ export async function apply(ctx, config) {
       return { ...state, ...meta.state, inheritedEventCount: state.inheritedEventCount }
     },
     wire: { viewSchema: stateSchema, view: (state) => state, summary: false },
-    stateVersion: 2,
+    stateVersion: 3,
   })
 
   // The embedded UI is optional: a missing backend/UI must not disable the
@@ -375,6 +387,15 @@ export async function apply(ctx, config) {
   // open the native viewer as soon as it is ready.
   await ensureBackend(config)
   ctx.effect(() => () => stopBackend(), 'wave-insight: backend')
+
+  // The working map is a derived cache, not durable state. Drop a Session's
+  // snapshot when the Session leaves the live store so long-running Hosts do
+  // not retain one view per Session ever seen.
+  ctx.effect(() =>
+    ctx.on('session/disposed', (session) => {
+      working.delete(String(session?.id))
+    }),
+  'wave-insight: session cache')
 
   const tools = [
     defineTool({
