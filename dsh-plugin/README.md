@@ -122,8 +122,19 @@ the GHW time-range fallback and the plain-text value rendering:
 ```text
 node qa/dsh-plugin-smoke.mjs        # Host tools, projection and helper
 node qa/dsh-plugin-client.test.mjs  # Client view diff and registrations
+node qa/dsh-invoke-shim.test.mjs    # Web shim arguments and origin checks
 node qa/web-backend-smoke.mjs       # Loopback backend (needs the release build)
+node qa/viewer-build-stamp.mjs      # Fails when ui/ predates front-end/
 cargo build -p dsh-bridge -p wave-insight-web-backend --release
+```
+
+`ui/` is a build artifact of `front-end/` (web-remote wasm) plus `dsh-invoke.js`.
+After rebuilding it, refresh the stamp so CI keeps the two in step:
+
+```text
+cd front-end && trunk build --no-default-features --features web-remote --release
+# copy dist's js/wasm/css and index.html into dsh-plugin/ui, keep dsh-invoke.js
+node qa/viewer-build-stamp.mjs --write
 ```
 
 After changing the Host half, disable and re-enable the plugin row (or restart

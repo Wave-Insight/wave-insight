@@ -11,6 +11,7 @@ on:
       - 'qa/dsh-plugin-smoke.mjs'
       - 'qa/dsh-plugin-client.test.mjs'
       - 'qa/dsh-invoke-shim.test.mjs'
+      - 'qa/viewer-build-stamp.mjs'
       - 'qa/web-backend-smoke.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -25,6 +26,7 @@ on:
       - 'qa/dsh-plugin-smoke.mjs'
       - 'qa/dsh-plugin-client.test.mjs'
       - 'qa/dsh-invoke-shim.test.mjs'
+      - 'qa/viewer-build-stamp.mjs'
       - 'qa/web-backend-smoke.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -62,6 +64,9 @@ jobs:
 
       - name: Loopback backend, trust rules and static assets
         run: node qa/web-backend-smoke.mjs
+
+      - name: The bundled viewer matches the front-end sources
+        run: node qa/viewer-build-stamp.mjs
 
       - name: The shipped viewer is complete
         run: |
