@@ -162,12 +162,15 @@ test('apply registers dictionaries, the tab type, the body and auto-open in effe
   assert.equal(tabs[0].guide.length, 1)
   assert.equal(tabs[0].guide[0].id, '@wave-insight/dsh-plugin')
 
-  assert.equal(slots.length, 1)
-  assert.equal(slots[0].options.name, 'sidebar.right.pane.tab')
-  assert.equal(slots[0].options.key, '@wave-insight/dsh-plugin')
-  assert.equal(slots[0].options.locale, 'waveInsight')
-  assert.equal(typeof slots[0].Component, 'function')
+  assert.equal(slots.length, 2, 'the body and the live tab title')
+  const body = slots.find((slot) => slot.options.name === 'sidebar.right.pane.tab')
+  const title = slots.find((slot) => slot.options.name === 'sidebar.right.pane.tab.title')
+  for (const slot of [body, title]) {
+    assert.equal(slot.options.key, '@wave-insight/dsh-plugin')
+    assert.equal(slot.options.locale, 'waveInsight')
+    assert.equal(typeof slot.Component, 'function')
+  }
 
-  assert.equal(cleanups.length, 4, 'dictionaries, tab type, body and auto-open each own an effect')
+  assert.equal(cleanups.length, 5, 'dictionaries, tab type, body, title and auto-open each own an effect')
   assert.equal(signals.length, 0)
 })

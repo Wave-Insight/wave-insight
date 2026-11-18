@@ -282,6 +282,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The tab chip: the product name plus the open dump, so several waveform
+     * tabs are distinguishable at a glance.
+     * @param {{ useProjection?: (key: string) => any, t?: (key: string) => string }} props
+     */
+    function WaveTitle(props) {
+      const view = typeof props.useProjection === 'function' ? props.useProjection(PROJECTION_KEY) : undefined
+      const t = props.t ?? ((key) => STRINGS.en[key] ?? key)
+      const name = view?.dump?.name
+      return name ? `${t('title')} · ${name}` : t('title')
+    }
+
+    /**
      * Open the tab when the on-screen session first carries a dump.
      *
      * Retries are bounded and driven by the projection / mounted-session
@@ -402,6 +414,14 @@ window.__ModuleLoader__.load({
               ctx.slots.register({ name: 'sidebar.right.pane.tab', key: TAB_ID, locale: NAMESPACE }, WavePanel),
             ),
           'wave-insight: panel body',
+        )
+
+        ctx.effect(
+          () =>
+            ctx.slots.inject('sidebar.right.pane.tab.title', () =>
+              ctx.slots.register({ name: 'sidebar.right.pane.tab.title', key: TAB_ID, locale: NAMESPACE }, WaveTitle),
+            ),
+          'wave-insight: tab title',
         )
 
         ctx.effect(() => watchForDumps(ctx), 'wave-insight: auto-open')
