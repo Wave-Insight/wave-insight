@@ -4,6 +4,29 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.4] - 2026-11-19
+
+### Added
+
+- The tab chip names the open dump (`Wave Insight · test.vcd`) through the
+  `sidebar.right.pane.tab.title` seat, so several waveform tabs are
+  distinguishable at a glance.
+- `qa/viewer-build-stamp.mjs` plus `dsh-plugin/ui/build.json` record a hash of
+  everything that produces the bundled viewer, and CI fails when `ui/` predates
+  the front-end sources — the drift that kept the DSH panel on a viewer built
+  before the native-dump fix.
+
+### Fixed
+
+- The loopback backend answers `dump_memory_stats` and `process_memory` with
+  empty shapes instead of `unknown command`, removing two failed round-trips on
+  every opened dump (the viewer's memory readout stays blank).
+
+### Changed
+
+- `cargo fmt` on the native-dump guard; the README documents the viewer
+  rebuild-and-stamp flow.
+
 ## [0.2.3] - 2026-11-19
 
 ### Changed
