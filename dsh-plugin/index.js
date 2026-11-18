@@ -33,7 +33,6 @@ const stateSchema = z.object({
   rows: z.array(z.string()),
   visible: z.any().nullable(),
   cursors: z.any(),
-  waves: z.record(z.string(), z.any()),
   status: z.string(),
   uiUrl: z.string().nullable(),
   uiError: z.string().optional(),
@@ -53,7 +52,6 @@ const emptyView = () => ({
   rows: [],
   visible: null,
   cursors: { one: null, two: null },
-  waves: {},
   status: 'No waveform loaded. Call load_waveform with a .vcd, .fst or .ghw path.',
   uiUrl: null,
 })
@@ -61,7 +59,6 @@ const emptyView = () => ({
 // Per-session working state. The durable state lives in the session log; this
 // map is just the latest decoded snapshot used to answer the next tool call.
 const working = new Map()
-const known = new Map()
 let projectionHandle = null
 
 function keyFor(exec) {
@@ -81,26 +78,14 @@ function stateFor(key, exec) {
       state.rows = [...(durable.rows ?? [])]
       state.visible = durable.visible
       state.cursors = { ...(durable.cursors ?? { one: null, two: null }) }
-      state.waves = { ...(durable.waves ?? {}) }
       state.status = durable.status ?? 'waveform restored from session'
     }
     working.set(key, state)
-    known.set(key, new Set(state.rows))
   }
   // The backend URL belongs to this Host process, not to the durable session.
   state.uiUrl = backend?.url ?? null
   if (backendError) state.uiError = backendError
   return state
-}
-
-async function ensureKnown(state, key, config, signal) {
-  if (!state.path || (known.get(key)?.size ?? 0) > 0) return
-  const found = await callHelper(
-    config,
-    { cmd: 'find', path: state.path, query: '', limit: 10_000 },
-    signal,
-  )
-  known.set(key, new Set(found.matches.map((match) => match.path)))
 }
 
 function helperPath(config) {
@@ -266,30 +251,29 @@ function callHelper(config, request, signal) {
   })
 }
 
-async function refreshWaves(state, config, signal) {
-  if (!state.path || state.rows.length === 0 || !state.visible) {
-    state.waves = {}
-    return
+// A `wave` query with max=0 resolves every requested path without decoding any
+// values. The helper reports the first unknown one, so peel those off until the
+// batch is accepted. This avoids the old cached path set, which silently
+// truncated at find's 500-result cap and open's 10k-signal cap.
+async function resolveSignals(config, state, wanted, signal) {
+  let rest = [...wanted]
+  const unknown = []
+  while (rest.length) {
+    try {
+      await callHelper(
+        config,
+        { cmd: 'wave', path: state.path, signals: rest, start: 0, end: 0, max: 0 },
+        signal,
+      )
+      break
+    } catch (error) {
+      const match = /unknown signal: (.+)$/.exec(error instanceof Error ? error.message : '')
+      if (!match || !rest.includes(match[1])) throw error
+      unknown.push(match[1])
+      rest = rest.filter((item) => item !== match[1])
+    }
   }
-  const start = Math.floor(state.visible.start || 0)
-  const end = Math.floor(state.visible.end || start)
-  const response = await callHelper(
-    config,
-    {
-      cmd: 'wave',
-      path: state.path,
-      signals: state.rows,
-      start,
-      end,
-      max: 256,
-    },
-    signal,
-  )
-  const waves = {}
-  state.rows.forEach((row, index) => {
-    waves[row] = response.waves[index]?.changes ?? []
-  })
-  state.waves = waves
+  return { known: rest, unknown }
 }
 
 function viewOf(state) {
@@ -298,7 +282,6 @@ function viewOf(state) {
     rows: [...state.rows],
     visible: state.visible,
     cursors: { ...state.cursors },
-    waves: { ...state.waves },
     status: state.status,
     uiUrl: state.uiUrl,
     ...(state.uiError ? { uiError: state.uiError } : {}),
@@ -423,8 +406,6 @@ export async function apply(ctx, config) {
         state.rows = rows
         state.visible = info.time_range ?? { start: 0, end: 1 }
         state.cursors = { one: null, two: null }
-        known.set(key, new Set(info.signals.map((signal) => signal.path)))
-        await refreshWaves(state, config, exec.signal)
         state.status = `loaded ${info.name} (${info.format})`
         return result(
           `${info.name}: ${info.signal_count} signals, range ${state.visible.start}..${state.visible.end}. Showing ${rows.length} rows in the side panel.`,
@@ -486,16 +467,16 @@ export async function apply(ctx, config) {
       run: async (args, exec, key) => {
         const state = stateFor(key, exec)
         if (!state.path) throw new WaveInsightError('load a waveform first', 'NO_WAVEFORM')
-        await ensureKnown(state, key, config, exec.signal)
-        const paths = known.get(key) ?? new Set()
         const wanted = [...new Set(args.signals.map((signal) => String(signal)))]
-        const unknown = wanted.filter((signal) => !paths.has(signal))
-        const fresh = wanted.filter((signal) => paths.has(signal) && !state.rows.includes(signal))
-        state.rows = [...state.rows, ...fresh].slice(0, 40)
-        await refreshWaves(state, config, exec.signal)
-        state.status = `added ${fresh.length} signal(s)`
+        const { known, unknown } = await resolveSignals(config, state, wanted, exec.signal)
+        const fresh = known.filter((signal) => !state.rows.includes(signal))
+        const room = Math.max(0, 40 - state.rows.length)
+        const placed = fresh.slice(0, room)
+        const dropped = fresh.length - placed.length
+        state.rows = [...state.rows, ...placed]
+        state.status = `added ${placed.length} signal(s)`
         return result(
-          `added ${fresh.length}, already on wave ${wanted.length - fresh.length - unknown.length}, unknown ${unknown.length}${unknown.length ? `: ${unknown.join(', ')}` : ''}`,
+          `added ${placed.length}, already on wave ${wanted.length - fresh.length - unknown.length}, unknown ${unknown.length}${unknown.length ? `: ${unknown.join(', ')}` : ''}${dropped ? `, ${dropped} dropped (40-row limit)` : ''}`,
           state,
           key,
         )
@@ -517,7 +498,6 @@ export async function apply(ctx, config) {
         const remove = new Set(args.signals.map(String))
         const before = state.rows.length
         state.rows = state.rows.filter((row) => !remove.has(row))
-        await refreshWaves(state, config, exec.signal)
         state.status = `removed ${before - state.rows.length} signal(s)`
         return result(`removed ${before - state.rows.length} row(s)`, state, key)
       },
@@ -542,7 +522,6 @@ export async function apply(ctx, config) {
         const start = Math.max(full.start, Math.min(requested.start, full.end))
         const end = Math.max(start, Math.min(requested.end, full.end))
         state.visible = { start, end }
-        await refreshWaves(state, config, exec.signal)
         state.status = `range ${start}..${end}`
         return result(`showing ${start}..${end} (clamped to ${full.start}..${full.end})`, state, key)
       },
@@ -605,7 +584,6 @@ export async function apply(ctx, config) {
         response.waves.forEach((wave, index) => {
           const path = args.signals[index]
           if (!state.rows.includes(path) && state.rows.length < 40) state.rows.push(path)
-          state.waves = { ...state.waves, [path]: wave.changes }
           const changes = wave.changes.map((change) => ({ time: change.t, value: change.v }))
           values.push({
             signal: path,
