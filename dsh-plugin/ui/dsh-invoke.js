@@ -36,6 +36,43 @@
     parentOrigin = '';
   }
 
+  // serde_wasm_bindgen::to_value produces a JS Map for a serde_json object, and
+  // JSON.stringify renders a Map as "{}" — which is how every open_dump arrived
+  // at the backend without its path. Convert argument values to plain JSON
+  // shapes before they cross the fetch boundary.
+  function toPlain(value) {
+    if (value === null || typeof value !== 'object') {
+      return value;
+    }
+    if (value instanceof Map) {
+      var mapped = {};
+      value.forEach(function (item, key) {
+        mapped[String(key)] = toPlain(item);
+      });
+      return mapped;
+    }
+    if (value instanceof Set) {
+      var items = [];
+      value.forEach(function (item) {
+        items.push(toPlain(item));
+      });
+      return items;
+    }
+    if (Array.isArray(value)) {
+      return value.map(toPlain);
+    }
+    if (ArrayBuffer.isView(value)) {
+      return Array.prototype.slice.call(value);
+    }
+    var copy = {};
+    for (var key in value) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        copy[key] = toPlain(value[key]);
+      }
+    }
+    return copy;
+  }
+
   function invoke(cmd, args, keepalive) {
     var headers = { 'content-type': 'application/json' };
     if (token) {
@@ -44,7 +81,7 @@
     return fetch('/invoke', {
       method: 'POST',
       headers: headers,
-      body: JSON.stringify({ cmd: cmd, args: args }),
+      body: JSON.stringify({ cmd: cmd, args: toPlain(args) }),
       keepalive: keepalive === true
     }).then(function (response) {
       if (!response.ok) {
@@ -135,9 +172,11 @@
     );
   });
 
-  // Announce page readiness once. The Rust listener posts the same message
-  // again after a dump is adopted; both are harmless (the client replays its
-  // current view idempotently).
+  // Announce readiness once. The Rust app replaces the loader markup with its
+  // own DOM when it mounts, and attaches the `wave-web-command` listener in the
+  // same render — announcing at DOMContentLoaded (as this shim used to) tells
+  // the host to send commands before anything is listening, so they are lost.
+  // Wait for the mounted app instead, with a bounded fallback.
   var announced = false;
   function announceReady() {
     if (announced) {
@@ -146,16 +185,42 @@
     announced = true;
     try {
       if (window.parent && window.parent !== window) {
-        window.parent.postMessage({ type: 'wave-dsh-ready' }, parentOrigin || '*');
+        // `boot` distinguishes this post-mount announce from the app's own
+        // announce after it adopts a dump: only the former means "the listener
+        // exists but nothing is loaded yet".
+        window.parent.postMessage({ type: 'wave-dsh-ready', boot: true }, parentOrigin || '*');
       }
     } catch (error) {
       // A cross-origin parent cannot be signalled; ignore it.
     }
   }
+
+  var appMounted = function () {
+    var body = document.body;
+    return Boolean(body && body.querySelector('main, div, canvas'));
+  };
+  var waited = 0;
+  function watchForApp() {
+    if (announced) {
+      return;
+    }
+    if (appMounted()) {
+      // The listener is attached during the same render; hand the parent the
+      // message on the next task so the frame is fully consistent.
+      setTimeout(announceReady, 0);
+      return;
+    }
+    waited += 50;
+    if (waited >= 5000) {
+      announceReady();
+      return;
+    }
+    setTimeout(watchForApp, 50);
+  }
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', announceReady, { once: true });
+    document.addEventListener('DOMContentLoaded', watchForApp, { once: true });
   } else {
-    announceReady();
+    watchForApp();
   }
 
   // A page going away for good frees its native mappings; a bfcache page keeps

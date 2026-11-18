@@ -27,6 +27,8 @@ window.__ModuleLoader__.load({
     const HEALTH_ATTEMPTS = 8
     /** Bounded retries for opening the tab before a Session surface exists. */
     const OPEN_ATTEMPTS = 10
+    /** Bounded `open_path` retries while the viewer finishes mounting. */
+    const OPEN_RETRIES = 5
     const BINDING_ATTEMPTS = 10
 
     const STRINGS = {
@@ -145,6 +147,8 @@ window.__ModuleLoader__.load({
       const readyRef = useRef(false)
       const openedPathRef = useRef(null)
       const sentRef = useRef(null)
+      const retryRef = useRef(null)
+      const attemptRef = useRef(0)
       const viewRef = useRef(view)
       viewRef.current = view
 
@@ -161,6 +165,31 @@ window.__ModuleLoader__.load({
         [url],
       )
 
+      const clearRetry = useCallback(() => {
+        if (retryRef.current) {
+          clearTimeout(retryRef.current)
+          retryRef.current = null
+        }
+      }, [])
+
+      // The viewer may still be mounting when the iframe's load event fires, in
+      // which case an `open_path` is delivered before its command listener
+      // exists. Re-open until the viewer answers with a handshake.
+      const scheduleOpenRetry = useCallback(
+        (path) => {
+          clearRetry()
+          const attempt = attemptRef.current
+          if (attempt >= OPEN_RETRIES) return
+          retryRef.current = setTimeout(() => {
+            if (readyRef.current || openedPathRef.current !== path) return
+            attemptRef.current += 1
+            send({ kind: 'open_path', path })
+            scheduleOpenRetry(path)
+          }, 400 + attempt * 500)
+        },
+        [clearRetry, send],
+      )
+
       const sync = useCallback(() => {
         const current = viewRef.current
         const path = current?.dump?.path
@@ -171,13 +200,15 @@ window.__ModuleLoader__.load({
           openedPathRef.current = path
           sentRef.current = null
           readyRef.current = false
+          attemptRef.current = 0
           send({ kind: 'open_path', path })
+          scheduleOpenRetry(path)
           return
         }
         if (!readyRef.current) return
         for (const command of viewCommands(sentRef.current, current)) send(command)
         sentRef.current = current
-      }, [send])
+      }, [scheduleOpenRetry, send])
 
       useEffect(() => {
         sync()
@@ -191,22 +222,31 @@ window.__ModuleLoader__.load({
           const frame = frameRef.current
           if (!frame || event.source !== frame.contentWindow) return
           if (event.data?.type !== READY_TYPE) return
-          // The page announces once after load and the app announces again
-          // after adopting a dump. Both mean "commands may be sent now"; the
-          // opened path above keeps this from re-opening the same dump.
+          // The viewer announces twice: once when it has mounted and can take
+          // commands (`boot`), and again after it adopts a dump. Only the first
+          // needs the dump opened; the second needs the view replayed.
           readyRef.current = true
+          attemptRef.current = 0
+          clearRetry()
+          if (event.data.boot === true) openedPathRef.current = null
+          // Replay the whole view: the app may have just opened a dump and lost
+          // the commands that raced the open.
+          sentRef.current = null
           sync()
         }
         window.addEventListener('message', onMessage)
         return () => window.removeEventListener('message', onMessage)
-      }, [url, sync])
+      }, [clearRetry, sync, url])
 
       const onFrameLoad = useCallback(() => {
         readyRef.current = false
         openedPathRef.current = null
         sentRef.current = null
+        attemptRef.current = 0
         sync()
       }, [sync])
+
+      useEffect(() => clearRetry, [clearRetry])
 
       if (!source) {
         return h(
