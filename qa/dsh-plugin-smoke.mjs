@@ -4,6 +4,7 @@
 //
 //   node qa/dsh-plugin-smoke.mjs
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -13,6 +14,30 @@ import { WebBackend } from '../dsh-plugin/host/daemon.js'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const dump = path.join(root, 'qa', 'fixtures', 'wave.vcd')
+
+test('manifests are BOM-free and parse', () => {
+  // A UTF-8 BOM makes the plugin manager report `Unexpected token` and drop the
+  // bundle from the composition, so guard the files an editor or PowerShell
+  // rewrite is most likely to save with one.
+  for (const file of ['package.json', 'locale/en.json', 'locale/zh.json', 'cordis.patch.yml']) {
+    const bytes = fs.readFileSync(path.join(root, 'dsh-plugin', file))
+    assert.notEqual(bytes[0], 0xef, `${file} must not start with a UTF-8 BOM`)
+    if (file.endsWith('.json')) JSON.parse(bytes.toString('utf8'))
+  }
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'dsh-plugin', 'package.json'), 'utf8'))
+  assert.ok(manifest.dsh?.bundle?.patch, 'the bundle patch is declared')
+  assert.ok(manifest.dsh?.client, 'the client half is declared')
+  assert.equal(manifest.exports['./client'], './client.js')
+  assert.ok(manifest.files.includes('host/**/*'), 'the host modules ship')
+  assert.match(
+    fs.readFileSync(path.join(root, 'dsh-plugin', 'cordis.patch.yml'), 'utf8'),
+    /id:\s*wave-insight-dsh/,
+    'the row inserts the plugin',
+  )
+  const index = fs.readFileSync(path.join(root, 'dsh-plugin', 'ui', 'index.html'))
+  assert.notEqual(index[0], 0xef, 'ui/index.html must not start with a BOM')
+  assert.match(index.toString('utf8', 0, 40), /^<!DOCTYPE html>/i)
+})
 
 /**
  * A Cordis-shaped context with one real `waveInsight` projection that can be
@@ -106,8 +131,7 @@ function fold(meta, id = 'smoke', type = 'tool/result', isError = false) {
   return harness.handle.fold(id, { type, data })
 }
 
-test('config accepts an omitted row config', () => {
-  // The Loader validates `undefined` when a row declares no `config`; an
+test('config accepts an omitted row config', () => {  // The Loader validates `undefined` when a row declares no `config`; an
   // undefaulted object schema would fail activation for the shipped patch row.
   const omitted = plugin.Config['~standard'].validate(undefined)
   assert.equal(omitted.issues, undefined, 'config-less activation is valid')
