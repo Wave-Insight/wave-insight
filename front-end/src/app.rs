@@ -653,7 +653,8 @@ impl Component for App {
         // (forwarded from `message` events by web/dsh-invoke.js)
         #[cfg(feature = "web-remote")]
         {
-            this.agent_listener = crate::agent::web_listener::attach_web_command_listener(ctx.link());
+            this.agent_listener =
+                crate::agent::web_listener::attach_web_command_listener(ctx.link());
         }
         // Wave 19: a desktop page start frees the native mappings the previous
         // page left behind (the registry outlives the page) and then reopens the

@@ -115,21 +115,30 @@ async fn invoke(State(state): State<AppState>, Json(request): Json<InvokeRequest
     match request.cmd.as_str() {
         "ping" => ok(json!({ "ok": true })),
         "open_dump" => {
-            let args: OpenArgs = match parse(&request.args, "open_dump") { Ok(v) => v, Err(e) => return e };
+            let args: OpenArgs = match parse(&request.args, "open_dump") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
             match registry.open(&args.path) {
                 Ok(summary) => ok(serde_json::to_value(summary).unwrap_or(Value::Null)),
                 Err(error) => fail(error),
             }
         }
         "dump_hierarchy" => {
-            let args: HierarchyArgs = match parse(&request.args, "dump_hierarchy") { Ok(v) => v, Err(e) => return e };
+            let args: HierarchyArgs = match parse(&request.args, "dump_hierarchy") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
             match registry.hierarchy(args.id, args.offset, args.limit) {
                 Ok(page) => ok(serde_json::to_value(page).unwrap_or(Value::Null)),
                 Err(error) => fail(error),
             }
         }
         "dump_window" => {
-            let args: WindowArgs = match parse(&request.args, "dump_window") { Ok(v) => v, Err(e) => return e };
+            let args: WindowArgs = match parse(&request.args, "dump_window") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
             match registry.window(
                 args.id,
                 &args.signals,
@@ -143,21 +152,30 @@ async fn invoke(State(state): State<AppState>, Json(request): Json<InvokeRequest
             }
         }
         "dump_value_at" => {
-            let args: ValueAtArgs = match parse(&request.args, "dump_value_at") { Ok(v) => v, Err(e) => return e };
+            let args: ValueAtArgs = match parse(&request.args, "dump_value_at") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
             match registry.value_at(args.id, args.signal, args.time, args.show.as_deref()) {
                 Ok(value) => ok(serde_json::to_value(value).unwrap_or(Value::Null)),
                 Err(error) => fail(error),
             }
         }
         "dump_values_at" => {
-            let args: ValuesAtArgs = match parse(&request.args, "dump_values_at") { Ok(v) => v, Err(e) => return e };
+            let args: ValuesAtArgs = match parse(&request.args, "dump_values_at") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
             match registry.values_at(args.id, &args.signals, args.time, args.show.as_deref()) {
                 Ok(values) => ok(serde_json::to_value(values).unwrap_or(Value::Null)),
                 Err(error) => fail(error),
             }
         }
         "close_dump" => {
-            let args: IdArgs = match parse(&request.args, "close_dump") { Ok(v) => v, Err(e) => return e };
+            let args: IdArgs = match parse(&request.args, "close_dump") {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
             match registry.close(args.id) {
                 Ok(()) => ok(Value::Null),
                 Err(error) => fail(error),
@@ -169,7 +187,13 @@ async fn invoke(State(state): State<AppState>, Json(request): Json<InvokeRequest
 }
 
 fn content_type(path: &str) -> &'static str {
-    match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+    match path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "html" => "text/html; charset=utf-8",
         "js" | "mjs" => "text/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
@@ -187,7 +211,10 @@ async fn static_file(State(state): State<AppState>, uri: Uri) -> Response {
     let raw = if raw.is_empty() { "index.html" } else { raw };
     let relative = Path::new(raw);
     if relative.components().any(|part| {
-        matches!(part, Component::ParentDir | Component::RootDir | Component::Prefix(_))
+        matches!(
+            part,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
     }) {
         return StatusCode::BAD_REQUEST.into_response();
     }
