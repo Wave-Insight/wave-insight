@@ -1,0 +1,48 @@
+name: DSH plugin binaries
+
+# Builds the JSON-lines helper that the DSH plugin ships for each supported
+# desktop platform. Dispatch this before packaging a plugin release.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: dsh-bridge-windows-x64.exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: dsh-bridge-linux-x64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: dsh-bridge-macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the compiler; rustup picks it up here.
+      - name: Add build target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build helper
+        run: cargo build -p dsh-bridge --release --locked --target ${{ matrix.target }}
+
+      - name: Upload Windows helper
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: target/${{ matrix.target }}/release/dsh-bridge.exe
+          if-no-files-found: error
+
+      - name: Upload Unix helper
+        if: matrix.os != 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: target/${{ matrix.target }}/release/dsh-bridge
+          if-no-files-found: error
