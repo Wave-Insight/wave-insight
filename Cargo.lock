@@ -974,6 +974,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-bridge"
+version = "0.23.0"
+dependencies = [
+ "serde_json",
+ "wave-insight-lib",
+]
+
+[[package]]
 name = "dtoa"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

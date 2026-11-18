@@ -549,6 +549,25 @@ The design, the tool catalogue, the wire protocol between the backend and the
 webview and the verification gaps are in
 [`docs/design/ai-mcp.md`](docs/design/ai-mcp.md).
 
+### AI access (DSH plugin)
+
+There is a third front end besides the browser and desktop builds: a local DSH
+bundle in [`dsh-plugin/`](dsh-plugin/). Once installed in a DeepSeek Harness
+profile, the AI gets `load_waveform`, `find_signals`, `add_signals`,
+`remove_signals`, `set_time_range`, `set_cursors`, `get_changes` and
+`list_waveform`. Calling any of them opens the **Wave Insight** tab in DSH's
+right sidebar; the panel then follows the session projection, so adding a
+signal, changing the visible range or placing a cursor updates it immediately.
+
+The bundle talks to a small JSON-lines helper, `dsh-bridge`
+([`dsh-bridge/`](dsh-bridge/)), which opens dumps with the same native reader
+as the desktop build and answers bounded window queries. A Windows helper is
+bundled in `dsh-plugin/bin/`; other platforms build it with
+`cargo build -p dsh-bridge` and set `WAVE_DSH_BRIDGE` (or the bundle's
+`helperPath` config). Install the bundle with Plugins > Add plugin, selecting
+`dsh-plugin/`. The first version draws up to 40 rows and 256 sampled changes
+per row; it is a live inspection surface, not a replacement for the full viewer.
+
 ## Memory and very large dumps
 
 The browser build runs the whole engine (parser, hierarchy, decode cache, canvas

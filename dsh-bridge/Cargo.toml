@@ -1,0 +1,12 @@
+[package]
+name = "dsh-bridge"
+version.workspace = true
+edition.workspace = true
+description = "JSON-lines helper giving the wave-insight DSH plugin access to the waveform library"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde_json = "1"
+wave-insight-lib = { path = "../wave-insight-lib" }

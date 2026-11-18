@@ -1,0 +1,3 @@
+- insert:
+    - id: wave-insight-dsh
+      name: '@wave-insight/dsh-plugin'

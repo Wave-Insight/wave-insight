@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Wave Insight 波形",
+    "description": "为 AI 提供 VCD、FST、GHW 波形的读取与控制工具，并在右侧边栏实时显示波形。先用 load_waveform(path) 加载文件，再用 find_signals、add_signals、set_time_range、set_cursors、get_changes、list_waveform 操作；工具调用会自动打开 Wave Insight 页签，后续调用会同步更新界面。Windows 已内置读取助手，其他平台需要设置 WAVE_DSH_BRIDGE 或本地编译 dsh-bridge。"
+  }
+}
