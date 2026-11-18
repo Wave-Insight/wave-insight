@@ -5252,6 +5252,7 @@ name = "wave-insight-web-backend"
 version = "0.23.4"
 dependencies = [
  "axum",
+ "getrandom 0.2.17",
  "serde",
  "serde_json",
  "tokio",
