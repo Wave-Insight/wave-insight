@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import * as plugin from '../dsh-plugin/index.js'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
-const dump = path.join(root, 'test.vcd')
+const dump = path.join(root, 'qa', 'fixtures', 'wave.vcd')
 
 const tools = []
 const disposers = []
@@ -49,20 +49,20 @@ try {
   assert.equal(loaded.meta.state.rows.length, 20)
   let state = projection.init({}, 0)
   state = fold(state, loaded)
-  assert.equal(state.dump.name, 'test.vcd')
+  assert.equal(state.dump.name, 'wave.vcd')
 
-  const added = await call('add_signals', { signals: ['TOP.clk'] })
+  const added = await call('add_signals', { signals: ['top.clk'] })
   console.log('add:', added.value.summary)
   // PTC sub-calls carry isError/meta directly on data, not under data.message.
   state = fold(state, added, 'tool/ptc-dispatch')
-  assert.ok(state.rows.includes('TOP.clk'), 'PTC dispatch folded into projection')
+  assert.ok(state.rows.includes('top.clk'), 'PTC dispatch folded into projection')
 
-  const ranged = await call('set_time_range', { start: 1000, end: 2000 })
+  const ranged = await call('set_time_range', { start: 100, end: 200 })
   console.log('range:', ranged.value.summary)
   state = fold(state, ranged)
-  assert.deepEqual(state.visible, { start: 1000, end: 2000 })
+  assert.deepEqual(state.visible, { start: 100, end: 200 })
 
-  const changes = await call('get_changes', { signals: ['TOP.clk'] })
+  const changes = await call('get_changes', { signals: ['top.clk'] })
   assert.ok(changes.value.values.length === 1, 'get_changes returns values')
   assert.ok(changes.value.values[0].changes.length > 0, 'values carry time/value pairs')
   console.log('changes:', changes.value.summary, 'sample:', JSON.stringify(changes.value.values[0].changes[0]))
