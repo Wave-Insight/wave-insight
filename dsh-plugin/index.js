@@ -196,8 +196,17 @@ export async function apply(ctx, config) {
     }),
     apply: (state, event) => {
       if (event.seq !== undefined && event.seq < (state.inheritedEventCount ?? 0)) return state
-      if (event.type !== 'tool/result' || event.data?.message?.isError === true) return state
-      const meta = event.data?.meta
+      // PTC sub-calls settle as `tool/ptc-dispatch`, not `tool/result`, and keep
+      // the same presentation meta at `data.meta` (their isError sits directly
+      // on `data` instead of `data.message`). Folding only native calls drops
+      // every waveform command issued from a `run_code` program.
+      const data = event.data
+      let isError
+      if (event.type === 'tool/result') isError = data?.message?.isError === true
+      else if (event.type === 'tool/ptc-dispatch') isError = data?.isError === true
+      else return state
+      if (isError) return state
+      const meta = data?.meta
       if (!meta || meta.__waveInsight !== true || !meta.state) return state
       return { ...state, ...meta.state, inheritedEventCount: state.inheritedEventCount }
     },
