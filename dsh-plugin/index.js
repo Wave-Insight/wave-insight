@@ -11,6 +11,8 @@ import { z } from 'zod'
 
 const HELPER_TIMEOUT_MS = 60_000
 const HELPER_MAX_BUFFER = 64 * 1024 * 1024
+// The panel keeps up to 256 changes per row; the model gets a bounded sample.
+const MODEL_CHANGE_LIMIT = 24
 
 const BUNDLED_HELPERS = {
   win32: { x64: 'dsh-bridge-windows-x64.exe' },
@@ -236,7 +238,20 @@ function defineTool({ name, description, parameters, run }) {
     parameters,
     output: {
       schema: { type: 'object' },
-      render: (_args, value) => [{ type: 'text', text: value.summary }],
+      render: (_args, value) => {
+        const blocks = [{ type: 'text', text: value.summary }]
+        if (value.values?.length) {
+          const lines = value.values.map((item) => {
+            const pairs = item.changes.map((change) => `${change.time}=${change.value}`).join(' ')
+            const tail = item.truncated || item.capped
+              ? ` … ${item.total} changes in ${item.start}..${item.end}${item.capped ? ' (capped)' : ''}`
+              : ''
+            return `${item.signal}: ${pairs}${tail}`
+          })
+          blocks.push({ type: 'text', text: lines.join('\n') })
+        }
+        return blocks
+      },
       presentationMeta: (_args, value) =>
         value.state
           ? { __waveInsight: true, state: value.state }
@@ -473,7 +488,7 @@ export async function apply(ctx, config) {
     }),
     defineTool({
       name: 'get_changes',
-      description: 'Read value changes for signals in a time window and draw them in the side panel.',
+      description: 'Read bounded value changes for signals in a time window: returns the actual time/value pairs to the model and draws them in the side panel.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -502,16 +517,27 @@ export async function apply(ctx, config) {
           },
           exec.signal,
         )
+        const values = []
         response.waves.forEach((wave, index) => {
           const path = args.signals[index]
           if (!state.rows.includes(path) && state.rows.length < 40) state.rows.push(path)
           state.waves = { ...state.waves, [path]: wave.changes }
+          const changes = wave.changes.map((change) => ({ time: change.t, value: change.v }))
+          values.push({
+            signal: path,
+            start,
+            end,
+            total: changes.length,
+            capped: wave.capped === true,
+            changes: changes.slice(0, MODEL_CHANGE_LIMIT),
+            truncated: changes.length > MODEL_CHANGE_LIMIT,
+          })
         })
-        const preview = response.waves
-          .map((wave, index) => `${args.signals[index]}: ${wave.changes.length} changes`)
+        const preview = values
+          .map((item) => `${item.signal}: ${item.total} changes`)
           .join(', ')
         state.status = `read ${start}..${end}`
-        return result(preview, state, key)
+        return { ...result(preview, state, key), values }
       },
     }),
     defineTool({
