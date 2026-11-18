@@ -221,14 +221,17 @@ window.__ModuleLoader__.load({
           if (event.origin !== origin) return
           const frame = frameRef.current
           if (!frame || event.source !== frame.contentWindow) return
-          if (event.data?.type !== READY_TYPE) return
+          // Older viewer builds posted the handshake as a JS Map (a
+          // serde_wasm_bindgen artifact); read both shapes.
+          const data = event.data instanceof Map ? Object.fromEntries(event.data) : event.data
+          if (data?.type !== READY_TYPE) return
           // The viewer announces twice: once when it has mounted and can take
           // commands (`boot`), and again after it adopts a dump. Only the first
           // needs the dump opened; the second needs the view replayed.
           readyRef.current = true
           attemptRef.current = 0
           clearRetry()
-          if (event.data.boot === true) openedPathRef.current = null
+          if (data.boot === true) openedPathRef.current = null
           // Replay the whole view: the app may have just opened a dump and lost
           // the commands that raced the open.
           sentRef.current = null
@@ -315,8 +318,8 @@ window.__ModuleLoader__.load({
           else controller.openTab(KIND)
           opened.add(sessionId)
           return
-        } catch {
-          // No Session surface is mounted yet; retry briefly.
+        } catch (error) {
+          if (attempt === 0) console.warn('[wave-insight] openTab failed:', error?.message ?? error)
         }
         if (attempt >= OPEN_ATTEMPTS) {
           if (!warned.has(sessionId)) {
@@ -324,8 +327,7 @@ window.__ModuleLoader__.load({
             console.warn('[wave-insight] could not open the sidebar tab; open it from the right-bar guide instead')
           }
           return
-        }
-        later(() => openTab(sessionId, attempt + 1), Math.min(1500, 120 * (attempt + 1)))
+        }        later(() => openTab(sessionId, attempt + 1), Math.min(1500, 120 * (attempt + 1)))
       }
 
       /** @param {string} sessionId @param {number} attempt */
