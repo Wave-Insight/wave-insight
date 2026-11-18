@@ -1,16 +1,17 @@
-// Client half: a right-bar tab that follows the `waveInsight` projection.
+// Client half: a right-bar tab hosting the real Wave Insight UI.
+// The Host starts a loopback web backend, publishes its URL through the
+// `waveInsight` projection, and this component renders that UI in an iframe.
+// View changes from Host tools are forwarded as one-way commands.
 // React comes from the browser module table; no second React installation.
 window.__ModuleLoader__.load({
   id: '@wave-insight/dsh-plugin',
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const { useMemo } = React
+    const { useEffect, useRef } = React
 
     const TAB_ID = '@wave-insight/dsh-plugin'
     const KIND = 'wave-insight'
-    const W = 1000
-    const ROW_H = 34
 
     let sidebar = null
     let sessions = null
@@ -56,229 +57,95 @@ window.__ModuleLoader__.load({
       return () => unsubscribe?.()
     }
 
-    function level(value) {
-      const text = String(value ?? '')
-      if (text === '0') return ROW_H - 6
-      if (text === '1') return 6
-      if (/^[xzhulw-]/.test(text)) return ROW_H / 2
-      let hash = 0
-      for (let i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) | 0
-      return 8 + (Math.abs(hash) % (ROW_H - 16))
-    }
-
-    function wavePath(changes, start, end) {
-      const span = Math.max(1, end - start)
-      const x = (time) => Math.max(0, Math.min(W, ((time - start) / span) * W))
-      if (!changes || changes.length === 0) return `M0,${ROW_H / 2} L${W},${ROW_H / 2}`
-      let path = `M0,${level(changes[0].v)}`
-      let y = level(changes[0].v)
-      for (const change of changes) {
-        const cx = x(change.t).toFixed(1)
-        const next = level(change.v)
-        path += ` L${cx},${y} L${cx},${next}`
-        y = next
-      }
-      return `${path} L${W},${y}`
-    }
-
-    function cursorLines(cursors, start, end) {
-      const span = Math.max(1, end - start)
-      const items = []
-      for (const value of [cursors?.one, cursors?.two]) {
-        if (typeof value !== 'number') continue
-        const x = ((value - start) / span) * W
-        if (x < 0 || x > W) continue
-        items.push(
-          h('line', {
-            key: `cursor-${value}`,
-            x1: x,
-            x2: x,
-            y1: 0,
-            y2: ROW_H,
-            stroke: 'var(--dsw-alias-state-warn-primary)',
-            strokeWidth: 1,
-            strokeDasharray: '3 2',
-          }),
-        )
-      }
-      return items
-    }
-
-    function WaveRow({ row, changes, start, end, cursors }) {
-      const path = useMemo(
-        () => wavePath(changes, start, end),
-        [changes, start, end],
-      )
-      const labels = (changes || []).slice(0, 4)
-      const span = Math.max(1, end - start)
-      return h(
-        'div',
-        {
-          style: {
-            display: 'flex',
-            alignItems: 'stretch',
-            minHeight: ROW_H,
-            borderBottom: '1px solid var(--dsw-alias-border-l1)',
-          },
-        },
-        h(
-          'div',
-          {
-            title: row,
-            style: {
-              width: 168,
-              minWidth: 168,
-              padding: '8px 8px 0 4px',
-              overflow: 'hidden',
-              whiteSpace: 'nowrap',
-              textOverflow: 'ellipsis',
-              fontSize: 11,
-              color: 'var(--dsw-alias-label-primary)',
-              borderRight: '1px solid var(--dsw-alias-border-l1)',
-            },
-          },
-          row,
-        ),
-        h(
-          'svg',
-          {
-            viewBox: `0 0 ${W} ${ROW_H}`,
-            preserveAspectRatio: 'none',
-            width: '100%',
-            height: ROW_H,
-            role: 'img',
-            'aria-label': `Waveform of ${row}`,
-            style: { display: 'block' },
-          },
-          h('line', {
-            x1: 0,
-            x2: W,
-            y1: ROW_H - 1,
-            y2: ROW_H - 1,
-            stroke: 'var(--dsw-alias-border-l1)',
-            strokeWidth: 1,
-          }),
-          h('path', {
-            d: path,
-            fill: 'none',
-            stroke: 'var(--dsw-alias-brand-primary)',
-            strokeWidth: 1.6,
-            vectorEffect: 'non-scaling-stroke',
-          }),
-          ...cursorLines(cursors, start, end),
-          ...labels.map((change, index) =>
-            h(
-              'text',
-              {
-                key: `label-${index}`,
-                x: Math.min(W - 60, Math.max(0, ((change.t - start) / span) * W + 3)),
-                y: 10,
-                fill: 'var(--dsw-alias-label-secondary)',
-                fontSize: 10,
-              },
-              String(change.v).slice(0, 12),
-            ),
-          ),
-        ),
-      )
-    }
-
-    function WavePanel({ useProjection }) {
+    function NativePanel({ useProjection }) {
       const wave = useProjection ? useProjection('waveInsight') : undefined
-      if (!wave) {
+      const frame = useRef(null)
+      const ready = useRef(false)
+      const last = useRef(null)
+      const view = useRef(wave)
+      view.current = wave
+
+      function send(command) {
+        const url = view.current?.uiUrl
+        const target = frame.current?.contentWindow
+        if (!url || !target) return
+        try {
+          target.postMessage({ type: 'wave-dsh', command }, new URL(url).origin)
+        } catch (error) {
+          console.warn('[wave-insight] could not send a view command:', error)
+        }
+      }
+
+      function pushView(value) {
+        if (!value?.dump?.path) return
+        const previous = last.current
+        if (!previous || previous.dump?.path !== value.dump.path) {
+          // Opening is async in the app; the rest of the view is replayed when
+          // the app reports that the new dump has been adopted.
+          ready.current = false
+          send({ kind: 'open_path', path: value.dump.path })
+          last.current = value
+          return
+        }
+        if (!ready.current) return
+        const rowsBefore = previous.rows ?? []
+        const removed = rowsBefore.filter((row) => !value.rows.includes(row))
+        if (removed.length) send({ kind: 'remove_signals', signals: removed })
+        const added = value.rows.filter((row) => !rowsBefore.includes(row))
+        if (added.length) send({ kind: 'add_signals', signals: added })
+        if (
+          !previous.visible ||
+          previous.visible.start !== value.visible?.start ||
+          previous.visible.end !== value.visible?.end
+        ) {
+          send({ kind: 'set_time_range', start: value.visible.start, end: value.visible.end })
+        }
+        if (JSON.stringify(previous.cursors) !== JSON.stringify(value.cursors)) {
+          const cursor = (time) =>
+            typeof time === 'number' ? { action: 'set', time } : { action: 'clear' }
+          send({
+            kind: 'set_cursors',
+            one: cursor(value.cursors?.one),
+            two: cursor(value.cursors?.two),
+          })
+        }
+        last.current = value
+      }
+
+      useEffect(() => {
+        const onMessage = (event) => {
+          if (event.data?.type !== 'wave-dsh-ready') return
+          ready.current = true
+          last.current = null
+          pushView(view.current)
+        }
+        window.addEventListener('message', onMessage)
+        return () => window.removeEventListener('message', onMessage)
+      }, [])
+
+      useEffect(() => {
+        pushView(wave)
+      }, [wave?.dump?.path, wave?.rows, wave?.visible, wave?.cursors, wave?.uiUrl])
+
+      if (!wave?.uiUrl) {
         return h(
           'div',
-          { style: { padding: 16, color: 'var(--dsw-alias-label-secondary)' } },
-          translate('waiting'),
+          { style: { padding: 16, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } },
+          wave?.uiError ? `Wave Insight UI unavailable: ${wave.uiError}` : translate('waiting'),
         )
       }
-      const dump = wave.dump
-      const visible = wave.visible ?? dump?.time_range ?? { start: 0, end: 1 }
-      const start = Math.floor(visible.start)
-      const end = Math.floor(visible.end)
-      const span = Math.max(1, end - start)
-      return h(
-        'div',
-        {
-          style: {
-            display: 'flex',
-            flexDirection: 'column',
-            height: '100%',
-            boxSizing: 'border-box',
-            overflow: 'auto',
-            background: 'var(--dsw-alias-bg-base)',
-            color: 'var(--dsw-alias-label-primary)',
-            fontFamily: 'var(--dsw-font-default, inherit)',
-          },
+      return h('iframe', {
+        ref: frame,
+        src: wave.uiUrl,
+        title: translate('title'),
+        style: {
+          width: '100%',
+          height: '100%',
+          border: 0,
+          display: 'block',
+          background: 'var(--dsw-alias-bg-base)',
         },
-        h(
-          'div',
-          {
-            style: {
-              padding: '12px 12px 10px',
-              borderBottom: '1px solid var(--dsw-alias-border-l2)',
-              background: 'var(--dsw-alias-bg-layer-1)',
-            },
-          },
-          h(
-            'div',
-            { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 } },
-            dump ? `${dump.name} · ${dump.format}` : translate('title'),
-          ),
-          h(
-            'div',
-            { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)' } },
-            dump
-              ? `${dump.signal_count} signals · ${dump.timescale ?? 'time steps'} · ${start}–${end}`
-              : translate('emptyHint'),
-          ),
-          h(
-            'div',
-            { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 4 } },
-            wave.status,
-          ),
-        ),
-        dump
-          ? h(
-              'div',
-              null,
-              h(
-                'div',
-                {
-                  style: {
-                    display: 'flex',
-                    alignItems: 'center',
-                    padding: '6px 4px',
-                    borderBottom: '1px solid var(--dsw-alias-border-l1)',
-                    fontSize: 10,
-                    color: 'var(--dsw-alias-label-secondary)',
-                  },
-                },
-                h('span', { style: { width: 168, minWidth: 168 } }, translate('signals')),
-                h('span', null, `${start}`),
-                h('span', { style: { flex: 1 } }),
-                h('span', null, `${end}`),
-              ),
-              ...wave.rows.map((row) =>
-                h(WaveRow, {
-                  key: row,
-                  row,
-                  changes: wave.waves?.[row] ?? [],
-                  start,
-                  end,
-                  cursors: wave.cursors,
-                }),
-              ),
-              wave.rows.length === 0
-                ? h(
-                    'div',
-                    { style: { padding: 16, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } },
-                    translate('noRows'),
-                  )
-                : null,
-            )
-          : null,
-      )
+      })
     }
 
     return {
@@ -290,17 +157,13 @@ window.__ModuleLoader__.load({
           const strings = {
             en: {
               title: 'Wave Insight',
-              waiting: 'Waiting for the waveform projection…',
+              waiting: 'Waiting for the waveform UI…',
               emptyHint: 'Ask the AI to load a waveform file.',
-              signals: 'Signals',
-              noRows: 'No signals on the wave yet. Ask the AI to add some.',
             },
             'zh-cn': {
               title: 'Wave Insight',
-              waiting: '正在等待波形数据…',
+              waiting: '正在启动波形界面…',
               emptyHint: '让 AI 加载一个波形文件。',
-              signals: '信号',
-              noRows: '波形上还没有信号，请让 AI 添加。',
             },
           }
           ctx.locale.register('waveInsight', 'en', strings.en)
@@ -310,10 +173,8 @@ window.__ModuleLoader__.load({
           translate = (key) =>
             ({
               title: 'Wave Insight',
-              waiting: 'Waiting for the waveform projection…',
+              waiting: 'Waiting for the waveform UI…',
               emptyHint: 'Ask the AI to load a waveform file.',
-              signals: 'Signals',
-              noRows: 'No signals on the wave yet. Ask the AI to add some.',
             })[key] ?? key
         }
 
@@ -341,7 +202,7 @@ window.__ModuleLoader__.load({
             ctx.slots.inject('sidebar.right.pane.tab', () =>
               ctx.slots.register(
                 { name: 'sidebar.right.pane.tab', key: TAB_ID },
-                WavePanel,
+                NativePanel,
               ),
             ),
           'wave-insight: panel body',
@@ -366,15 +227,11 @@ window.__ModuleLoader__.load({
         }, 'wave-insight: auto-open')
 
         // A failed openTab is retried on the mounted Session until it succeeds.
-        // Without this, marking the Session opened before the call left the
-        // panel unreachable after a transient "no mounted surface" failure.
         ctx.effect(() => {
           const retry = () => {
             const sessionId = sidebar?.mounted?.getSnapshot?.()
             if (!sessionId || opened.has(sessionId)) return
             if (!pending.has(sessionId)) {
-              // The projection face can arrive after the mounted Session; the
-              // face subscription set up then would have been a no-op.
               const face = sessions?.binding?.(sessionId)?.session?.projections?.faceOf?.('waveInsight')
               if (!face?.getSnapshot?.()?.dump) return
               pending.add(sessionId)
