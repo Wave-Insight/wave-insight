@@ -3,11 +3,14 @@
 // Tools own one plain-JSON view of the waveform session. Every mutating tool
 // attaches that view to its `tool/result` meta; the `waveInsight` projection
 // folds those results and the framework streams the view to the Client panel.
-import { execFileSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { chmodSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { z } from 'zod'
+
+const HELPER_TIMEOUT_MS = 60_000
+const HELPER_MAX_BUFFER = 64 * 1024 * 1024
 
 const BUNDLED_HELPERS = {
   win32: { x64: 'dsh-bridge-windows-x64.exe' },
@@ -76,9 +79,13 @@ function stateFor(key, exec) {
   return state
 }
 
-function ensureKnown(state, key, config) {
+async function ensureKnown(state, key, config, signal) {
   if (!state.path || (known.get(key)?.size ?? 0) > 0) return
-  const found = callHelper(config, { cmd: 'find', path: state.path, query: '', limit: 10_000 })
+  const found = await callHelper(
+    config,
+    { cmd: 'find', path: state.path, query: '', limit: 10_000 },
+    signal,
+  )
   known.set(key, new Set(found.matches.map((match) => match.path)))
 }
 
@@ -95,7 +102,7 @@ function helperPath(config) {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), 'bin', name)
 }
 
-function callHelper(config, request) {
+function callHelper(config, request, signal) {
   const helper = helperPath(config)
   if (process.platform !== 'win32') {
     try {
@@ -104,36 +111,102 @@ function callHelper(config, request) {
       // A read-only install still works when the archive preserved the mode.
     }
   }
-  const stdout = execFileSync(helper, {
-    input: `${JSON.stringify(request)}\n`,
-    encoding: 'utf8',
-    timeout: 60_000,
-    maxBuffer: 64 * 1024 * 1024,
+  // Async process I/O: a large dump must not block the Host event loop for
+  // every other session and plugin. spawn + explicit stdin end is used because
+  // execFile's `input` option does not deliver the request reliably here.
+  return new Promise((resolve, reject) => {
+    const child = spawn(helper, [], { stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let timedOut = false
+
+    const cleanup = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener?.('abort', onAbort)
+    }
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill()
+      fail(new WaveInsightError(
+        `wave-insight helper timed out after ${HELPER_TIMEOUT_MS / 1000}s`,
+        'HELPER_TIMEOUT',
+      ))
+    }, HELPER_TIMEOUT_MS)
+    const onAbort = () => {
+      child.kill()
+      fail(signal?.reason ?? new DOMException('wave-insight helper aborted', 'AbortError'))
+    }
+    signal?.addEventListener?.('abort', onAbort, { once: true })
+
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk
+      if (stdout.length > HELPER_MAX_BUFFER) {
+        child.kill()
+        fail(new WaveInsightError('wave-insight helper response too large', 'HELPER_BUFFER'))
+      }
+    })
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.stdin.on('error', () => {}) // EPIPE when the helper exits early
+    child.on('error', (error) => fail(new WaveInsightError(
+      `wave-insight helper failed: ${error.message}`,
+      'HELPER_SPAWN',
+    )))
+    child.on('close', (code) => {
+      if (settled) return
+      if (timedOut) return
+      if (code !== 0) {
+        fail(new WaveInsightError(
+          `wave-insight helper exited ${code}: ${stderr.trim().slice(0, 300)}`,
+          'HELPER_EXIT',
+        ))
+        return
+      }
+      settled = true
+      cleanup()
+      try {
+        const line = stdout.split(/\r?\n/).find((part) => part.trim().length > 0)
+        if (!line) throw new WaveInsightError('wave-insight helper returned no response', 'HELPER_NO_RESPONSE')
+        const response = JSON.parse(line)
+        if (!response.ok) {
+          throw new WaveInsightError(response.error || 'wave-insight helper error', 'HELPER_ERROR')
+        }
+        resolve(response)
+      } catch (error) {
+        reject(error)
+      }
+    })
+    child.stdin.end(`${JSON.stringify(request)}\n`)
   })
-  const line = stdout.split(/\r?\n/).find((part) => part.trim().length > 0)
-  if (!line) throw new WaveInsightError('wave-insight helper returned no response', 'HELPER_NO_RESPONSE')
-  const response = JSON.parse(line)
-  if (!response.ok) {
-    throw new WaveInsightError(response.error || 'wave-insight helper error', 'HELPER_ERROR')
-  }
-  return response
 }
 
-function refreshWaves(state, config) {
+async function refreshWaves(state, config, signal) {
   if (!state.path || state.rows.length === 0 || !state.visible) {
     state.waves = {}
     return
   }
   const start = Math.floor(state.visible.start || 0)
   const end = Math.floor(state.visible.end || start)
-  const response = callHelper(config, {
-    cmd: 'wave',
-    path: state.path,
-    signals: state.rows,
-    start,
-    end,
-    max: 256,
-  })
+  const response = await callHelper(
+    config,
+    {
+      cmd: 'wave',
+      path: state.path,
+      signals: state.rows,
+      start,
+      end,
+      max: 256,
+    },
+    signal,
+  )
   const waves = {}
   state.rows.forEach((row, index) => {
     waves[row] = response.waves[index]?.changes ?? []
@@ -230,8 +303,12 @@ export async function apply(ctx, config) {
         },
         required: ['path'],
       },
-      run: (args, exec, key) => {
-        const info = callHelper(config, { cmd: 'open', path: args.path, limit: 10_000 })
+      run: async (args, exec, key) => {
+        const info = await callHelper(
+          config,
+          { cmd: 'open', path: args.path, limit: 10_000 },
+          exec.signal,
+        )
         const state = stateFor(key, exec)
         const rows = info.signals.slice(0, 20).map((signal) => signal.path)
         state.path = info.path
@@ -248,7 +325,7 @@ export async function apply(ctx, config) {
         state.visible = info.time_range ?? { start: 0, end: 1 }
         state.cursors = { one: null, two: null }
         known.set(key, new Set(info.signals.map((signal) => signal.path)))
-        refreshWaves(state, config)
+        await refreshWaves(state, config, exec.signal)
         state.status = `loaded ${info.name} (${info.format})`
         return result(
           `${info.name}: ${info.signal_count} signals, range ${state.visible.start}..${state.visible.end}. Showing ${rows.length} rows in the side panel.`,
@@ -269,15 +346,19 @@ export async function apply(ctx, config) {
         },
         required: ['query'],
       },
-      run: (args, exec, key) => {
+      run: async (args, exec, key) => {
         const state = stateFor(key, exec)
         if (!state.path) throw new WaveInsightError('load a waveform first', 'NO_WAVEFORM')
-        const found = callHelper(config, {
-          cmd: 'find',
-          path: state.path,
-          query: args.query,
-          limit: args.limit ?? 100,
-        })
+        const found = await callHelper(
+          config,
+          {
+            cmd: 'find',
+            path: state.path,
+            query: args.query,
+            limit: args.limit ?? 100,
+          },
+          exec.signal,
+        )
         const shown = found.matches.slice(0, 25)
         return result(
           shown.length
@@ -303,16 +384,16 @@ export async function apply(ctx, config) {
         },
         required: ['signals'],
       },
-      run: (args, exec, key) => {
+      run: async (args, exec, key) => {
         const state = stateFor(key, exec)
         if (!state.path) throw new WaveInsightError('load a waveform first', 'NO_WAVEFORM')
-        ensureKnown(state, key, config)
+        await ensureKnown(state, key, config, exec.signal)
         const paths = known.get(key) ?? new Set()
         const wanted = [...new Set(args.signals.map((signal) => String(signal)))]
         const unknown = wanted.filter((signal) => !paths.has(signal))
         const fresh = wanted.filter((signal) => paths.has(signal) && !state.rows.includes(signal))
         state.rows = [...state.rows, ...fresh].slice(0, 40)
-        refreshWaves(state, config)
+        await refreshWaves(state, config, exec.signal)
         state.status = `added ${fresh.length} signal(s)`
         return result(
           `added ${fresh.length}, already on wave ${wanted.length - fresh.length - unknown.length}, unknown ${unknown.length}${unknown.length ? `: ${unknown.join(', ')}` : ''}`,
@@ -332,12 +413,12 @@ export async function apply(ctx, config) {
         },
         required: ['signals'],
       },
-      run: (args, exec, key) => {
+      run: async (args, exec, key) => {
         const state = stateFor(key, exec)
         const remove = new Set(args.signals.map(String))
         const before = state.rows.length
         state.rows = state.rows.filter((row) => !remove.has(row))
-        refreshWaves(state, config)
+        await refreshWaves(state, config, exec.signal)
         state.status = `removed ${before - state.rows.length} signal(s)`
         return result(`removed ${before - state.rows.length} row(s)`, state, key)
       },
@@ -354,7 +435,7 @@ export async function apply(ctx, config) {
         },
         required: ['start', 'end'],
       },
-      run: (args, exec, key) => {
+      run: async (args, exec, key) => {
         const state = stateFor(key, exec)
         if (!state.path) throw new WaveInsightError('load a waveform first', 'NO_WAVEFORM')
         const full = state.dump?.time_range ?? { start: 0, end: Number.MAX_SAFE_INTEGER }
@@ -362,7 +443,7 @@ export async function apply(ctx, config) {
         const start = Math.max(full.start, Math.min(requested.start, full.end))
         const end = Math.max(start, Math.min(requested.end, full.end))
         state.visible = { start, end }
-        refreshWaves(state, config)
+        await refreshWaves(state, config, exec.signal)
         state.status = `range ${start}..${end}`
         return result(`showing ${start}..${end} (clamped to ${full.start}..${full.end})`, state, key)
       },
@@ -379,7 +460,7 @@ export async function apply(ctx, config) {
           clear: { type: 'boolean', description: 'Clear both cursors when true.' },
         },
       },
-      run: (args, exec, key) => {
+      run: async (args, exec, key) => {
         const state = stateFor(key, exec)
         if (args.clear) state.cursors = { one: null, two: null }
         else {
@@ -404,19 +485,23 @@ export async function apply(ctx, config) {
         },
         required: ['signals'],
       },
-      run: (args, exec, key) => {
+      run: async (args, exec, key) => {
         const state = stateFor(key, exec)
         if (!state.path) throw new WaveInsightError('load a waveform first', 'NO_WAVEFORM')
         const start = Math.floor(args.start ?? state.visible?.start ?? 0)
         const end = Math.floor(args.end ?? state.visible?.end ?? start)
-        const response = callHelper(config, {
-          cmd: 'wave',
-          path: state.path,
-          signals: args.signals,
-          start,
-          end,
-          max: args.max ?? 256,
-        })
+        const response = await callHelper(
+          config,
+          {
+            cmd: 'wave',
+            path: state.path,
+            signals: args.signals,
+            start,
+            end,
+            max: args.max ?? 256,
+          },
+          exec.signal,
+        )
         response.waves.forEach((wave, index) => {
           const path = args.signals[index]
           if (!state.rows.includes(path) && state.rows.length < 40) state.rows.push(path)
