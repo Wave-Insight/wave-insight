@@ -4,6 +4,14 @@
 //! opens the dump with the native memory-mapped reader, so a helper process is
 //! short lived and holds no state between calls. Values are bounded and plain
 //! JSON so they can travel through a DSH session projection.
+//!
+//! Commands:
+//!
+//! * `ping`     -> `{ ok, version }`
+//! * `open`     -> dump summary plus the first `limit` signal paths
+//! * `find`     -> signal paths matching a case-insensitive substring
+//! * `validate` -> which of the given paths exist, without decoding any value
+//! * `wave`     -> bounded time/value changes for the given paths
 
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
@@ -14,43 +22,81 @@ fn err(message: impl Into<String>) -> Value {
     json!({ "ok": false, "error": message.into() })
 }
 
-fn value_text(value: &WaveValue) -> String {
+/// Text a model can read. Bit vectors keep the bit pattern the panel draws
+/// (truncated with an explicit width marker); real, string and event values
+/// have no bit pattern and use the library's plain textual form instead of a
+/// Rust `Debug` dump.
+fn value_text(value: &WaveValue, width: u32) -> String {
     if let Some(bits) = value.to_bit_string() {
         let count = bits.chars().count();
         if count <= 128 {
-            bits
-        } else {
-            let short: String = bits.chars().take(128).collect();
-            format!("{short}…")
+            return bits;
         }
-    } else {
-        format!("{value:?}")
+        let short: String = bits.chars().take(128).collect();
+        return format!("{short}… ({count} bits)");
     }
-}
-
-fn format_name(path: &str) -> String {
-    match Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "fst" => "FST",
-        "ghw" => "GHW",
-        _ => "VCD",
+    match value {
+        WaveValue::Real(number) => {
+            if number.is_finite() && number.fract() == 0.0 && number.abs() < 1e15 {
+                format!("{number:.0}")
+            } else {
+                format!("{number}")
+            }
+        }
+        WaveValue::String(text) => text.clone(),
+        WaveValue::Event => "event".to_string(),
+        // `to_bit_string` only returns None for the three cases above.
+        WaveValue::Bits(_) => format!("{} bit value", width.max(1)),
     }
-    .to_owned()
 }
 
 fn open_dump(path: &str) -> Result<Waveform, String> {
     Waveform::open_path_mmap(path).map_err(|e| format!("failed to open {path}: {e}"))
 }
 
+fn signal_names(request: &Value) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    if let Some(items) = request.get("signals").and_then(Value::as_array) {
+        for item in items.iter().filter_map(Value::as_str) {
+            if !names.iter().any(|seen| seen == item) {
+                names.push(item.to_owned());
+            }
+        }
+    }
+    names
+}
+
+/// The dump's time range, as the JSON the plugin reads. GHW cannot answer the
+/// cheap hint, so fall back to the first and last time step exactly as the
+/// desktop registry does.
+fn time_range_json(wf: &Waveform) -> Result<Option<Value>, String> {
+    match wf.time_range_hint() {
+        Ok(Some(range)) => Ok(Some(json!({ "start": range.start, "end": range.end }))),
+        Ok(None) => {
+            let start = wf.start_time().ok().flatten();
+            let end = wf.end_time().ok().flatten();
+            Ok(match (start, end) {
+                (Some(start), Some(end)) => Some(json!({ "start": start, "end": end })),
+                _ => None,
+            })
+        }
+        Err(error) => Err(format!("time range: {}", error.message())),
+    }
+}
+
+fn signal_json(signal: &wave_insight_lib::waveform::SignalInfo) -> Value {
+    json!({
+        "path": signal.path(),
+        "name": signal.name(),
+        "width": signal.width(),
+        "range": signal.range_string(),
+    })
+}
+
 fn handle(request: &Value) -> Value {
     let command = request.get("cmd").and_then(Value::as_str).unwrap_or("");
     if command == "ping" {
-        return json!({ "ok": true, "version": 1 });
+        return json!({ "ok": true, "version": 2 });
     }
     let path = request.get("path").and_then(Value::as_str).unwrap_or("");
     if path.is_empty() {
@@ -63,10 +109,9 @@ fn handle(request: &Value) -> Value {
                 Ok(wf) => wf,
                 Err(message) => return err(message),
             };
-            let range = match wf.time_range_hint() {
-                Ok(Some(range)) => Some(json!({ "start": range.start, "end": range.end })),
-                Ok(None) => None,
-                Err(message) => return err(format!("time range: {message}")),
+            let range = match time_range_json(&wf) {
+                Ok(range) => range,
+                Err(message) => return err(message),
             };
             let limit = request
                 .get("limit")
@@ -78,20 +123,14 @@ fn handle(request: &Value) -> Value {
                 .signals()
                 .iter()
                 .take(limit)
-                .map(|signal| {
-                    json!({
-                        "path": signal.path(),
-                        "name": signal.name(),
-                        "width": signal.width(),
-                        "range": signal.range_string(),
-                    })
-                })
+                .map(signal_json)
                 .collect();
             json!({
                 "ok": true,
                 "name": Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path),
                 "path": path,
-                "format": format_name(path),
+                // The library knows the real format; the extension can lie.
+                "format": wf.file_format().name(),
                 "timescale": wf.timescale().map(|scale| scale.to_string()),
                 "time_range": range,
                 "signal_count": wf.hierarchy().len(),
@@ -120,33 +159,36 @@ fn handle(request: &Value) -> Value {
                 .iter()
                 .filter(|signal| signal.path().to_ascii_lowercase().contains(&query))
                 .take(limit)
-                .map(|signal| {
-                    json!({
-                        "path": signal.path(),
-                        "name": signal.name(),
-                        "width": signal.width(),
-                        "range": signal.range_string(),
-                    })
-                })
+                .map(signal_json)
                 .collect();
             json!({ "ok": true, "matches": matches, "query": query })
+        }
+        // Resolve paths without decoding any value: `wave` with max 0 would
+        // work too, but it returns one process round-trip per unknown name.
+        "validate" => {
+            let wf = match open_dump(path) {
+                Ok(wf) => wf,
+                Err(message) => return err(message),
+            };
+            let names = signal_names(request);
+            let hierarchy = wf.hierarchy();
+            let mut known = Vec::with_capacity(names.len());
+            let mut unknown = Vec::new();
+            for name in names {
+                if hierarchy.signal_by_path(&name).is_some() {
+                    known.push(name);
+                } else {
+                    unknown.push(name);
+                }
+            }
+            json!({ "ok": true, "known": known, "unknown": unknown })
         }
         "wave" => {
             let wf = match open_dump(path) {
                 Ok(wf) => wf,
                 Err(message) => return err(message),
             };
-            let names: Vec<String> = request
-                .get("signals")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
+            let names = signal_names(request);
             let start = request.get("start").and_then(Value::as_u64).unwrap_or(0);
             let end = request.get("end").and_then(Value::as_u64);
             let max = request
@@ -164,22 +206,27 @@ fn handle(request: &Value) -> Value {
             if indices.is_empty() {
                 return json!({ "ok": true, "waves": [] });
             }
+            let widths: Vec<u32> = indices
+                .iter()
+                .map(|&index| wf.signal(index).map(|info| info.width()).unwrap_or(0))
+                .collect();
             let windows = match wf.window_changes_many(&indices, start, end, max) {
                 Ok(windows) => windows,
                 Err(message) => return err(format!("window query: {message}")),
             };
             let waves: Vec<Value> = windows
                 .iter()
-                .map(|window| {
+                .enumerate()
+                .map(|(row, window)| {
                     let changes: Vec<Value> = window
                         .changes
                         .iter()
-                        .map(|(time, value)| json!({ "t": time, "v": value_text(value) }))
+                        .map(|(time, value)| json!({ "t": time, "v": value_text(value, widths[row]) }))
                         .collect();
                     json!({ "changes": changes, "capped": window.capped })
                 })
                 .collect();
-            json!({ "ok": true, "waves": waves, "start": start, "end": end })
+            json!({ "ok": true, "waves": waves, "signals": names, "start": start, "end": end })
         }
         _ => err(format!("unknown command: {command}")),
     }
