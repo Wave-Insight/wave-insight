@@ -4,9 +4,12 @@ on:
   push:
     paths:
       - 'dsh-plugin/**'
+      - 'dsh-bridge/**'
       - 'web-backend/**'
       - 'front-end/**'
+      - 'src-tauri/src/dumps.rs'
       - 'qa/dsh-plugin-smoke.mjs'
+      - 'qa/dsh-plugin-client.test.mjs'
       - 'qa/web-backend-smoke.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -14,33 +17,60 @@ on:
   pull_request:
     paths:
       - 'dsh-plugin/**'
+      - 'dsh-bridge/**'
       - 'web-backend/**'
       - 'front-end/**'
+      - 'src-tauri/src/dumps.rs'
       - 'qa/dsh-plugin-smoke.mjs'
+      - 'qa/dsh-plugin-client.test.mjs'
       - 'qa/web-backend-smoke.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/dsh-plugin.yml'
 
 jobs:
-  smoke:
+  host:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - name: Install plugin dependencies
-        run: npm install --ignore-scripts
-        working-directory: dsh-plugin
-      - name: Build the loopback web backend
-        run: cargo build -p wave-insight-web-backend --release --locked
-      - name: Place the backend where the plugin looks for it
-        run: cp target/release/wave-insight-web-backend dsh-plugin/bin/wave-insight-web-backend-linux-x64
-      - name: Backend protocol smoke test
-        run: node qa/web-backend-smoke.mjs
-      - name: Host tool smoke test
+          node-version: 24
+
+      # Build what the plugin actually spawns, then place it where the bundled
+      # path resolution looks, so the tests exercise this source and not a
+      # committed binary from an older revision.
+      - name: Build the native helper and the loopback backend
+        run: cargo build -p dsh-bridge -p wave-insight-web-backend --release --locked
+
+      - name: Place the Linux binaries where the plugin finds them
+        run: |
+          cp target/release/dsh-bridge dsh-plugin/bin/dsh-bridge-linux-x64
+          cp target/release/wave-insight-web-backend dsh-plugin/bin/wave-insight-web-backend-linux-x64
+          chmod +x dsh-plugin/bin/dsh-bridge-linux-x64 dsh-plugin/bin/wave-insight-web-backend-linux-x64
+
+      - name: Host tools, projection and helper
         run: node qa/dsh-plugin-smoke.mjs
+
+      - name: Client view diff and registrations
+        run: node qa/dsh-plugin-client.test.mjs
+
+      - name: Loopback backend, trust rules and static assets
+        run: node qa/web-backend-smoke.mjs
+
+      - name: The shipped viewer is complete
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const html = fs.readFileSync("dsh-plugin/ui/index.html", "utf8");
+            const refs = [...html.matchAll(/(?:src|href)="\/([^"]+)"/g)].map((m) => m[1]);
+            if (refs.length < 3) throw new Error("index.html does not reference its bundle");
+            for (const ref of refs) {
+              const file = `dsh-plugin/ui/${ref}`;
+              if (!fs.existsSync(file)) throw new Error(`missing viewer asset: ${file}`);
+            }
+            console.log(`viewer assets present: ${refs.join(", ")}`);
+          '
 
   front-end:
     runs-on: ubuntu-latest
