@@ -14,12 +14,18 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset: dsh-bridge-windows-x64.exe
+            backend: wave-insight-web-backend-windows-x64.exe
+            ext: .exe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: dsh-bridge-linux-x64
+            backend: wave-insight-web-backend-linux-x64
+            ext: ""
           - os: macos-latest
             target: aarch64-apple-darwin
             asset: dsh-bridge-macos-arm64
+            backend: wave-insight-web-backend-macos-arm64
+            ext: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -30,6 +36,9 @@ jobs:
 
       - name: Build helper
         run: cargo build -p dsh-bridge --release --locked --target ${{ matrix.target }}
+
+      - name: Build Web backend
+        run: cargo build -p wave-insight-web-backend --release --locked --target ${{ matrix.target }}
 
       - name: Upload Windows helper
         if: matrix.os == 'windows-latest'
@@ -45,4 +54,11 @@ jobs:
         with:
           name: ${{ matrix.asset }}
           path: target/${{ matrix.target }}/release/dsh-bridge
+          if-no-files-found: error
+
+      - name: Upload Web backend
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.backend }}
+          path: target/${{ matrix.target }}/release/wave-insight-web-backend${{ matrix.ext }}
           if-no-files-found: error

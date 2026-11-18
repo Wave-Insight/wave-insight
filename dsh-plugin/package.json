@@ -28,7 +28,11 @@
     "icon.svg",
     "bin/dsh-bridge-windows-x64.exe",
     "bin/dsh-bridge-linux-x64",
-    "bin/dsh-bridge-macos-arm64"
+    "bin/dsh-bridge-macos-arm64",
+    "bin/wave-insight-web-backend-windows-x64.exe",
+    "bin/wave-insight-web-backend-linux-x64",
+    "bin/wave-insight-web-backend-macos-arm64",
+    "ui/**/*"
   ],
   "dependencies": {
     "zod": "4.6.6"
