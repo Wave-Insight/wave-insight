@@ -4,6 +4,28 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.2] - 2026-11-19
+
+### Fixed
+
+- The embedded viewer actually renders a dump now. Three independent defects
+  each hid the panel behind "Nothing loaded yet":
+  - the viewer's empty-state guard only consulted the wasm store, while a
+    native/web-remote dump lives in the remote session with no wasm handle, so
+    a successfully opened dump was still painted as "nothing loaded";
+  - the post-adoption handshake was posted as a JS `Map` (a
+    `serde_wasm_bindgen` artifact), so the host's `event.data.type` read was
+    undefined and the row/range/cursor replay never ran;
+  - the projection could stamp a null viewer URL before the loopback listener
+    was up, leaving a resumed session with no way to learn the live one.
+- The bundled viewer is rebuilt from the current web-remote front end.
+
+### Added
+
+- The host suite fails on a UTF-8 BOM in `package.json`, a locale file, the
+  patch or `ui/index.html`: a BOM made the plugin manager report
+  `Unexpected token` and drop the entire bundle from the composition.
+
 ## [0.2.1] - 2026-11-19
 
 ### Fixed
