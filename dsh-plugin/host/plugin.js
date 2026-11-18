@@ -82,6 +82,12 @@ export async function apply(ctx, config) {
   const bridge = new Bridge(assets.helper, { platform: assets.platform })
   const live = () => ({ url: viewer.daemon.clientUrl, error: viewer.daemon.error })
 
+  // The projection stamps the viewer URL into its initial state, and the shell
+  // reads that state before any tool runs. Waiting for the listener here (it is
+  // normally up in well under a second) keeps a resumed session's panel from
+  // starting with a null URL and no way to learn the live one.
+  await viewer.daemon.ready(3000)
+
   /** @type {{ stateOf: (session: unknown) => any } | null} */
   let projection = null
   try {

@@ -1,4 +1,4 @@
-﻿name: DSH plugin checks
+name: DSH plugin checks
 
 on:
   push:
