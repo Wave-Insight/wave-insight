@@ -1007,7 +1007,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_000000000000000a: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Ref(NamedExternref("Event"))], shim_idx: 194, ret: Unit, inner_ret: Some(Unit) }, mutable: false }) -> Externref`.
-            const ret = makeClosure(arg0, arg1, wasm_bindgen_f2c1512c3b4dceab___convert__closures________invoke___web_sys_bf24651e16002035___features__gen_Event__Event______true_);
+            const ret = makeClosure(arg0, arg1, wasm_bindgen_f2c1512c3b4dceab___convert__closures________invoke___web_sys_3d5872b462f4f563___features__gen_Event__Event______true_);
             return ret;
         },
         __wbindgen_generic_000000000000000b: function(arg0, arg1) {
@@ -1098,8 +1098,8 @@ function wasm_bindgen_f2c1512c3b4dceab___convert__closures_____invoke___wasm_bin
     wasm.wasm_bindgen_f2c1512c3b4dceab___convert__closures_____invoke___wasm_bindgen_f2c1512c3b4dceab___JsValue______true__13(arg0, arg1, arg2);
 }
 
-function wasm_bindgen_f2c1512c3b4dceab___convert__closures________invoke___web_sys_bf24651e16002035___features__gen_Event__Event______true_(arg0, arg1, arg2) {
-    wasm.wasm_bindgen_f2c1512c3b4dceab___convert__closures________invoke___web_sys_bf24651e16002035___features__gen_Event__Event______true_(arg0, arg1, arg2);
+function wasm_bindgen_f2c1512c3b4dceab___convert__closures________invoke___web_sys_3d5872b462f4f563___features__gen_Event__Event______true_(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_f2c1512c3b4dceab___convert__closures________invoke___web_sys_3d5872b462f4f563___features__gen_Event__Event______true_(arg0, arg1, arg2);
 }
 
 function wasm_bindgen_f2c1512c3b4dceab___convert__closures_____invoke___wasm_bindgen_f2c1512c3b4dceab___JsValue__wasm_bindgen_f2c1512c3b4dceab___JsValue__true_(arg0, arg1, arg2) {

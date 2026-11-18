@@ -887,6 +887,84 @@ button:active { background: var(--bg-4); }
   background: var(--bg-1);
 }
 
+/* The AI / MCP panel: what the local MCP server is and how to connect to it.
+   It replaces the waveform in the dock body while its tab is active, so it
+   owns the whole area and scrolls on its own. */
+.agent-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-1);
+  font-size: 12px;
+}
+
+.agent-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.5;
+}
+
+.agent-muted {
+  color: var(--fg-dim);
+}
+
+.agent-error {
+  color: var(--danger);
+}
+
+.agent-warn {
+  color: var(--warning, var(--fg-dim));
+}
+
+/* a small status dot: green while the listener is up */
+.agent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.agent-dot.on {
+  background: var(--success, #4caf72);
+}
+
+.agent-code,
+.agent-token,
+.agent-tool {
+  font-family: var(--mono, monospace);
+  background: var(--bg-2);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 3px;
+  padding: 1px 5px;
+  user-select: all;
+}
+
+.agent-code-block {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre;
+  user-select: all;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-tool {
+  font-size: 11px;
+}
+
 /* divider between the editor and the wave frame. Tier A: the drag writes
    --editor-h straight to the DOM. */
 .wave-splitter {
