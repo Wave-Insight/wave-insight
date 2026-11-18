@@ -729,7 +729,23 @@ impl Component for App {
         // while the splitter is dragged the preview is authoritative (it was
         // written straight to the DOM); otherwise the store's layout is
         let sidebar_w = self.sidebar_preview.unwrap_or(self.layout.sidebar_w);
-        let empty = self.dump().is_none() && self.sources.is_empty() && self.tree.is_none();
+        // A native (remote) dump has no wasm handle and no wasm tree: its
+        // session owns the hierarchy and the store keeps the scratch rows, so
+        // it has to count as "loaded" here or the drop hint covers a live dump.
+        let native_open = {
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
+            {
+                self.remote.is_some()
+            }
+            #[cfg(not(any(feature = "tauri", feature = "web-remote")))]
+            {
+                false
+            }
+        };
+        let empty = self.dump().is_none()
+            && !native_open
+            && self.sources.is_empty()
+            && self.tree.is_none();
         // R2 step 2/4: with no sources the editor collapses to the tab strip and
         // the wave pane takes the rest (design doc §3.1, constants §3.4)
         let collapsed = self.sources.is_empty();
