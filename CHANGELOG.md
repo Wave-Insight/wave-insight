@@ -8,7 +8,21 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
+Nothing yet: the next wave lands here.
+
+## [0.23.1] - 2026-11-18
+
 ### Added
+
+- **Wave Insight for DeepSeek Harness.** A DSH bundle gives the assistant
+  waveform tools and embeds the real Wave Insight viewer in the right sidebar.
+  The UI is served by a new loopback `wave-insight-web-backend` that reuses the
+  native memory-mapped dump registry; the front end has a `web-remote` feature
+  that talks to it instead of reading files inside wasm. Tool results carry
+  bounded time/value pairs, PTC sub-calls fold into the live projection, tool
+  failures are real `isError` results, and the helper runs asynchronously with
+  cancellation. See `dsh-plugin/README.md` and `dsh-plugin/CHANGELOG.md`
+  (plugin versions 0.1.2-0.1.5).
 
 - **AI access through a local MCP server (desktop build).** The Tauri backend
   now runs a Model Context Protocol server on `127.0.0.1` (ports 7437-7446, one
