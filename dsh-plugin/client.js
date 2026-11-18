@@ -160,13 +160,17 @@ window.__ModuleLoader__.load({
               waiting: 'Waiting for the waveform UI…',
               emptyHint: 'Ask the AI to load a waveform file.',
             },
-            'zh-cn': {
+            zh: {
               title: 'Wave Insight',
               waiting: '正在启动波形界面…',
               emptyHint: '让 AI 加载一个波形文件。',
             },
           }
+          // DSH's built-in locale ids are `en` and `zh`; `zh-cn` is also
+          // registered for browsers that report a regional Chinese tag.
+          strings['zh-cn'] = strings.zh
           ctx.locale.register('waveInsight', 'en', strings.en)
+          ctx.locale.register('waveInsight', 'zh', strings.zh)
           ctx.locale.register('waveInsight', 'zh-cn', strings['zh-cn'])
           translate = ctx.locale.bind('waveInsight')
         } catch {

@@ -28,6 +28,13 @@ const BUNDLED_WEB_BACKENDS = {
 
 export const inject = ['tools', 'sessionProjections', 'systemPrompt']
 
+// Tunable paths for hosts that do not use the bundled binaries. Declared as a
+// Config so the Loader validates patch-layer values at activation.
+export const Config = z.object({
+  helperPath: z.string().optional(),
+  backendPath: z.string().optional(),
+})
+
 const stateSchema = z.object({
   dump: z.any().nullable(),
   rows: z.array(z.string()),

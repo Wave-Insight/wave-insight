@@ -25,6 +25,7 @@
     "locale/*.json",
     "README.md",
     "CHANGELOG.md",
+    "LICENSE",
     "icon.svg",
     "bin/dsh-bridge-windows-x64.exe",
     "bin/dsh-bridge-linux-x64",
