@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Wave Insight waveforms",
-    "description": "Gives the AI waveform tools for VCD, FST and GHW dumps and shows a live waveform panel in the right sidebar as signals and the time range change. Start with load_waveform(path), then use find_signals, add_signals, set_time_range, set_cursors, get_changes and list_waveform. Calling a tool opens the Wave Insight tab; the panel follows each later tool call. The Windows helper binary is bundled; other platforms need WAVE_DSH_BRIDGE or a local cargo build of dsh-bridge."
+    "description": "Gives the AI waveform tools for VCD, FST and GHW dumps and shows a live waveform panel in the right sidebar as signals and the time range change. Start with load_waveform(path), then use find_signals, add_signals, set_time_range, set_cursors, get_changes and list_waveform. Calling a tool opens the Wave Insight tab; the panel follows each later tool call. Helpers for Windows x64, Linux x64 and macOS ARM64 are bundled; no external binary install is needed."
   }
 }

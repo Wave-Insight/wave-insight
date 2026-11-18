@@ -23,10 +23,18 @@ add_signals TOP.clk and TOP.pc
 set_time_range 1000 2000
 ```
 
-The bundled Windows helper is `bin/dsh-bridge.exe`. On other platforms, build
-the helper from the repository with `cargo build -p dsh-bridge` and either set
-the `helperPath` config or the `WAVE_DSH_BRIDGE` environment variable to the
-resulting executable.
+The helper is bundled for the three common desktop platforms, so no external
+installation is needed:
+
+| Platform | Binary |
+|---|---|
+| Windows x64 | `bin/dsh-bridge-windows-x64.exe` |
+| Linux x64 | `bin/dsh-bridge-linux-x64` |
+| macOS ARM64 | `bin/dsh-bridge-macos-arm64` |
+
+The plugin picks the right one automatically. For any other platform, build
+the helper from the repository with `cargo build -p dsh-bridge` and set the
+`helperPath` config or the `WAVE_DSH_BRIDGE` environment variable.
 
 ## Limits
 

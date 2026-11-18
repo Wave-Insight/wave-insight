@@ -561,10 +561,11 @@ signal, changing the visible range or placing a cursor updates it immediately.
 
 The bundle talks to a small JSON-lines helper, `dsh-bridge`
 ([`dsh-bridge/`](dsh-bridge/)), which opens dumps with the same native reader
-as the desktop build and answers bounded window queries. A Windows helper is
-bundled in `dsh-plugin/bin/`; other platforms build it with
-`cargo build -p dsh-bridge` and set `WAVE_DSH_BRIDGE` (or the bundle's
-`helperPath` config). Install the bundle with Plugins > Add plugin, selecting
+as the desktop build and answers bounded window queries. Helpers for Windows x64, Linux x64 and macOS ARM64 are bundled in
+`dsh-plugin/bin/`, so no external binary install is needed; the CI workflow
+`.github/workflows/dsh-plugin-binaries.yml` rebuilds them. Other platforms can
+build with `cargo build -p dsh-bridge` and set `WAVE_DSH_BRIDGE` (or the
+bundle's `helperPath` config). Install the bundle with Plugins > Add plugin, selecting
 `dsh-plugin/`. The first version draws up to 40 rows and 256 sampled changes
 per row; it is a live inspection surface, not a replacement for the full viewer.
 

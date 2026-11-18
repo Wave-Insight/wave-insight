@@ -4,9 +4,16 @@
 // attaches that view to its `tool/result` meta; the `waveInsight` projection
 // folds those results and the framework streams the view to the Client panel.
 import { execFileSync } from 'node:child_process'
+import { chmodSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { z } from 'zod'
+
+const BUNDLED_HELPERS = {
+  win32: { x64: 'dsh-bridge-windows-x64.exe' },
+  linux: { x64: 'dsh-bridge-linux-x64' },
+  darwin: { arm64: 'dsh-bridge-macos-arm64' },
+}
 
 export const inject = ['tools', 'sessionProjections', 'systemPrompt']
 
@@ -70,16 +77,24 @@ function ensureKnown(state, key, config) {
 function helperPath(config) {
   if (config?.helperPath) return config.helperPath
   if (process.env.WAVE_DSH_BRIDGE) return process.env.WAVE_DSH_BRIDGE
-  const bundled = path.join(
-    path.dirname(fileURLToPath(import.meta.url)),
-    'bin',
-    process.platform === 'win32' ? 'dsh-bridge.exe' : 'dsh-bridge',
-  )
-  return bundled
+  const name = BUNDLED_HELPERS[process.platform]?.[process.arch]
+  if (!name) {
+    throw new Error(
+      `no bundled dsh-bridge for ${process.platform}/${process.arch}; set WAVE_DSH_BRIDGE to a helper built from dsh-bridge`,
+    )
+  }
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), 'bin', name)
 }
 
 function callHelper(config, request) {
   const helper = helperPath(config)
+  if (process.platform !== 'win32') {
+    try {
+      chmodSync(helper, 0o755)
+    } catch {
+      // A read-only install still works when the archive preserved the mode.
+    }
+  }
   const stdout = execFileSync(helper, {
     input: `${JSON.stringify(request)}\n`,
     encoding: 'utf8',
