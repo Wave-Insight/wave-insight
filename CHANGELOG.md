@@ -10,6 +10,15 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.23.2] - 2026-11-18
+
+### Changed
+
+- The `v*` release workflow now also builds the loopback Web backend for
+  Windows x64, Linux x64 and macOS ARM64, packs the DSH plugin as an npm
+  tarball and attaches it to the GitHub release. The JSON-lines helper binaries
+  are already committed in the bundle, so no other artifacts are needed.
+
 ## [0.23.1] - 2026-11-18
 
 ### Added
