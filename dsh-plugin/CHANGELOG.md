@@ -4,6 +4,16 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.1.5] - 2026-11-18
+
+### Changed
+
+- The projection state schema now describes the dump, visible range and
+  cursors concretely instead of accepting `z.any`; `stateVersion` is bumped so
+  stale checkpoints are discarded.
+- The derived per-Session working snapshot is evicted on `session/disposed`,
+  so long-running Hosts no longer accumulate one view per Session ever seen.
+
 ## [0.1.4] - 2026-11-18
 
 ### Added
