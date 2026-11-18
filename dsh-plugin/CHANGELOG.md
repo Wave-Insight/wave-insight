@@ -4,6 +4,29 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.1] - 2026-11-19
+
+### Fixed
+
+- The embedded viewer receives its commands. `serde_wasm_bindgen::to_value`
+  hands the wasm app a JS `Map` for every argument object, and the shim's
+  `JSON.stringify({ cmd, args })` rendered that as `{}`, so `open_dump` always
+  failed with "missing field `path`" and the panel stayed on "Nothing loaded yet".
+  The shim now normalizes Maps, Sets and typed arrays before the fetch, which
+  also fixes `dump_hierarchy`, `dump_window`, `dump_value_at` and `dump_find`.
+- The viewer handshake marks its post-mount announce (`boot: true`), and the
+  Client opens the dump on that handshake instead of guessing when the wasm app
+  is ready. The previous announce at `DOMContentLoaded` raced the app's command
+  listener, so the first `open_path` was often dropped.
+- The Client replays the whole view (rows, range, cursors) after every
+  handshake, because the app clears rows when it adopts a dump.
+
+### Added
+
+- `qa/dsh-invoke-shim.test.mjs` covers the argument serialization, the token
+  header and the origin/source checks of the web-remote shim.
+- CI runs that suite and watches the shim file.
+
 ## [0.2.0] - 2026-11-18
 
 ### Fixed
