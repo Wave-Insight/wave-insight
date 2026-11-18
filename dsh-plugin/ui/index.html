@@ -1,0 +1,23 @@
+﻿<!DOCTYPE html><html lang="en"><head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Wave-Insight</title>
+    <!-- an empty data icon: the browser stops probing /favicon.ico (a 404 on every load) -->
+    <link rel="icon" href="data:,">
+
+    <script src="/dsh-invoke.js"></script>
+    <link rel="stylesheet" href="/styles-5737ae7e418eff4a.css">
+    <!--
+      The editor is a pinned, self-hosted monaco build (see monaco/README.md).
+      Trunk copies the directory to `dist/monaco/`, i.e. next to the wasm bundle,
+      and `src/code_reader/monaco_glue.rs` loads it from `./monaco/vs`. The app
+      therefore never talks to a CDN and works offline / behind a firewall.
+    -->
+    
+  
+<link rel="preload" href="/front-end-3b7886cac7b384a3_bg.wasm" as="fetch" type="application/wasm" crossorigin="">
+<link rel="modulepreload" href="/front-end-3b7886cac7b384a3.js"></head>
+
+  <body>
+
+<script type="module">import init from '/front-end-3b7886cac7b384a3.js';init('/front-end-3b7886cac7b384a3_bg.wasm');</script></body></html>

@@ -16,15 +16,25 @@
 //!                     store action(s) -> UiResult -> agent_reply
 //! ```
 //!
-//! Everything here is `tauri`-gated: the browser build has no backend to listen
-//! to, and compiling this module there would only add dead code.
+//! The module is compiled in remote builds only: the pure-wasm browser build
+//! has no backend to listen to, so compiling it there would only add dead code.
+//! In the web-remote build [`web_listener`] replaces the Tauri event listener.
 
+// The Tauri event listener and the MCP panel are desktop-only; the web-remote
+// build uses the DOM bridge below and never mounts an MCP panel.
+#[cfg(feature = "tauri")]
 pub mod listener;
+#[cfg(feature = "tauri")]
 pub mod panel;
 pub mod reply;
 pub mod snapshot;
+/// DSH web-remote bridge: one-way commands from the host via a DOM CustomEvent.
+#[cfg(feature = "web-remote")]
+pub mod web_listener;
 
+#[cfg(feature = "tauri")]
 pub use listener::attach_agent_listener;
+#[cfg(feature = "tauri")]
 pub use panel::AgentPanel;
 pub use reply::send_reply;
 

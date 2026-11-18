@@ -950,7 +950,7 @@ pub fn publish_debug(info: &DebugInfo) {
     );
     // native mode: the backend's dump_memory_stats snapshot (refresh in the
     // wave pane); absent in the browser build and before the first answer
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     if let Some(snapshot) = crate::remote::native_memory() {
         let native_object = js_sys::Object::new();
         let set_native = |key: &str, value: f64| {

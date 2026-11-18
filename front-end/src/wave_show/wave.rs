@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[cfg(feature = "tauri")]
+#[cfg(any(feature = "tauri", feature = "web-remote"))]
 use wasm_bindgen_futures::spawn_local;
 
 use wasm_bindgen::prelude::*;
@@ -151,7 +151,7 @@ pub enum Msg {
     Export((ExportFormat, ExportScope)),
 
     /// Native windows arrived: (epoch, request, show, row/slot/width, answers).
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     RemoteWindows(
         u32,
         WindowRequest,
@@ -160,10 +160,10 @@ pub enum Msg {
         Vec<crate::remote::WindowDto>,
     ),
     /// The native backend refused a query.
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     RemoteFailed(u32, String),
     /// One rendered value at the cursor arrived from dump_value_at.
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     RemoteCursorValue(usize, i32, String),
 }
 
@@ -301,24 +301,24 @@ pub struct WaveShow {
     show_path: bool,
 
     /// The native dump being drawn read-only, when the app opened one.
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     remote: Option<crate::remote::RemoteSession>,
     /// Bumped per native window request; an answer from an older request is
     /// dropped (the view moved on while it was in flight).
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     remote_epoch: u32,
     /// One error line per native backend failure, not one per redraw.
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     remote_error: bool,
     /// Rendered values at the cursor times, keyed by (row, time): the value
     /// column shows them when a cursor is outside the fetched window.
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     native_cursor: crate::remote::CursorCache,
     /// `(row, time)` pairs whose dump_value_at is in flight (no duplicates).
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     native_cursor_inflight: std::collections::HashSet<(usize, i32)>,
     /// The component's link: async IPC answers arrive after the update.
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     link: Option<yew::html::Scope<Self>>,
 }
 
@@ -393,17 +393,17 @@ impl Component for WaveShow {
             resize_callback: None,
             hidden: ctx.props().hidden,
             show_path: store.select(select::layout).show_path,
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             remote: ctx.props().remote.clone(),
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             remote_epoch: 0,
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             remote_error: false,
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             native_cursor: crate::remote::CursorCache::new(),
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             native_cursor_inflight: std::collections::HashSet::new(),
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             link: Some(ctx.link().clone()),
         };
         this.sync_rows();
@@ -437,7 +437,7 @@ impl Component for WaveShow {
         let hidden = ctx.props().hidden;
         let rerender = hidden != self.hidden;
         self.hidden = hidden;
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if self.remote != ctx.props().remote {
             // a new native dump: drop the previous rows' windows and fit again
             self.remote = ctx.props().remote.clone();
@@ -697,7 +697,7 @@ impl WaveShow {
                 self.sync_rows();
                 // the cursor cache is keyed by row index: a reorder or removal
                 // invalidates every entry
-                #[cfg(feature = "tauri")]
+                #[cfg(any(feature = "tauri", feature = "web-remote"))]
                 {
                     self.native_cursor.clear();
                     self.native_cursor_inflight.clear();
@@ -872,7 +872,7 @@ impl WaveShow {
                 // the native cursor readout is rendered text in the old format:
                 // a format change invalidates it (the row windows hold parsed
                 // bits, so they stay valid and no window refetch is needed)
-                #[cfg(feature = "tauri")]
+                #[cfg(any(feature = "tauri", feature = "web-remote"))]
                 {
                     self.native_cursor.clear();
                     self.native_cursor_inflight.clear();
@@ -1220,19 +1220,19 @@ impl WaveShow {
             // rows were decoded after the last render: the value column now has
             // the values to show
             Msg::ValuesReady => true,
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             Msg::RemoteWindows(epoch, req, show, rows, windows) => {
                 self.apply_remote_windows(epoch, req, &show, &rows, windows);
                 false
             }
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             Msg::RemoteCursorValue(row, time, text) => {
                 self.native_cursor_inflight.remove(&(row, time));
                 self.native_cursor.insert(row, time, text);
                 // the value column shows the new readout: one extra render
                 true
             }
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             Msg::RemoteFailed(epoch, error) => {
                 if epoch == self.remote_epoch && !self.remote_error {
                     self.remote_error = true;
@@ -1361,7 +1361,7 @@ impl WaveShow {
         }
         // a native cursor outside the fetched window has its rendered value
         // cached from dump_value_at (already formatted with the row's show type)
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(text) = self.native_cursor.get(row, cursor) {
             if !text.is_empty() {
                 return Some(text.to_string());
@@ -1541,7 +1541,7 @@ impl WaveShow {
     /// error (no dump, no decoded values, too large, browser refused). Never
     /// panics on a user action.
     fn export(&self, format: ExportFormat, scope: ExportScope) -> Result<String, String> {
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if self.remote.is_some() {
             return Err(
                 "native (read-only, mmap) mode: export is not available yet — reopen the dump through the wasm path (files up to 64 MB) to export"
@@ -1785,7 +1785,7 @@ impl WaveShow {
     fn decode_pending(&mut self, fetch: std::ops::Range<usize>, width: f64) {
         // the desktop build can draw a dump opened by the native backend: the
         // rows come from bounded IPC windows, not from a wasm waveform
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if self.remote.is_some() {
             self.decode_remote(fetch, width);
             return;
@@ -1856,7 +1856,7 @@ impl WaveShow {
     /// * [`apply_remote_windows`] stores them when they arrive and the pane keeps
     ///   drawing the previous windows in the meantime. Answers from an older
     ///   request are dropped by the epoch.
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     fn decode_remote(&mut self, fetch: std::ops::Range<usize>, width: f64) {
         let Some(session) = self.remote.clone() else {
             return;
@@ -1945,7 +1945,7 @@ impl WaveShow {
         }
     }
 
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     fn apply_remote_windows(
         &mut self,
         epoch: u32,
@@ -1990,7 +1990,7 @@ impl WaveShow {
     /// time, once per (row, time, format), and cache it. There is no per-row
     /// per-frame request: a redraw with the cursor already fetched does nothing,
     /// and the batch is capped so a huge row list cannot flood the IPC channel.
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     fn fetch_native_cursor_values(&mut self, rows: std::ops::Range<usize>) {
         const MAX_BATCH: usize = 64;
         let Some(session) = self.remote.clone() else {
@@ -2057,7 +2057,7 @@ impl WaveShow {
 
     /// The native session handed to the children (none in the browser build).
     fn remote_session(&self) -> Option<crate::remote::RemoteSession> {
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(session) = &self.remote {
             return Some(session.clone());
         }
@@ -2069,7 +2069,7 @@ impl WaveShow {
     /// The wasm dump owns one when it is open; a native dump only has the
     /// summary's range, which is enough for the ruler and the fit zoom.
     fn effective_time_range(&self) -> Option<TimeRange> {
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(session) = &self.remote {
             if let Some((start, end)) = session.range() {
                 return Some(TimeRange { start, end });
@@ -2125,13 +2125,13 @@ impl WaveShow {
         }
         // native mode: refresh the backend memory snapshot for the debug hook
         // (throttled to 1/s; the command only reads cached counters)
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(session) = &self.remote {
             crate::remote::maybe_refresh_native_memory(session.id());
         }
         // native mode: fill the value column for cursors outside the fetched
         // windows (batched + cached, never per row per frame)
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         self.fetch_native_cursor_values(draw.clone());
 
         if !self.fitted {

@@ -1,0 +1,1986 @@
+/* ==========================================================================
+   Wave Insight — design system
+   A dark "signal console" theme: one token set, no external font requests.
+   ========================================================================== */
+
+:root {
+  /* surfaces */
+  --bg-0: #0b0e14;      /* window */
+  --bg-1: #11151d;      /* panels */
+  --bg-2: #161c26;      /* headers, raised rows */
+  --bg-3: #1d2532;      /* hover */
+  --bg-4: #242e3d;      /* active / pressed */
+  --wave-bg: #0d1218;   /* waveform canvas */
+
+  /* lines */
+  --line: #212936;
+  --line-soft: #18202b;
+  --grid: #18212c;
+
+  /* text */
+  --text-0: #e6edf5;
+  --text-1: #9aa8bb;
+  --text-2: #6b7789;
+
+  /* accent */
+  --accent: #4cc2ff;
+  --accent-soft: rgba(76, 194, 255, 0.14);
+  --accent-line: rgba(76, 194, 255, 0.45);
+  --danger: #ff6b81;
+
+  /* cursors */
+  --cursor-a: #ffd166;
+  --cursor-b: #dbe6f5;
+
+  /* type */
+  --font-ui: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --radius: 8px;
+  --radius-sm: 5px;
+
+  /* the wave area is measured from the dom, these are only the layout widths */
+  --sidebar-w: 280px;
+  --names-w: 220px;
+  /* one signal row, kept in sync with ROW_HEIGHT in wave_show/geometry.rs */
+  --row-h: 30px;
+  /* height of the tab strip, the collapsed editor is exactly this tall */
+  --tabs-h: 32px;
+  /* height of the time ruler above the rows, kept in sync with .timebar */
+  --timebar-h: 30px;
+  /* the horizontal divider between the editor and the wave pane */
+  --wave-splitter-h: 5px;
+  /* the tab strip that switches the wave frame between waveform and loads;
+     kept in sync with DOCK_TABS in app.rs */
+  --dock-tabs-h: 28px;
+  /* the scrollbar the wave body reserves on the right (see ::-webkit-scrollbar) */
+  --scrollbar-w: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--text-0);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #2a3444;
+  border: 2px solid var(--bg-1);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover { background: #38455a; }
+
+::selection { background: var(--accent-soft); }
+
+/* ==========================================================================
+   shell
+   ========================================================================== */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sidebar {
+  flex: 0 0 var(--sidebar-w);
+  width: var(--sidebar-w);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.main-pane {
+  position: relative; /* anchors the "nothing loaded yet" hint (R2) */
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* R2: call to action while nothing is loaded; never eats pointer events, so the
+   panes behind it stay usable */
+.start-hint {
+  position: absolute;
+  inset: 0;
+  /* above the wave canvas and its name/surface layers (both z-index 1), below
+     the 60 of the splitter shield */
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: var(--bg-0);
+}
+
+.start-hint .empty-hint {
+  max-width: 460px;
+  color: var(--text-1);
+}
+
+.start-hint .empty-hint strong {
+  color: var(--text-0);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.start-hint .empty-hint div + div {
+  margin-top: 4px;
+}
+
+/* draggable divider between the sidebar and the wave area */
+.splitter {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 5px;
+  width: 5px;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.splitter:hover,
+.splitter.dragging {
+  background: var(--accent-line);
+}
+
+/* a wider invisible grab area, the visual line stays 5px */
+.splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+
+/* covers the window while dragging so the mouse cannot leave the handle */
+.splitter-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  cursor: col-resize;
+}
+
+/* ==========================================================================
+   top bar
+   ========================================================================== */
+
+.topbar {
+  height: 64px;
+  flex: 0 0 64px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 18px;
+  background: linear-gradient(180deg, #131a24 0%, var(--bg-1) 100%);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--text-1);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.topbar .icon-btn:hover {
+  color: var(--text-0);
+  background: var(--bg-3);
+  border-color: var(--line);
+}
+.topbar .icon-btn:active { background: var(--bg-4); }
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: linear-gradient(145deg, #1b3d52, #16222e);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+}
+
+.brand-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.brand-tag {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.9px;
+  white-space: nowrap;
+}
+
+/* the build number, so "did the deploy reach this tab" is answerable at a glance */
+.brand-version {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+.topbar-hint {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 11px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-hint kbd {
+  padding: 1px 5px;
+  margin: 0 1px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* ==========================================================================
+   panels (sidebar sections)
+   ========================================================================== */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel:last-child { border-bottom: none; }
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 12px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.panel-head .count {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+/* ==========================================================================
+   module tree
+   ========================================================================== */
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 12px;
+  color: var(--text-1);
+  cursor: pointer;
+  user-select: none;
+  white-space: pre;
+}
+
+.tree-row:hover { background: var(--bg-3); color: var(--text-0); }
+
+.tree-caret {
+  width: 10px;
+  flex: 0 0 10px;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
+}
+
+.tree-caret.open { color: var(--accent); }
+
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Wave 12: bulk add - the multi-selection highlight and the per-row "add all
+   signals in this scope" button (icon only: the row text stays exactly the
+   scope name the QA matrix reads). */
+.tree-row.selected { background: var(--accent-soft); color: var(--text-0); }
+
+.tree-row.selected .tree-caret { color: var(--accent); }
+
+.tree-add {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  margin-left: auto;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+  /* always visible: the Wave 12 build hid it on hover and the user never found
+     the bulk-add flow */
+  opacity: 1;
+  color: var(--text-1);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.tree-add::before { content: "+"; }
+
+.tree-add:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tree-add-selected {
+  appearance: none;
+  margin-left: auto;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  border-radius: var(--radius-sm);
+  padding: 1px 7px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: none;
+}
+
+.tree-add-selected:hover:not(:disabled) {
+  color: var(--text-0);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.tree-add-selected:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Wave 13: bulk-add discoverability - a sticky selection bar, an always-on
+   select-all control, and the right-click row menu. */
+.tree-select-all {
+  appearance: none;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  border-radius: var(--radius-sm);
+  padding: 1px 7px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: none;
+}
+
+.tree-select-all:hover {
+  color: var(--text-0);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.tree-add-selected.over-cap {
+  color: var(--danger, #e5534b);
+  border-color: var(--danger, #e5534b);
+  opacity: 0.8;
+}
+
+/* the sticky "N signals selected" bar above the module tree */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent-line);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-0);
+}
+
+.bulk-count {
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.bulk-add,
+.bulk-clear {
+  appearance: none;
+  border: 1px solid var(--accent-line);
+  background: var(--bg-1);
+  color: var(--text-0);
+  border-radius: var(--radius-sm);
+  padding: 1px 8px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bulk-add:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-0, #101418);
+}
+
+.bulk-clear {
+  border-color: var(--line);
+  color: var(--text-1);
+  font-weight: 400;
+}
+
+.bulk-clear:hover {
+  color: var(--text-0);
+  border-color: var(--accent-line);
+}
+
+.bulk-add[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.bulk-hint {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Wave 19: the signal list's own selection bar. It is the list's footer (below
+   the rows, above the filter) so opening it never moves the rows. */
+.sig-bulk-bar {
+  border-top: 1px solid var(--accent-line);
+  border-bottom: none;
+}
+
+/* an empty filtered list cannot be selected */
+.tree-select-all:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* the right-click row menu (fixed, opened at the pointer) */
+.row-menu-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+}
+
+.row-menu {
+  position: fixed;
+  z-index: 71;
+  min-width: 230px;
+  max-width: 360px;
+  padding: 4px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.row-menu-item {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-0);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.row-menu-item:hover:not(:disabled),
+.row-menu-item:focus-visible {
+  background: var(--accent-soft);
+  color: var(--text-0);
+  outline: none;
+}
+
+.row-menu-item:disabled {
+  color: var(--text-2);
+  cursor: default;
+}
+
+.row-menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--line);
+}
+
+.tree-folder { color: var(--accent); flex: 0 0 auto; }
+
+/* ==========================================================================
+   signal list
+   ========================================================================== */
+
+.sig-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 10px 0 12px;
+  color: var(--text-1);
+  cursor: pointer;
+  user-select: none;
+}
+
+.sig-row:hover { background: var(--bg-3); color: var(--text-0); }
+
+/* Wave 19: the signal list selects like the module tree (plain / Ctrl / Shift)
+   and "Add selected (N)" adds the selection explicitly. Same highlight as
+   .tree-row.selected so a selection reads the same in both lists. */
+.sig-row.selected { background: var(--accent-soft); color: var(--text-0); }
+
+.sig-row.selected .sig-size { color: var(--text-1); }
+
+.sig-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.sig-size {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* the per-row add affordance: a real button (labelled, stops the row click) */
+.sig-add {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  cursor: pointer;
+  text-align: center;
+  color: transparent;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.sig-row:hover .sig-add,
+.sig-row.selected .sig-add,
+.sig-add:focus-visible { color: var(--accent); }
+
+.sig-add:hover { background: var(--accent-soft); color: var(--accent); }
+
+.filter-wrap {
+  padding: 6px 10px;
+  background: var(--bg-1);
+  border-top: 1px solid var(--line-soft);
+}
+
+/* ==========================================================================
+   buttons and inputs
+   ========================================================================== */
+
+input[type="text"],
+input[type="number"] {
+  width: 100%;
+  height: 26px;
+  padding: 0 9px;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-0);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+input::placeholder { color: var(--text-2); }
+
+button {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 5px 11px;
+  cursor: pointer;
+}
+
+button:hover {
+  color: var(--text-0);
+  background: var(--bg-3);
+  border-color: #2a3646;
+}
+
+button:active { background: var(--bg-4); }
+
+.file-input {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.file-input::file-selector-button {
+  margin-right: 10px;
+  padding: 5px 10px;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.file-input::file-selector-button:hover {
+  color: var(--text-0);
+  background: var(--bg-3);
+}
+
+.file-drop {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px dashed #2b3648;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.012);
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.file-drop:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--text-0);
+}
+
+/* a file drag is over the window: the tile says the drop is meant here too
+   (the whole window accepts it, see .drop-overlay) */
+.file-drop.active {
+  border-color: var(--accent);
+  border-style: solid;
+  background: var(--accent-soft);
+  color: var(--text-0);
+}
+
+.file-drop.active .file-drop-icon {
+  animation: drop-pulse 1s ease-in-out infinite;
+}
+
+@keyframes drop-pulse {
+  0%, 100% { transform: translateY(0); opacity: 0.7; }
+  50% { transform: translateY(-2px); opacity: 1; }
+}
+
+.file-native { display: none; }
+
+.file-drop-icon { color: var(--accent); font-size: 15px; line-height: 1; }
+
+.file-drop-text { font-size: 12px; }
+
+/* ==========================================================================
+   code pane
+   ========================================================================== */
+
+.code-pane {
+  /* R2 step 2: the ratio is stored, the pixel height is derived by App and
+     written here; with no sources the pane is the tab strip only */
+  flex: 0 0 var(--editor-h, 50%);
+  display: flex;
+  flex-direction: column;
+  min-height: var(--tabs-h);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.code-pane.collapsed .code-host,
+.code-pane.collapsed .panel {
+  display: none;
+}
+
+/* The waveform and the driver/load view share this frame; the tab strip switches
+   them. The dock used to sit between the editor and the waveform and took its
+   height from the waveform, which is what made opening the sources look like a
+   squashed trace. */
+.wave-frame {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.dock-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex: 0 0 var(--dock-tabs-h);
+  height: var(--dock-tabs-h);
+  padding: 0 6px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.dock-tab {
+  appearance: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  padding: 0 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dock-tab:hover { color: var(--text-0); }
+
+.dock-tab.active {
+  color: var(--text-0);
+  border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* the label-column display option, right-aligned in the dock tab strip */
+.dock-option {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 12px;
+  color: var(--text-2);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dock-option:hover { color: var(--text-0); }
+
+.dock-option input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.dock-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* the inactive view stays mounted (zoom, scroll and decode cache survive the
+   switch) but takes no space and no pointer events */
+.hidden { display: none !important; }
+
+.inspector-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-1);
+}
+
+/* The AI / MCP panel: what the local MCP server is and how to connect to it.
+   It replaces the waveform in the dock body while its tab is active, so it
+   owns the whole area and scrolls on its own. */
+.agent-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-1);
+  font-size: 12px;
+}
+
+.agent-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.5;
+}
+
+.agent-muted {
+  color: var(--fg-dim);
+}
+
+.agent-error {
+  color: var(--danger);
+}
+
+.agent-warn {
+  color: var(--warning, var(--fg-dim));
+}
+
+/* a small status dot: green while the listener is up */
+.agent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.agent-dot.on {
+  background: var(--success, #4caf72);
+}
+
+.agent-code,
+.agent-token,
+.agent-tool {
+  font-family: var(--mono, monospace);
+  background: var(--bg-2);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 3px;
+  padding: 1px 5px;
+  user-select: all;
+}
+
+.agent-code-block {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre;
+  user-select: all;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-tool {
+  font-size: 11px;
+}
+
+/* divider between the editor and the wave frame. Tier A: the drag writes
+   --editor-h straight to the DOM. */
+.wave-splitter {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 var(--wave-splitter-h);
+  height: var(--wave-splitter-h);
+  cursor: row-resize;
+  background: transparent;
+}
+
+.wave-splitter:hover,
+.wave-splitter.dragging {
+  background: var(--accent-line);
+}
+
+/* a wider invisible grab area, the visual line stays 5px */
+.wave-splitter::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: 0;
+  right: 0;
+}
+
+.splitter-shield.row {
+  cursor: row-resize;
+}
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar { display: none; }
+
+.tab {
+  position: relative;
+  padding: 0 14px;
+  height: 32px;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.tab:hover { color: var(--text-0); background: rgba(255, 255, 255, 0.03); border: none; }
+
+.tab.active { color: var(--text-0); background: var(--bg-1); }
+.tab.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+}
+
+.code-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ==========================================================================
+   waveform
+   ========================================================================== */
+
+/* the absolute wave canvas hangs off this pane, so it has to be the containing
+   block (and stay out of the row scroller) */
+.wave-pane {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--wave-bg);
+}
+
+/* The grip that resizes the label column (signal name + cursor value). It sits
+   on the seam, above the canvas overlay, and it is the only thing that *shows*
+   the column can be dragged: the old divider was an empty div with no css, i.e.
+   a zero-height element, so the feature looked unimplemented even though the
+   hit test in the wave body worked. */
+.wave-names-splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--names-w);
+  width: 7px;
+  transform: translateX(-3px);
+  z-index: 6;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.wave-names-splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+}
+
+.wave-names-splitter:hover::after,
+.wave-names-splitter.dragging::after {
+  background: var(--accent);
+}
+
+.timebar {
+  display: flex;
+  height: 30px;
+  flex: 0 0 30px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.timebar-readout {
+  flex: 0 0 var(--names-w);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.delta {
+  padding: 0 6px;
+  border-radius: 3px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.timebar-svg {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  /* the ruler is draggable: drag pans the trace, a click drops a cursor */
+  cursor: grab;
+}
+
+.timebar-svg.dragging { cursor: grabbing; }
+
+/* the goto box in the ruler readout: type a time, press Enter, cursor 1 moves */
+.timebar-goto {
+  flex: 0 0 auto;
+  width: 58px;
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.timebar-goto::placeholder { color: var(--text-2); }
+
+.timebar-goto:focus {
+  outline: none;
+  border-color: var(--accent-line);
+  color: var(--text-0);
+}
+
+.wave-body {
+  position: relative;
+  flex: 1;
+  display: block;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* focused programmatically on a press so the keyboard (Delete, arrows) acts
+     on the wave rows; not in the tab order, so no ring is drawn */
+  outline: none;
+  /* the wave canvas is an absolute overlay that leaves the scrollbar free, so
+     the gutter has to exist before the first scroll */
+  scrollbar-gutter: stable;
+}
+
+/* the scrollable row list: only its height is real, the row cells are placed
+   absolutely inside it by the virtualized name column */
+.wave-rows {
+  position: relative;
+  width: 100%;
+}
+
+/* the wave body is one canvas, drawn as an overlay above the scrolling rows so
+   it never scrolls away and never re-lays-out */
+.wave-canvas {
+  position: absolute;
+  top: var(--timebar-h);
+  left: var(--names-w);
+  right: var(--scrollbar-w);
+  bottom: 0;
+  z-index: 1;
+  background: var(--wave-bg);
+  /* the scroller below handles the mouse: clicks, drags and the wheel all land
+     on .wave-body, the canvas is only a paint target */
+  pointer-events: none;
+}
+
+.wave-surface {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.wave-name-cell {
+  position: absolute;
+  left: 0;
+  width: var(--names-w);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--row-h);
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-1);
+  border-right: 1px solid var(--line);
+  color: var(--text-1);
+  cursor: pointer;
+  user-select: none;
+}
+
+.wave-name-cell:hover { background: var(--bg-3); color: var(--text-0); }
+
+.wave-name-cell.chosen {
+  background: var(--accent-soft);
+  color: var(--text-0);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.wave-name-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.wave-more {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  color: transparent;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.wave-name-cell:hover .wave-more { color: var(--text-2); }
+.wave-more:hover { color: var(--accent); }
+
+/* The cursor value column(s): the last element of a label cell, right aligned
+   against the waveform so nothing but the cell padding separates the number
+   from the canvas (the Wave 18 user report: a blank strip used to sit between
+   the value and the trace). The width is a number of characters read from
+   `--wave-value-ch`, set inline per pane render by wave_show/wave.rs::view from
+   the widest value of the rows currently on screen: `1ch` is the exact advance
+   of a monospace digit, so a row shows its value without clipping and every
+   row lines up on the same column. The 11px accounts for the 6px left padding,
+   the 2px right padding, the 1px separator and 2px of slack (the global
+   `box-sizing: border-box` makes the flex basis the full cell width). A cursor
+   that is not set renders no element, so no slot is reserved for it. */
+.wave-value {
+  flex: 0 0 calc(var(--wave-value-ch, 4) * 1ch + 11px);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  padding: 0 2px 0 6px;
+  border-left: 1px solid var(--line-soft);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.wave-value.cursor-a { color: var(--cursor-a); }
+.wave-value.cursor-b { color: var(--cursor-b); }
+
+.axis-line {
+  stroke: #2b3648;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.axis-text {
+  fill: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+}
+
+.axis-text.cursor-a { fill: var(--cursor-a); }
+.axis-text.cursor-b { fill: var(--cursor-b); }
+
+/* keep the cursor readout legible when it lands on a tick label */
+.axis-text.cursor-a,
+.axis-text.cursor-b {
+  paint-order: stroke;
+  stroke: var(--bg-2);
+  stroke-width: 3px;
+  font-weight: 600;
+}
+
+.empty-hint {
+  padding: 26px 16px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+}
+
+.empty-hint kbd {
+  padding: 1px 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* ==========================================================================
+   signal settings modal
+   ========================================================================== */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 101;
+  background: rgba(4, 7, 12, 0.62);
+  backdrop-filter: blur(2px);
+}
+
+.modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 102;
+  width: 380px;
+  max-height: 76vh;
+  overflow-y: auto;
+  transform: translate(-50%, -50%);
+  padding: 0 0 16px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+
+.modal-title {
+  margin: 0;
+  padding: 13px 16px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-section { padding: 12px 16px 0; }
+
+.modal-label {
+  margin: 0 0 7px;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+}
+
+.modal-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.btn {
+  padding: 4px 10px;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.btn:hover { color: var(--text-0); background: var(--bg-3); }
+
+.btn.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.btn.danger:hover {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.modal-input { width: 64px; flex: 0 0 auto; }
+
+/* the attribute selector above would win over a bare class, be explicit */
+input.modal-input { width: 64px; flex: 0 0 auto; }
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--swatch, #4cc2ff);
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.swatch:hover { transform: scale(1.08); }
+
+.swatch.active {
+  border-color: var(--text-0);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ==========================================================================
+   layout helpers used by the components
+   ========================================================================== */
+
+.side-stack {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.panel-grow { flex: 1; min-height: 0; }
+
+.sig-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.sig-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.file-strip { padding: 8px 10px; }
+
+/* ==========================================================================
+   file_load: reading a big dump (progress + cancel)
+   ========================================================================== */
+
+.file-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.file-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-progress-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.file-progress-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+
+.file-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 80ms linear;
+}
+
+.file-cancel {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.monaco-wrap { height: 100%; background: var(--bg-1); }
+
+.timebar-readout code {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.modal-row { position: relative; }
+
+/* the full hierarchical path next to "copy path" (the title is the short name) */
+.modal-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.modal-pop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 5;
+  max-height: 150px;
+  overflow-y: auto;
+  margin-top: 4px;
+  padding: 6px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.modal-pop p { margin: 2px 0; }
+
+/* ==========================================================================
+   file picker (desktop "Open file" dialog)
+   ========================================================================== */
+
+.file-modal {
+  width: 560px;
+  max-height: 74vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+
+.file-modal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.file-modal-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.file-browser {
+  flex: 1;
+  min-height: 240px;
+  max-height: 48vh;
+  overflow-y: auto;
+  padding: 6px 8px;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  cursor: pointer;
+  user-select: none;
+}
+
+.file-row:hover { background: var(--bg-3); color: var(--text-0); }
+.file-row.dir { color: var(--text-0); }
+
+.file-row-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  text-align: center;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.file-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.file-row-tag {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 10px;
+  letter-spacing: 0.4px;
+}
+
+.file-row-tag:empty { display: none; }
+
+.file-browser-empty {
+  padding: 26px 12px;
+  text-align: center;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.file-browser-empty.error { color: var(--danger); }
+
+.file-modal-foot {
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+/* ==========================================================================
+   keyboard focus and the accessible tab strip (a11y pass)
+   ========================================================================== */
+
+/* One focus ring for every interactive element. :focus-visible keeps it off
+   mouse clicks (no ring on a button the user just clicked) while making Tab
+   navigation visible. */
+:where(button, input, select, textarea, [tabindex], .sig-row, .tree-row):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* the virtualized wave row is absolutely positioned; an outward ring would be
+   clipped by the scroller, so it goes inside */
+.wave-name-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* the tab strip: .tab is a div now (a button may not contain the close button),
+   so it lays its two real buttons out itself */
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.tab-name,
+.tab-close {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tab-close {
+  opacity: 0.55;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.tab-close:hover,
+.tab-close:focus-visible {
+  opacity: 1;
+  color: var(--danger);
+}
+
+/* the two modals keep their look, but are announced as dialogs */
+.modal:focus-within { outline: none; }
+
+/* a disabled control must still be distinguishable when it is focused */
+:where(button, input):disabled { cursor: not-allowed; opacity: 0.5; }
+
+/* ==========================================================================
+   Dump tabs
+   One tab per open dump. The strip only exists when at least two dumps are
+   open, so a single-dump session keeps exactly the old layout. It sits above
+   the waveform / drivers tab strip inside the wave frame.
+   ========================================================================== */
+
+.dump-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex: 0 0 26px;
+  height: 26px;
+  padding: 0 6px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.dump-tab {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.dump-tab:hover { color: var(--text-0); }
+
+.dump-tab.active {
+  color: var(--text-0);
+  border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dump-tab-name,
+.dump-tab-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  height: 100%;
+  padding: 0 4px;
+}
+
+.dump-tab-name { padding: 0 2px 0 10px; }
+
+.dump-tab-close {
+  width: 18px;
+  border-radius: 3px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.dump-tab-close:hover {
+  color: var(--text-0);
+  background: var(--bg-4);
+}
+/* ==========================================================================
+   Split view (docs/design/multi-dump.md step 3)
+   The toolbar only exists with >= 2 dumps; the two-pane container only while
+   the split is open, so a single-dump session keeps exactly its old DOM.
+   ========================================================================== */
+
+.split-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 26px;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-1);
+  overflow: hidden;
+}
+
+.split-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  border-radius: var(--radius-sm);
+  padding: 1px 8px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.split-btn:hover { color: var(--text-0); border-color: var(--accent-line); }
+
+.split-btn.active {
+  color: var(--text-0);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.split-close { margin-left: auto; }
+
+.split-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  /* set by the app: the left (interactive) pane's share, 0.25..0.75 */
+  --split-ratio: 0.5;
+}
+
+.split-view > .wave-pane {
+  flex: 0 0 calc(var(--split-ratio) * 100%);
+  min-width: 0;
+}
+
+/* the draggable divider between the two panes */
+.split-separator {
+  flex: 0 0 7px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: var(--line-soft);
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  position: relative;
+  touch-action: none;
+}
+
+.split-separator::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+  background: var(--text-2);
+  opacity: 0.5;
+}
+
+.split-separator:hover,
+.split-separator:focus-visible,
+.split-separator.dragging {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.split-separator:hover::after,
+.split-separator:focus-visible::after,
+.split-separator.dragging::after {
+  background: var(--accent);
+  opacity: 1;
+}
+
+/* full-window shield while the divider is dragged (tier A: no re-render) */
+.split-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  cursor: col-resize;
+}
+
+.split-pane {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--wave-bg);
+  border-left: 1px solid var(--line);
+}
+
+.split-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 var(--dock-tabs-h);
+  height: var(--dock-tabs-h);
+  padding: 0 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-1);
+  overflow: hidden;
+}
+
+.split-pane-name {
+  color: var(--text-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.split-pane-mode {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.split-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  cursor: grab;
+}
+
+.split-canvas-wrap:active {
+  cursor: grabbing;
+}
+
+.split-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* the bit range of a driver/load reference in the inspector (e.g. q[3:0]) */
+.inspector-bits {
+  color: var(--text-2);
+  font-size: 10px;
+  margin: 0 4px;
+}
+/* ==========================================================================
+   full-window file drop
+   ========================================================================== */
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 12, 18, 0.72);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+
+.drop-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: min(520px, 82vw);
+  padding: 34px 28px;
+  text-align: center;
+  border: 2px dashed var(--accent);
+  border-radius: calc(var(--radius) * 2);
+  background: var(--bg-1);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55), 0 0 24px var(--accent-soft);
+}
+
+.drop-overlay-icon {
+  color: var(--accent);
+  font-size: 30px;
+  line-height: 1;
+  animation: drop-pulse 1s ease-in-out infinite;
+}
+
+.drop-overlay-title {
+  color: var(--text-0);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+
+.drop-overlay-note {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.drop-overlay-note span {
+  color: var(--text-1);
+  white-space: nowrap;
+}

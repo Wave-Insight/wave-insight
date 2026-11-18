@@ -24,14 +24,18 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 #[cfg(feature = "tauri")]
-use crate::file_load::{current_webview, invoke};
-#[cfg(feature = "tauri")]
+use crate::file_load::current_webview;
+#[cfg(any(feature = "tauri", feature = "web-remote"))]
+use crate::file_load::invoke;
+#[cfg(any(feature = "tauri", feature = "web-remote"))]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "tauri")]
-use serde_wasm_bindgen::{from_value, to_value};
+use serde_wasm_bindgen::from_value;
+#[cfg(any(feature = "tauri", feature = "web-remote"))]
+use serde_wasm_bindgen::to_value;
 #[cfg(feature = "tauri")]
 use wasm_bindgen::prelude::*;
-#[cfg(feature = "tauri")]
+#[cfg(any(feature = "tauri", feature = "web-remote"))]
 use wasm_bindgen_futures::spawn_local;
 
 pub enum Msg {
@@ -136,12 +140,14 @@ pub enum Msg {
     Note(String),
     /// What the last successful parse cost; the success line carries it.
     LoadReport(LoadReport),
-    /// A native (desktop) dump was opened; the wave pane draws it read-only.
-    #[cfg(feature = "tauri")]
+    /// A native (remote) dump was opened; the wave pane draws it read-only.
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     RemoteReady(Box<crate::remote::RemoteSession>),
     /// The native backend declined the file (small dump or an error): read it
-    /// through the wasm path instead.
-    #[cfg(feature = "tauri")]
+    /// through the wasm path instead. Unreachable in web-remote, where every
+    /// dump stays on the native/HTTP path, but kept so the handler compiles.
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
+    #[cfg_attr(feature = "web-remote", allow(dead_code))]
     RemoteFallback(String),
     /// A desktop reload is reopening the dumps of the previous page, oldest
     /// first: the app opens them one at a time, through the same open path a
@@ -198,9 +204,10 @@ pub enum Msg {
     WaveSplitterUp,
     /// A tab of the wave frame was chosen (the waveform or the load/drive view).
     WaveFrameTab(WaveFrameTab),
-    /// The MCP server sent a UI command (desktop build): it is executed against
-    /// the store here and answered through `agent_reply`.
-    #[cfg(feature = "tauri")]
+    /// A backend sent a UI command (Tauri MCP event or the web `wave-web-command`
+    /// bridge): it is executed against the store here and answered through
+    /// `agent_reply`.
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     AgentCommand(crate::agent::AgentCommand),
 }
 
@@ -375,8 +382,8 @@ pub struct App {
     /// can be dropped anywhere. The loader owns the browser drag state, the
     /// desktop webview its native drag events; both report it here.
     drop_active: bool,
-    /// The native dump the desktop build is drawing read-only, when one is open.
-    #[cfg(feature = "tauri")]
+    /// The native dump the remote build is drawing read-only, when one is open.
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     remote: Option<crate::remote::RemoteSession>,
     /// The absolute paths of the dumps the desktop build currently has open,
     /// oldest first: the list a webview reload reopens. Only the desktop build
@@ -394,8 +401,9 @@ pub struct App {
     #[cfg(feature = "tauri")]
     native_path: Option<String>,
     /// The absolute path behind each wasm dump tab, by dump identity: closing a
-    /// tab forgets its path (the tab list itself keeps only name + size).
-    #[cfg(feature = "tauri")]
+    /// tab forgets its path (the tab list itself keeps only name + size). The
+    /// agent snapshot reports these in both remote builds.
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     tab_paths: Vec<(DumpId, String)>,
     /// The dumps a desktop reload is currently reopening, one at a time.
     #[cfg(feature = "tauri")]
@@ -405,8 +413,8 @@ pub struct App {
     /// sources next to the new waveform.
     #[cfg(feature = "tauri")]
     companion_gen: Cell<u32>,
-    /// Keeps the `wave-agent-command` event listener alive for the page.
-    #[cfg(feature = "tauri")]
+    /// Keeps the Tauri event / web `wave-web-command` listener alive for the page.
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     agent_listener: Option<Closure<dyn FnMut(wasm_bindgen::JsValue)>>,
 }
 
@@ -609,7 +617,7 @@ impl Component for App {
             wave_tab: WaveFrameTab::Waveform,
             pending_load: None,
             drop_active: false,
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             remote: None,
             #[cfg(feature = "tauri")]
             desktop_paths,
@@ -617,17 +625,18 @@ impl Component for App {
             desktop_persister,
             #[cfg(feature = "tauri")]
             native_path: None,
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             tab_paths: Vec::new(),
             #[cfg(feature = "tauri")]
             restore: None,
             #[cfg(feature = "tauri")]
             companion_gen: Cell::new(0),
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             agent_listener: None,
         };
-        // a native dump opened through the desktop file dialog arrives here
-        #[cfg(feature = "tauri")]
+        // a native dump opened through the desktop file dialog / web open_path
+        // bridge arrives here
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         {
             let link = ctx.link().clone();
             crate::remote::set_open_listener(Some(std::rc::Rc::new(move |session| {
@@ -639,6 +648,12 @@ impl Component for App {
         #[cfg(feature = "tauri")]
         {
             this.agent_listener = crate::agent::attach_agent_listener(ctx.link());
+        }
+        // web-remote build: the DSH host sends its commands as DOM CustomEvents
+        // (forwarded from `message` events by web/dsh-invoke.js)
+        #[cfg(feature = "web-remote")]
+        {
+            this.agent_listener = crate::agent::web_listener::attach_web_command_listener(ctx.link());
         }
         // Wave 19: a desktop page start frees the native mappings the previous
         // page left behind (the registry outlives the page) and then reopens the
@@ -689,7 +704,7 @@ impl Component for App {
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         {
             crate::remote::set_open_listener(None);
             // releasing the native session here must NOT touch the desktop
@@ -1644,7 +1659,7 @@ impl App {
                 // zoom and scroll, it is only hidden
                 true
             }
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             Msg::AgentCommand(command) => {
                 // A command never re-renders by itself: the store actions it
                 // dispatches reach their subscribers the normal way.
@@ -1865,7 +1880,7 @@ impl App {
                 self.pending_load = Some(report);
                 false
             }
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             Msg::RemoteFallback(file) => {
                 #[derive(Serialize, Deserialize)]
                 struct GetFileListArgs {
@@ -1922,20 +1937,30 @@ impl App {
                 });
                 true
             }
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             Msg::RemoteReady(session) => {
+                #[cfg(feature = "tauri")]
                 let path = session.dump().path.clone();
                 // the native dump replaces the previous native one and is one of
                 // the open dumps now: adopt_remote maintains the reopen list
                 self.adopt_remote(*session);
-                if let Some(restore) = self.restore.as_mut() {
-                    restore.opened += 1;
-                    restore.active = None;
+                // desktop-only bookkeeping: the reopen list, restore progress and
+                // companion-RTL discovery have no meaning in a web page
+                #[cfg(feature = "tauri")]
+                {
+                    if let Some(restore) = self.restore.as_mut() {
+                        restore.opened += 1;
+                        restore.active = None;
+                    }
+                    self.restore_advance(ctx);
+                    // every desktop dump open looks for companion RTL next to the
+                    // file, restored ones included (same path as a manual open)
+                    self.discover_companion_rtl(ctx, Some(path));
                 }
-                self.restore_advance(ctx);
-                // every desktop dump open looks for companion RTL next to the
-                // file, restored ones included (same path as a manual open)
-                self.discover_companion_rtl(ctx, Some(path));
+                // the DSH host waits for this before replaying its view state;
+                // post it only after the dump is actually adopted
+                #[cfg(feature = "web-remote")]
+                crate::agent::web_listener::post_ready();
                 true
             }
             #[cfg(feature = "tauri")]
@@ -2287,8 +2312,8 @@ impl App {
         }
     }
 
-    /// Execute one MCP UI command against the store and answer it.
-    #[cfg(feature = "tauri")]
+    /// Execute one MCP / DSH UI command against the store and answer it.
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     fn handle_agent_command(&mut self, command: crate::agent::AgentCommand) {
         use wave_insight_lib::agent::{CursorMove, UiCommand, UiResult};
         let id = command.id;
@@ -2572,9 +2597,9 @@ impl App {
             )));
             return;
         }
-        // the desktop build draws native dumps without a wasm handle: resolve the
+        // a remote build draws native dumps without a wasm handle: resolve the
         // batch against the native hierarchy instead
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(session) = &self.remote {
             let mut rows: Vec<Row> = Vec::with_capacity(unique.len());
             let mut unresolved = 0usize;
@@ -2744,7 +2769,7 @@ impl App {
         }
         // A native dump knows its own widths and has no wasm handle: resolve
         // against it first.
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(session) = &self.remote {
             if let Some(native) = session.signal_of_path(path) {
                 signal.size = native.width.max(1);
@@ -2779,9 +2804,9 @@ impl App {
     /// leaves the editor where it is; a plain click in the source only selects,
     /// it never adds.
     fn add_path(&mut self, path: &str, show_declaration: bool) {
-        // the desktop build may be drawing a native dump: it has no wasm handle
+        // a remote build may be drawing a native dump: it has no wasm handle
         // to match against, only the hierarchy's path -> signal table
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(session) = &self.remote {
             match session.signal_of_path(path) {
                 Some(native) => {
@@ -3010,11 +3035,12 @@ impl App {
 
     /// Adopt a native dump: close the previous one, clear the rows the wasm dump
     /// had, install the hierarchy and say which mode the window is in.
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     fn adopt_remote(&mut self, session: crate::remote::RemoteSession) {
         // Wave 19: the native backend is one-dump-at-a-time, so this dump
         // replaces the previous native one; the replaced path is not open any
         // more and leaves the desktop reopen list.
+        #[cfg(feature = "tauri")]
         self.forget_native_path();
         self.close_remote();
         // the rows of the dump that was open would resolve to signal indices of
@@ -3027,12 +3053,16 @@ impl App {
         }
         let status = session.status_text();
         let id = session.id();
+        #[cfg(feature = "tauri")]
         let path = session.dump().path.clone();
         self.remote = Some(session);
         // and this dump is open now: its absolute path is the only handle a
         // desktop reload has for it (a native dump has no store tab)
-        self.native_path = Some(path.clone());
-        self.remember_dump_path(Some(&path));
+        #[cfg(feature = "tauri")]
+        {
+            self.native_path = Some(path.clone());
+            self.remember_dump_path(Some(&path));
+        }
         crate::remote::set_native_active(true);
         // the backend accounting (checkable in __waveDebug.memory.native)
         spawn_local(async move {
@@ -3053,11 +3083,11 @@ impl App {
     /// Release the native dump: close_dump frees the mapping on the Rust side.
     /// (A no-op in the browser build: there is nothing native to close.)
     fn close_remote(&mut self) {
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         crate::remote::set_native_active(false);
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         crate::remote::set_native_memory(None);
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(session) = self.remote.take() {
             let id = session.id();
             spawn_local(async move {
@@ -3327,7 +3357,7 @@ impl App {
 
     /// The native session handed to the wave pane (none in the browser build).
     fn remote_session(&self) -> Option<crate::remote::RemoteSession> {
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(session) = &self.remote {
             return Some(session.clone());
         }
@@ -3337,7 +3367,7 @@ impl App {
     /// The sidebar tree: the native hierarchy when a native dump is open, else
     /// the store's dump/design tree.
     fn sidebar_tree(&self) -> Option<SidebarTree> {
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(session) = &self.remote {
             return Some(session.tree());
         }
@@ -3347,7 +3377,7 @@ impl App {
     /// A readable marker of the mode: the desktop build draws native dumps
     /// read-only over IPC, and knowing that is half of trusting the window.
     fn remote_badge(&self) -> Html {
-        #[cfg(feature = "tauri")]
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
         if let Some(session) = &self.remote {
             let dump = session.dump();
             let title = format!(

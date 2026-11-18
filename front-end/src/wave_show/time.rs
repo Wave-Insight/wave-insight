@@ -13,7 +13,7 @@
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::JsCast;
 
-#[cfg(feature = "tauri")]
+#[cfg(any(feature = "tauri", feature = "web-remote"))]
 use wasm_bindgen_futures::spawn_local;
 use wave_insight_lib::waveform::TimeRange;
 use web_sys::HtmlInputElement;
@@ -68,7 +68,7 @@ pub enum Msg {
     /// else is a value to find. `backward` is the Shift+Enter direction.
     Goto { text: String, backward: bool },
     /// A native value search answered: (hit or error, row name, query, backward).
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     RemoteFind(
         Result<Option<crate::remote::FindHitDto>, String>,
         String,
@@ -138,7 +138,7 @@ impl Component for Time {
     #[allow(unused_variables)] // ctx is used by the tauri-gated native find arm
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            #[cfg(feature = "tauri")]
+            #[cfg(any(feature = "tauri", feature = "web-remote"))]
             Msg::RemoteFind(result, name, query, backward) => {
                 match result {
                     Ok(Some(hit)) => {
@@ -249,7 +249,7 @@ impl Component for Time {
                 let Ok(time) = text.trim().parse::<i64>() else {
                     // the desktop build may be drawing a native dump: search it
                     // over IPC (same box, same Shift+Enter direction)
-                    #[cfg(feature = "tauri")]
+                    #[cfg(any(feature = "tauri", feature = "web-remote"))]
                     if self.remote.is_some() {
                         self.find_native(ctx, text, backward);
                         return false;
@@ -416,7 +416,7 @@ impl Time {
     /// show }: one IPC call per Enter, no whole-trace materialisation in wasm.
     /// The answer comes back as a message ([`Msg::RemoteFind`]) which commits the
     /// cursor/view and reports the value or the miss.
-    #[cfg(feature = "tauri")]
+    #[cfg(any(feature = "tauri", feature = "web-remote"))]
     fn find_native(&self, ctx: &Context<Self>, query: String, backward: bool) {
         let Some(remote) = self.remote.clone() else {
             return;

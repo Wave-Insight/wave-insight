@@ -1,6 +1,7 @@
 #cargo/trunk output
 /target
 /front-end/dist
+/front-end/dist-web
 
 #testbench dumps dropped in the repository root (readme: "drop one there first").
 #scoped to the root on purpose: fixtures under tests/data/ stay committable,

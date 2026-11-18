@@ -79,3 +79,8 @@ wasm = []
 #desktop build: tauri provides the file dialog and the launch arguments, the
 #dump is still parsed by the wasm build (the backend only returns the bytes)
 tauri = []
+#browser build talking to a loopback HTTP backend (DSH web remote): the same
+#native/remote UI path as the tauri build, but IPC goes through the JS shim's
+#window.__WAVE_INVOKE__ instead of __TAURI__.core.invoke. Mutually exclusive
+#with `tauri` (compile_error in main.rs).
+web-remote = []

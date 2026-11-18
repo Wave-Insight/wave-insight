@@ -428,8 +428,8 @@ thread_local! {
 ///
 /// The backend command is cheap (cached counters, no body materialisation), but
 /// it is still an IPC round trip: the browser-level debug hook must not turn a
-/// redraw loop into one request per frame. Desktop builds only.
-#[cfg(feature = "tauri")]
+/// redraw loop into one request per frame. Remote builds only.
+#[cfg(any(feature = "tauri", feature = "web-remote"))]
 pub fn maybe_refresh_native_memory(id: u64) {
     let now = js_sys::Date::now();
     let due = LAST_MEMORY_REFRESH.with(|last| {
@@ -739,10 +739,20 @@ pub enum NativeFallback {
 /// told us it is within the wasm threshold. Any error is [`NativeFallback::Report`];
 /// there is deliberately no "error + unknown size" fallback.
 pub fn native_fallback(proven_small: bool) -> NativeFallback {
-    if proven_small {
-        NativeFallback::Wasm
-    } else {
+    // In web-remote mode there are no local bytes to retry with: a failed
+    // native open is always reported, never retried through the wasm reader.
+    #[cfg(feature = "web-remote")]
+    {
+        let _ = proven_small;
         NativeFallback::Report
+    }
+    #[cfg(not(feature = "web-remote"))]
+    {
+        if proven_small {
+            NativeFallback::Wasm
+        } else {
+            NativeFallback::Report
+        }
     }
 }
 
@@ -950,10 +960,14 @@ impl CursorCache {
     }
 }
 
-#[cfg(feature = "tauri")]
+#[cfg(any(feature = "tauri", feature = "web-remote"))]
 mod ipc {
     use super::*;
 
+    use wasm_bindgen::JsValue;
+
+    /// Tauri desktop build: commands go through `__TAURI__.core.invoke`.
+    #[cfg(all(feature = "tauri", not(feature = "web-remote")))]
     async fn call<T: serde::de::DeserializeOwned>(
         command: &str,
         args: &JsValue,
@@ -962,7 +976,28 @@ mod ipc {
         serde_wasm_bindgen::from_value(value).map_err(|error| format!("{command}: {error}"))
     }
 
-    use wasm_bindgen::JsValue;
+    /// Web remote build: the JS shim (`web/dsh-invoke.js`) defines
+    /// `window.__WAVE_INVOKE__(cmd, args)`, POSTs `{cmd, args}` to `/invoke` and
+    /// resolves with the raw result JSON. Same DTOs, same `serde_wasm_bindgen`
+    /// decode as the tauri path.
+    #[cfg(feature = "web-remote")]
+    #[wasm_bindgen::prelude::wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = ["window"], js_name = "__WAVE_INVOKE__")]
+        fn wave_invoke(command: &str, args: JsValue) -> js_sys::Promise;
+    }
+
+    #[cfg(feature = "web-remote")]
+    async fn call<T: serde::de::DeserializeOwned>(
+        command: &str,
+        args: &JsValue,
+    ) -> Result<T, String> {
+        let promise = wave_invoke(command, args.clone());
+        let value = wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(|error| format!("{command}: js error: {:?}", error))?;
+        serde_wasm_bindgen::from_value(value).map_err(|error| format!("{command}: {error}"))
+    }
 
     /// Open `path` natively; returns the summary.
     pub async fn open(path: &str) -> Result<DumpSummaryDto, String> {
@@ -1133,6 +1168,10 @@ mod ipc {
     /// leaked).
     async fn finish_open(summary: DumpSummaryDto) -> Result<Option<RemoteSession>, String> {
         let dump = RemoteDump::from_dto(summary);
+        // The desktop build can read a small dump through wasm, but the web
+        // remote build has no local file bytes: every opened dump stays on the
+        // HTTP/native path, whatever its size.
+        #[cfg(not(feature = "web-remote"))]
         if open_decision(dump.bytes) == OpenDecision::Wasm {
             let _ = close(dump.id).await;
             return Ok(None);
@@ -1160,13 +1199,13 @@ mod ipc {
 }
 
 #[allow(unused_imports)]
-#[cfg(feature = "tauri")]
+#[cfg(any(feature = "tauri", feature = "web-remote"))]
 pub use ipc::{
     close, close_all, find, hierarchy, memory_stats, open, open_parts, process_memory, try_open,
     try_open_parts, value_at, window,
 };
 
-#[cfg(not(feature = "tauri"))]
+#[cfg(not(any(feature = "tauri", feature = "web-remote")))]
 mod browser {
     use super::*;
 
@@ -1234,9 +1273,9 @@ mod browser {
     }
 }
 
-// the browser build has no native backend: the stubs exist so the tauri-gated
-// call sites compile in both builds, and nothing calls them here
-#[cfg(not(feature = "tauri"))]
+// the pure-wasm browser build has no native backend: the stubs exist so the
+// remote-gated call sites compile in that build too, and nothing calls them there
+#[cfg(not(any(feature = "tauri", feature = "web-remote")))]
 #[allow(unused_imports)]
 pub use browser::{
     close, close_all, find, hierarchy, memory_stats, open, open_parts, process_memory, try_open,
