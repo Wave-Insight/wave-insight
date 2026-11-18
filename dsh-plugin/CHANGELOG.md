@@ -4,6 +4,64 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.0] - 2026-11-18
+
+### Fixed
+
+- The bundle activates again. `Config` is now a hand-written Standard Schema:
+  the previous `zod` object rejected the `undefined` a config-less row passes to
+  the Loader, and on a directory-linked install `import 'zod'` resolved to a 3.x
+  copy without `~standard`, so activation threw before any tool registered.
+- The panel no longer re-opens the same dump forever. The readiness handshake
+  keeps the opened path instead of clearing it, so the row/range/cursor replay
+  finally runs instead of looping `open_path` through a full dump reopen.
+- A viewer URL from an earlier Host run can no longer reach the iframe: the
+  projection strips host-local fields from folded state and stamps the live URL,
+  and the panel probes `/health` before rendering.
+- Inbound `wave-dsh-ready` messages are checked against the iframe's window and
+  origin; the shim only accepts commands from its framing window.
+- Tool failures stay real `isError` results with a stable code in the message,
+  and cancellation keeps the caller's reason instead of `[object Object]`.
+- `get_changes` deduplicates signal paths and no longer mislabels values when
+  the model repeats a path; decoded changes are capped to what the model reads.
+- `add_signals` resolves every path in one helper call again (with a fallback for
+  helpers built before the `validate` command).
+- GHW dumps report a real time range (first/last time step) instead of being
+  clamped to a one-tick window; real/string/event values render as text instead
+  of Rust `Debug` output.
+- `remove_signals` and `set_cursors` require a loaded dump, and cursors are
+  clamped to the dump range.
+- The viewer backend no longer deadlocks on an unread stderr pipe, a failed
+  start no longer leaks the child or latches a permanent error, and the plugin's
+  cleanup effect is installed before the first `await`.
+- Two mounted instances share one viewer backend by refcount instead of the
+  first unload killing the other's panel.
+
+### Changed
+
+- Host half split into `host/` modules (assets, bridge, daemon, projection,
+  sessions, tools, schemas); the Client half is restructured around a pure
+  view-diff function and a bounded, event-driven auto-open.
+- Tool results carry `{ waveInsight: { version, state } }`; the view shape now
+  matches the panel exactly (`timeRange`, `signalCount`, `ui`), and
+  `stateVersion` is 4, so stale checkpoints are discarded.
+- The projection accepts no `inheritedEventCount` bookkeeping and no host-local
+  fields; `apply` returns the previous state reference when nothing renders
+  differently.
+- Locale dictionaries are registered inside `ctx.effect` (reload-safe) and the
+  unsupported `zh-cn` dictionary is gone.
+- Loopback backend: per-process token on `/invoke`, `Host`/`Origin` checks,
+  token-free `/health`, `dump_find`, immutable caching for hashed assets,
+  `nosniff`, and registry calls moved off the async runtime.
+- The UI shim closes its own dumps on `pagehide`, so a reloaded panel no longer
+  leaks mappings until the 32-dump cap.
+- Packaging: `./package.json` export, `host/` in `files`, honest platform table,
+  `engines.dsh`, and no runtime dependencies.
+
+### Removed
+
+- The `zod` dependency.
+
 ## [0.1.5] - 2026-11-18
 
 ### Changed
