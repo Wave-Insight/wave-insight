@@ -98,6 +98,48 @@ fn cold_window_does_not_materialise_the_body_for_the_left_edge() {
 }
 
 #[test]
+fn carrying_the_left_edge_fills_a_cold_window_and_leaves_the_rest_alone() {
+    let (waveform, clock, data, idle) = open_dense(500);
+    // `idle` only changed at #0 and the bus changes every ten steps, so a window
+    // that starts between two changes has neither at its left edge.
+    let indices = [idle, clock, data];
+    let mut rows = waveform
+        .window_changes_many(&indices, 405, Some(450), 10_000)
+        .expect("window query");
+    assert!(
+        rows[0].changes.is_empty(),
+        "idle does not change in the window"
+    );
+    assert_eq!(rows[0].before, None, "a cold window carries nothing");
+    let filled = waveform
+        .carry_values_before(&indices, &mut rows, 405)
+        .expect("carry");
+    // only the two rows without a left edge are answered: the clock has a change
+    // exactly at the window start, so its window was already complete
+    assert_eq!(filled, 2, "idle and the bus had no left edge");
+    assert!(rows[0].before.is_some(), "the steady bit gets its level");
+    assert_eq!(rows[1].before, None, "a change at start needs no carry");
+    assert!(
+        rows[2].before.is_some(),
+        "the bus gets the value it held before the window"
+    );
+    // the carry is the memory-flat lookup: nothing was materialised
+    assert_eq!(waveform.cache_stats(), Default::default());
+
+    // a warm window already carries its left edge: asking again fills nothing for
+    // it in the cold case and needs one lookup for the rest
+    waveform.decoded_changes(idle).expect("decode idle");
+    let mut warm = waveform
+        .window_changes_many(&indices, 405, Some(450), 10_000)
+        .expect("window query");
+    assert!(warm[0].before.is_some(), "the warm cache carries it itself");
+    let filled = waveform
+        .carry_values_before(&indices, &mut warm, 405)
+        .expect("carry");
+    assert_eq!(filled, 1, "only the bus still needs an answer");
+}
+
+#[test]
 fn per_signal_cap_is_fair_and_bounded() {
     let (waveform, clock, data, idle) = open_dense(500);
     let rows = waveform

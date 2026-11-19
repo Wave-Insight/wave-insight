@@ -73,7 +73,11 @@ Scenario list (the runner's `--list` prints it, default is all):
 `persistence`, `session`, `a11y`, `findValue`, `reload`, `rendererLabels`,
 `rendererAlign`, `elaboration`, `diagnostics`, `exportTxt`, `corruption`,
 `multiDump`, `bitRanges`, `completion`, `inspectorBits`, `splitView`, `largeDump`,
-`bulkAdd`, `denseDump`.
+`bulkAdd`, `denseDump`, `heldBus`.
+
+`heldBus` zooms into a window in which a bus has no change at all and asserts
+that the band (and its value label) is still drawn: the regression guard for
+the left-edge carry of a windowed bus row.
 
 `wave1` asserts the Wave 1 features (fixed point readout, search options);
 `wave2` asserts the Wave 2 features (CSV export through a real download,

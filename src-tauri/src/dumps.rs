@@ -27,8 +27,9 @@
 //! dump_window(id, signals, start, end, maxChangesPerSignal?, show?) -> [WindowDto]
 //!   { signal, before: String|null, capped, changes: [ { time, value } ] }
 //!   values are already rendered to text in Rust; capped means the per-signal
-//!   cap stopped the collection; before is the value in effect at start when the
-//!   backend has it cached (null on a cold cache).
+//!   cap stopped the collection; before is the value in effect at start, so a
+//!   row that did not change inside the window still draws its band/level
+//!   (null only when the signal had no change at or before start).
 //!
 //! dump_value_at(id, signal, time, show?) -> String | null
 //!   null = the signal had not changed yet.
@@ -492,10 +493,18 @@ impl DumpRegistry {
                 indices.push(signal);
             }
         }
-        let windowed = dump
+        let mut windowed = dump
             .waveform
             .window_changes_many(&indices, start, end, max_changes)
             .map_err(|error| format!("dump_window: dump {id}: {}", error.message()))?;
+        // A window is only complete with its left edge. The streamed pass fills
+        // `before` out of the warm cache alone, so a bus that last changed before
+        // the window used to come back empty and the front end drew nothing until
+        // the next change. One bounded, memoised batch lookup for the rows that
+        // still need it; a failure only costs the left edge, never the window.
+        let _ = dump
+            .waveform
+            .carry_values_before(&indices, &mut windowed, start);
         Ok(windowed
             .into_iter()
             .zip(indices)
@@ -1666,6 +1675,37 @@ mod tests {
             after.lookup_cache_entries >= 1,
             "the last-lookup cache is used"
         );
+        registry.close(summary.id).expect("close");
+    }
+
+    #[test]
+    fn window_carries_the_left_edge_for_a_bus_that_did_not_change() {
+        // `data` changes at #10 and then holds `a`; a window after that has no
+        // change of it at all, so the panel would draw an empty row unless the
+        // window carries the value from before the visible range.
+        let path = write_small_vcd("window-left-edge");
+        let registry = DumpRegistry::new();
+        let summary = registry.open(&path.display().to_string()).expect("open");
+        let data = signal_index(&registry, summary.id, "top.data");
+        let window = registry
+            .window(summary.id, &[data], 15, Some(20), None, Some("hex"))
+            .expect("window");
+        assert_eq!(window.len(), 1);
+        assert!(
+            window[0].changes.is_empty(),
+            "nothing changes inside the window: {:?}",
+            window[0].changes
+        );
+        assert_eq!(
+            window[0].before.as_deref(),
+            Some("a"),
+            "the window carries the value the bus held before it"
+        );
+        // the carry is the streaming lookup: no body, no packed decodes
+        let stats = registry.memory_stats(summary.id).expect("stats");
+        assert_eq!(stats.time_table_bytes, 0);
+        assert_eq!(stats.packed_bytes, 0);
+        assert_eq!(stats.cache_bytes, 0);
         registry.close(summary.id).expect("close");
     }
 

@@ -10,6 +10,26 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.23.6] - 2026-11-19
+
+### Fixed
+
+- A multi bit row whose value changed before the visible time range is drawn
+  from the value it holds at the left edge. The windowed decode filled that
+  value only out of a warm cache, so a bus that had not changed inside the
+  window was painted as an empty row and only appeared at its next transition
+  (a bit that never toggled inside the window lost its level the same way).
+  The window fetch now completes the left edge with the library's memory-flat
+  `values_before` lookup - one bounded, memoised batch pass for the rows that
+  need it - so the wasm renderer, the split view and the native dump backend
+  all draw the held band, its value label and the steady level across the
+  whole window (`Waveform::carry_values_before`).
+
+### Added
+
+- The `heldBus` browser scenario zooms into a window in which a bus has no
+  change at all and asserts that the band and its value label are still there.
+
 ## [0.23.5] - 2026-11-19
 
 ### Fixed

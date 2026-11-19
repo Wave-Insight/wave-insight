@@ -2834,6 +2834,38 @@ scenarios.busBands = async (cdp) => {
   await cdp.shot('qa-bus-bands-zoom.png');
 };
 
+// --- 0.23.6: a bus that changed before the window keeps its band ------------
+// The windowed decode carries the left-edge value only out of a warm cache, so a
+// bus whose last change is before the visible range used to draw nothing until
+// its next transition (a steady bit drew no level at all). The window fetch now
+// completes the left edge, so the band covers the whole window and carries the
+// value the bus held.
+scenarios.heldBus = async (cdp) => {
+  await boot(cdp);
+  await cdp.upload([path.join(FIXTURES, 'held_bus.vcd')]);
+  await waitStatus(cdp, 'waveform loaded', 25000);
+  await sleep(700);
+  await addSignal(cdp, 'held');
+  await addSignal(cdp, 'steady');
+  await sleep(900);
+  const canvas = await cdp.eval(`window.__qa.rect('.wave-canvas')`);
+  // zoom into the hold: the visible range no longer contains the only change of
+  // either row, which is exactly the case that used to draw an empty row
+  for (let i = 0; i < 6; i += 1) {
+    await wheel(cdp, canvas.x + 320, canvas.y + 20, -120, { ctrl: true });
+    await sleep(220);
+  }
+  await sleep(700);
+  const debug = await cdp.eval('window.__qa.debug()');
+  const info = await cdp.eval('window.__qa.bandLabels()');
+  note('held bus', { changes: debug && debug.changes, bands: debug && debug.bands, labels: info.labels });
+  check('heldBus: nothing changes inside the window', debug && debug.changes === 0, { changes: debug && debug.changes, bands: debug && debug.bands });
+  check('heldBus: the bus draws its band anyway', debug && debug.bands === 1, { bands: debug && debug.bands, changes: debug && debug.changes });
+  check('heldBus: the band carries the value held before the window', Array.isArray(info.labels) && info.labels.indexOf('aa') >= 0, info.labels.slice(0, 8));
+  check('heldBus: no exceptions', (await exceptions(cdp)).length === 0, await exceptions(cdp));
+  await cdp.shot('qa-held-bus.png');
+};
+
 scenarios.snap = async (cdp) => {
   await boot(cdp);
   await cdp.upload([path.join(FIXTURES, 'sparse.vcd')]);

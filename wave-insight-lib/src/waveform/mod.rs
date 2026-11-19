@@ -55,6 +55,7 @@
 //! | what you are doing | call | cost |
 //! |---|---|---|
 //! | drawing the visible rows (recommended) | [`Waveform::window_changes_many`] | one pass, fair per-row cap, O(rows * cap) memory |
+//! | the value a row holds at the left edge | [`Waveform::carry_values_before`] | one pass for the rows that need it, memoised |
 //! | drawing after a cached decode | [`Waveform::decoded_changes_many`], then [`DecodedSignal::window`] per row | one pass over the body, full histories in memory |
 //! | drawing one row | [`Waveform::decoded_changes`] + [`DecodedSignal::window`] | decode once per signal, then binary search |
 //! | cursor readout, tooltips | [`Waveform::stream_value_before`] | one change, O(1) retained memory (FST seeks; VCD forward scan) |
@@ -67,7 +68,10 @@
 //! decode, so a dense clock cannot materialise gigabytes (FST seeks through its
 //! time table; VCD scans forward to the window start, which is the format
 //! limitation, not an extra decode).  Its `before` field is the value carried
-//! into the left edge when the cache already holds the signal.
+//! into the left edge when the cache already holds the signal; a renderer that
+//! draws the left edge fills the rest with
+//! [`Waveform::carry_values_before`], the memory-flat batch lookup behind
+//! [`Waveform::values_before`].
 //!
 //! A renderer must not call [`Waveform::changes_in_window`] per frame: it
 //! re-streams the file on every call (that is what made the old per-row SVG
@@ -243,8 +247,8 @@ pub struct WindowedSignal {
     pub changes: Vec<Change>,
     /// Value in effect at or just before the window start, when the backend can
     /// provide it without extra decoding (the signal is already in the
-    /// materialised cache).  None on a cold cache; the renderer should then draw
-    /// from the first in-window change and document the approximation.
+    /// materialised cache).  None on a cold cache; a renderer that needs the left
+    /// edge fills it with [Waveform::carry_values_before].
     pub before: Option<WaveValue>,
     /// True when the per-signal cap stopped the collection (the signal has more
     /// changes in the window than were returned).
@@ -1169,9 +1173,11 @@ impl Waveform {
     ///
     /// before is best effort: it is only filled when the signal is already in
     /// the materialised decode cache (no second full-history scan is done to
-    /// obtain it).  FST and VCD are streamed, so memory is O(signals * cap);
-    /// GHW cannot be streamed by wellen and falls back to materialising the
-    /// requested signals (values are the same, memory is not O(window)).
+    /// obtain it).  A renderer that has to draw the left edge calls
+    /// [Waveform::carry_values_before] on the returned windows to fill the rest.
+    /// FST and VCD are streamed, so memory is O(signals * cap); GHW cannot be
+    /// streamed by wellen and falls back to materialising the requested signals
+    /// (values are the same, memory is not O(window)).
     ///
     /// Aliases: a requested alias reports its own index (same semantics as
     /// [Waveform::stream_changes]); the shared signal is decoded once.
@@ -1267,6 +1273,74 @@ impl Waveform {
             }
         }
         Ok(output)
+    }
+
+    /// Fill the left-edge value of windows returned by
+    /// [Waveform::window_changes_many].
+    ///
+    /// That pass fills `before` only from the already materialised cache, so on a
+    /// streamed (cold) dump every signal whose first in-window change is after
+    /// `start` comes back without the value it holds at the left edge.  A
+    /// renderer cannot draw such a row: a bus that last changed long before the
+    /// window would stay blank until its next change, and a steady bit would draw
+    /// no level at all.
+    ///
+    /// This is the explicit second step for that caller.  The rows that still
+    /// need a left edge are answered by [Waveform::values_before] - one stream
+    /// pass for the whole screen, O(1) retained memory, memoised per
+    /// (signal, time), so panning back over the same range costs nothing - and
+    /// the answer is stored in `before`.  A row that already carries a value
+    /// (warm cache) or that has a change at `start` is left untouched: its window
+    /// is already complete, so the common case pays nothing.
+    ///
+    /// `signals` is the deduplicated request order of `windows`: the list passed
+    /// to [Waveform::window_changes_many] with every duplicate collapsed onto its
+    /// first slot (the same indices, in the same order, as the returned rows).
+    /// Returns how many windows were filled; a signal with no change at or before
+    /// `start` keeps an empty `before`, which means its history starts inside the
+    /// window.
+    pub fn carry_values_before(
+        &self,
+        signals: &[usize],
+        windows: &mut [WindowedSignal],
+        start: Time,
+    ) -> Result<usize> {
+        // (window slot, slot in the deduplicated request built below)
+        let mut requested: Vec<usize> = Vec::new();
+        let mut plan: Vec<(usize, usize)> = Vec::new();
+        for slot in 0..signals.len().min(windows.len()) {
+            let window = &windows[slot];
+            let needs_before = window.before.is_none()
+                && window
+                    .changes
+                    .first()
+                    .map(|change| change.0 > start)
+                    .unwrap_or(true);
+            if !needs_before {
+                continue;
+            }
+            let signal = signals[slot];
+            let position = match requested.iter().position(|&seen| seen == signal) {
+                Some(position) => position,
+                None => {
+                    requested.push(signal);
+                    requested.len() - 1
+                }
+            };
+            plan.push((slot, position));
+        }
+        if requested.is_empty() {
+            return Ok(0);
+        }
+        let answers = self.values_before(&requested, start)?;
+        let mut filled = 0usize;
+        for (slot, position) in plan {
+            if let Some(Some((_, value))) = answers.get(position) {
+                windows[slot].before = Some(value.clone());
+                filled += 1;
+            }
+        }
+        Ok(filled)
     }
 
     /// GHW fallback: materialise the requested signals one at a time.

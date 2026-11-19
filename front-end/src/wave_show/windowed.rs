@@ -19,8 +19,13 @@
 //! change count for the memory budget. The library calls live in [`fetch`]; when
 //! the library's bounded [`window_changes_many`] lands, only that function
 //! changes.
+//!
+//! A window is only complete with its left edge: the streamed pass fills that
+//! value out of the warm cache alone, so [`fetch`] completes it with
+//! [`Waveform::carry_values_before`] before a row stores the window. Without it
+//! a bus that last changed before the visible range drew nothing until its next
+//! change.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use wave_insight_lib::waveform::{BitValue, Bits, Change, WaveValue, Waveform};
@@ -222,18 +227,24 @@ pub fn fetch(
     }
     // the backend deduplicates the request, keeps the first slot per signal and
     // caps every signal fairly: one streaming pass, O(signals * cap) memory
-    let windowed = waveform
+    let mut windowed = waveform
         .window_changes_many(signals, req.start, Some(req.end), req.cap)
         .map_err(|error| format!("{error}"))?;
     // map the deduplicated result back onto the requested rows
-    let mut slot_of_signal: HashMap<usize, usize> = HashMap::new();
-    let mut slot = 0usize;
+    let mut unique: Vec<usize> = Vec::with_capacity(signals.len());
     for &signal in signals {
-        if let std::collections::hash_map::Entry::Vacant(entry) = slot_of_signal.entry(signal) {
-            entry.insert(slot);
-            slot += 1;
+        if !unique.contains(&signal) {
+            unique.push(signal);
         }
     }
+    // The streamed pass carries the left-edge value only out of a warm cache, so
+    // on a streamed dump a row whose first in-window change is later comes back
+    // without it. Draw it anyway: a bus that last changed before the window has
+    // to keep its band (and its value label) across the whole window instead of
+    // staying blank until its next change, and a steady bit has to keep its
+    // level. One bounded, memoised lookup for the rows that need it; a failure
+    // only costs the left edge, never the window.
+    let _ = waveform.carry_values_before(&unique, &mut windowed, req.start);
     let shared: Vec<(Arc<[Change]>, Option<WaveValue>, bool)> = windowed
         .into_iter()
         .map(|row| (Arc::<[Change]>::from(row.changes), row.before, row.capped))
@@ -241,7 +252,7 @@ pub fn fetch(
     Ok(signals
         .iter()
         .map(|signal| {
-            let slot = slot_of_signal.get(signal).copied()?;
+            let slot = unique.iter().position(|candidate| candidate == signal)?;
             let (changes, before, capped) = shared.get(slot)?;
             Some(RowWindow::new(
                 Arc::clone(changes),
@@ -393,8 +404,9 @@ mod tests {
         // the value at the left edge is the last change at/before it
         assert!(window.value_at(15).is_some());
         assert_eq!(window.value_at(5), window.value_at(0));
-        // nothing at/before the fetched range: no carry (the renderer draws from
-        // the first in-window change and documents the approximation)
+        // nothing at/before the fetched range: no carry, because the history
+        // really starts inside the window (the fetch fills a cold `before`; see
+        // the window fetch test)
         let empty = RowWindow::new(history(&[30]), None, request(20, 100), false);
         assert!(empty.value_at(25).is_none());
         // before is used when the backend could provide it
@@ -465,5 +477,70 @@ mod tests {
         let missing = derive_bit_window(&parent, 40);
         assert!(missing.changes().is_empty());
         assert!(missing.capped == parent.capped);
+    }
+
+    /// A VCD whose bus changed once, long before the window, plus a bit whose
+    /// history only starts inside it.
+    fn held_bus_vcd() -> String {
+        let mut vcd = String::new();
+        vcd.push_str("$date test $end\n$version 1 $end\n$timescale 1ns $end\n");
+        vcd.push_str("$scope module top $end\n");
+        vcd.push_str("$var wire 8 % data [7:0] $end\n");
+        vcd.push_str("$var wire 1 & late $end\n");
+        vcd.push_str("$upscope $end\n$enddefinitions $end\n");
+        vcd.push_str("#0\nb00000000 %\n");
+        // the bus holds 10101010 from #10 to the end of the trace: nothing in the
+        // visible window changes it
+        vcd.push_str("#10\nb10101010 %\n");
+        vcd.push_str("#1500\n1&\n");
+        vcd.push_str("#2000\n");
+        vcd
+    }
+
+    /// The raw number of a bus value, for the assertions below.
+    fn raw(value: &WaveValue) -> u64 {
+        value
+            .as_bits()
+            .and_then(|bits| bits.as_u64())
+            .expect("a numeric bus value")
+    }
+
+    #[test]
+    fn a_bus_that_changed_before_the_window_keeps_its_left_edge() {
+        let waveform = Waveform::open_bytes(held_bus_vcd().into_bytes()).expect("VCD opens");
+        let data = waveform.signal_by_path("top.data").expect("data").index();
+        let late = waveform.signal_by_path("top.late").expect("late").index();
+        // a window far after the bus last changed: no change lands inside it
+        let req = WindowRequest {
+            start: 900,
+            end: 1500,
+            visible_start: 1000,
+            visible_end: 1400,
+            cap: 4096,
+        };
+        let fetched = fetch(&waveform, &[data, late], req).expect("windows");
+        let bus = fetched[0].as_ref().expect("data window");
+        assert!(
+            bus.changes().is_empty(),
+            "nothing changes inside the window"
+        );
+        // the row must still be drawn as a bus with the held value, not as an
+        // empty row that only starts at the next transition
+        assert!(bus.first_value().is_some(), "the row has a value to draw");
+        assert_eq!(
+            raw(bus.value_at(req.visible_start).expect("left edge")),
+            0xAA
+        );
+        assert_eq!(
+            raw(bus.value_at(req.visible_end).expect("right edge")),
+            0xAA
+        );
+        // a row whose history really starts inside the window carries nothing, so
+        // its band still begins at its first change
+        let late = fetched[1].as_ref().expect("late window");
+        assert!(late.value_at(req.visible_start).is_none());
+        assert_eq!(late.changes().first().map(|(time, _)| *time), Some(1500));
+        // the carry is the memory-flat batch lookup: the body stays un-materialised
+        assert_eq!(waveform.cache_stats(), Default::default());
     }
 }

@@ -1,0 +1,21 @@
+$date qa held bus fixture $end
+$version wave-insight qa $end
+$timescale 1ns $end
+$scope module top $end
+  $var wire 1 ! clk $end
+  $var wire 8 " held [7:0] $end
+  $var wire 1 # steady $end
+$upscope $end
+$enddefinitions $end
+$dumpvars
+0!
+b10101010 "
+1#
+$end
+#0
+b10101010 "
+1#
+#1000
+1!
+#2000
+0!

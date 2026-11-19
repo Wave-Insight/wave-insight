@@ -4,6 +4,14 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.5] - 2026-11-19
+
+### Fixed
+
+- The bundled viewer picks up the 0.23.6 renderer fix: a multi bit row that
+  changed before the visible time range keeps its band and value label instead
+  of staying blank until its next transition.
+
 ## [0.2.4] - 2026-11-19
 
 ### Added
