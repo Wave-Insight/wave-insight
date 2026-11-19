@@ -10,6 +10,36 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.23.5] - 2026-11-19
+
+### Fixed
+
+- The DSH plugin now activates: its `Config` was a zod object without the
+  Standard Schema interface the Loader validates against, and the config-less
+  row made activation fail before any tool or panel existed.
+- The embedded viewer renders a dump end to end. The shim serialized the app's
+  `Map`-shaped arguments as `{}`, the post-adoption handshake was also a `Map`
+  the host could not read, and the empty-state guard only knew about wasm dumps
+  — a native dump opened successfully but was painted as "Nothing loaded yet".
+  The loopback backend now answers the viewer's memory commands instead of
+  failing them, and the projection stamps the live viewer URL before the shell
+  reads a resumed session.
+- A UTF-8 BOM in `package.json` made the plugin manager drop the bundle. Manifests
+  are BOM-free and the host suite fails on a BOM now.
+
+### Added
+
+- A right-sidebar tab with the real Wave Insight viewer, eight model-facing
+  waveform tools, a live dump name in the tab chip, a loopback backend with a
+  per-process token plus Host/Origin checks, and a build stamp that fails CI
+  when `dsh-plugin/ui` predates the front-end sources.
+- Host, Client, shim and backend test suites (38 assertions in `node:test`).
+
+### Changed
+
+- The DSH plugin's Host half is split into `host/` modules; the bundled native
+  helper and viewer backend are rebuilt from current sources.
+
 ## [0.23.4] - 2026-11-18
 
 ### Fixed
