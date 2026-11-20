@@ -8,6 +8,10 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
+Nothing yet: the next wave lands here.
+
+## [0.24.1] - 2026-11-20
+
 ### Changed
 
 - The DSH plugin no longer commits its native binaries. `dsh-plugin/bin/` is
