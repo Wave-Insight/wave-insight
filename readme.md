@@ -650,7 +650,9 @@ has none of them until `cargo build -p dsh-bridge -p wave-insight-web-backend
 platforms build their own and point `WAVE_DSH_BRIDGE` / `WAVE_WEB_BACKEND` (or
 the bundle's `helperPath` / `backendPath`) at them.
 
-Install the bundle with Plugins > Add plugin, selecting `dsh-plugin/`.
+Install the bundle from npm with `dsh plugin --profile <profile> add
+dsh-wave-insight`, or with Plugins > Add plugin: that package name, a release
+tarball URL, or `dsh-plugin/` from a checkout.
 
 ## Memory and very large dumps
 

@@ -115,6 +115,13 @@ jobs:
     # creates the release if the desktop job did not).
     needs: [dsh-plugin-binaries]
     runs-on: ubuntu-latest
+    # `id-token: write` is the whole authentication for the npm step at the
+    # bottom: the package authorizes this repository and workflow as a Trusted
+    # Publisher, and npm exchanges the OIDC token for a short-lived publish
+    # credential. No NPM_TOKEN secret exists to leak or rotate.
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -164,3 +171,23 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: dsh-plugin/*.tgz
           fail_on_unmatched_files: true
+
+      # Publishing is opt-in and runs after the tarball is attached, so a
+      # registry problem can never cost the release its download. npm can only
+      # attach a Trusted Publisher to a package that already exists, so the
+      # first version is published by hand (`npm publish <the .tgz this job
+      # attached>`); afterwards set the repository variable NPM_PUBLISH to
+      # `true` and every release publishes a version that is not there yet.
+      # Publishing needs npm >= 11.5.1 for the OIDC exchange, which node 24
+      # ships.
+      - name: Publish the bundle to npm
+        if: vars.NPM_PUBLISH == 'true'
+        working-directory: dsh-plugin
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          published="$(npm view "dsh-wave-insight@${version}" version 2>/dev/null || true)"
+          if [ "$published" = "$version" ]; then
+            echo "dsh-wave-insight@${version} is already on npm; nothing to publish"
+            exit 0
+          fi
+          npm publish

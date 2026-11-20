@@ -11,14 +11,14 @@
 //   * a command is only sent while the viewer is known to be listening, tracked
 //     by the `wave-dsh-ready` handshake rather than by optimistic timing.
 window.__ModuleLoader__.load({
-  id: '@wave-insight/dsh-plugin',
+  id: 'dsh-wave-insight',
   factory(require) {
     const React = require('react')
     const h = React.createElement
     const { useCallback, useEffect, useRef, useState } = React
 
     const KIND = 'wave-insight'
-    const TAB_ID = '@wave-insight/dsh-plugin'
+    const TAB_ID = 'dsh-wave-insight'
     const PROJECTION_KEY = 'waveInsight'
     const NAMESPACE = 'waveInsight'
     const MESSAGE_TYPE = 'wave-dsh'

@@ -35,6 +35,20 @@ test('manifests are BOM-free and parse', () => {
     /id:\s*wave-insight-dsh/,
     'the row inserts the plugin',
   )
+
+  // The package name is load-bearing: the loader resolves the row by it and the
+  // browser half registers under it, so a rename that misses one of the two
+  // installs a bundle whose row never resolves.
+  const quoted = manifest.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  assert.match(
+    fs.readFileSync(path.join(root, 'dsh-plugin', 'cordis.patch.yml'), 'utf8'),
+    new RegExp(`name:\\s*'${quoted}'`),
+    'the row is named after the package',
+  )
+  assert.ok(
+    fs.readFileSync(path.join(root, 'dsh-plugin', 'client.js'), 'utf8').includes(`id: '${manifest.name}'`),
+    'the client half registers under the package name',
+  )
   const index = fs.readFileSync(path.join(root, 'dsh-plugin', 'ui', 'index.html'))
   assert.notEqual(index[0], 0xef, 'ui/index.html must not start with a BOM')
   assert.match(index.toString('utf8', 0, 40), /^<!DOCTYPE html>/i)

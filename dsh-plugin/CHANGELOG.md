@@ -4,6 +4,16 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.12] - 2026-11-20
+
+### Changed
+
+- The bundle ships from npm as `dsh-wave-insight` — unscoped, so publishing needs
+  no npm organization and `dsh plugin --profile <profile> add dsh-wave-insight`
+  is the whole installation. The declared row, the client registration and the
+  package name move together, so an install of the old `@wave-insight/dsh-plugin`
+  link cannot be upgraded in place: remove it and add the new name.
+
 ## [0.2.11] - 2026-11-20
 
 ### Added

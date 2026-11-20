@@ -8,7 +8,13 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
-Nothing yet: the next wave lands here.
+### Changed
+
+- The DSH plugin is published as `dsh-wave-insight` instead of
+  `@wave-insight/dsh-plugin`, so `dsh plugin --profile <profile> add
+  dsh-wave-insight` installs it from npm without an organization. The package
+  name is also the row name, so an existing install has to be removed and added
+  again. Plugin **0.2.12**.
 
 ## [0.24.5] - 2026-11-20
 

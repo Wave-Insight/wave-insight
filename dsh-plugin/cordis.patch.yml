@@ -1,6 +1,6 @@
 - insert:
     - id: wave-insight-dsh
-      name: '@wave-insight/dsh-plugin'
+      name: 'dsh-wave-insight'
       # No required settings: the binaries staged under bin/ are used, and the
       # viewer degrades to a message instead of failing activation when the pair
       # for this machine is missing.

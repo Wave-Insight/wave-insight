@@ -38,7 +38,7 @@ await import(`file:///${path.join(root, 'dsh-plugin', 'client.js').replace(/\\/g
 
 test('client module registers one factory under the package id', () => {
   assert.equal(registrations.length, 1)
-  assert.equal(registrations[0].id, '@wave-insight/dsh-plugin')
+  assert.equal(registrations[0].id, 'dsh-wave-insight')
   assert.equal(typeof registrations[0].factory, 'function')
 })
 
@@ -179,18 +179,18 @@ test('apply registers dictionaries, the tab type, the body and auto-open in effe
   for (const entry of locales) assert.equal(entry.namespace, 'waveInsight')
 
   assert.equal(tabs.length, 1)
-  assert.equal(tabs[0].id, '@wave-insight/dsh-plugin')
+  assert.equal(tabs[0].id, 'dsh-wave-insight')
   assert.equal(tabs[0].kind, 'wave-insight')
   assert.equal(tabs[0].priority, 'extension')
   assert.equal(typeof tabs[0].title, 'function')
   assert.equal(tabs[0].guide.length, 1)
-  assert.equal(tabs[0].guide[0].id, '@wave-insight/dsh-plugin')
+  assert.equal(tabs[0].guide[0].id, 'dsh-wave-insight')
 
   assert.equal(slots.length, 2, 'the body and the live tab title')
   const body = slots.find((slot) => slot.options.name === 'sidebar.right.pane.tab')
   const title = slots.find((slot) => slot.options.name === 'sidebar.right.pane.tab.title')
   for (const slot of [body, title]) {
-    assert.equal(slot.options.key, '@wave-insight/dsh-plugin')
+    assert.equal(slot.options.key, 'dsh-wave-insight')
     assert.equal(slot.options.locale, 'waveInsight')
     assert.equal(typeof slot.Component, 'function')
   }

@@ -1,6 +1,6 @@
 {
-  "name": "@wave-insight/dsh-plugin",
-  "version": "0.2.11",
+  "name": "dsh-wave-insight",
+  "version": "0.2.12",
   "type": "module",
   "description": "Wave Insight waveform tools and a live side panel for DeepSeek Harness",
   "license": "Apache-2.0",

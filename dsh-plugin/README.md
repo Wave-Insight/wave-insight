@@ -74,11 +74,24 @@ panel also probes `/health` before showing the iframe.
 ## Install
 
 ```text
-Plugins > Add plugin > local directory: <repo>/dsh-plugin
+dsh plugin --profile <profile> add dsh-wave-insight
 ```
 
-A checkout carries no native binaries — `bin/` is ignored by git — so stage the
-pair for this machine first:
+In DSH Desktop, **Plugins > Add plugin** and enter the same package name. That is
+the whole installation: `dsh plugin add` appends a dependency that declares
+`dsh.bundle` to the profile's `dsh.profile.bundles`, so no second step selects it.
+
+Without a registry, each release attaches the same bundle as a tarball; paste its
+URL into the same dialog:
+
+```text
+dsh plugin --profile <profile> add \
+  https://github.com/Wave-Insight/wave-insight/releases/download/v<app>/dsh-wave-insight-<plugin>.tgz
+```
+
+A checkout installs by directory instead — **Plugins > Add plugin > local
+directory**, `<repo>/dsh-plugin` — and carries no native binaries, because `bin/`
+is ignored by git, so stage the pair for this machine first:
 
 ```text
 cargo build -p dsh-bridge -p wave-insight-web-backend --release
@@ -93,7 +106,7 @@ optional paths are declared in the plugin `Config`, so a row may override them:
 
 ```yaml
 - id: wave-insight-dsh
-  name: '@wave-insight/dsh-plugin'
+  name: 'dsh-wave-insight'
   config:
     helperPath: 'C:/path/to/dsh-bridge.exe'
     backendPath: 'C:/path/to/wave-insight-web-backend.exe'

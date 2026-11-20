@@ -10,7 +10,7 @@ publishes.
 
 | Version | Lives in | Tag | What the tag does |
 |---|---|---|---|
-| **App** `0.24.x` | `Cargo.toml`, `Cargo.lock`, `src-tauri/tauri.conf.json` | `v0.24.x` | Runs [`.github/workflows/tauri.yml`](.github/workflows/tauri.yml) and **creates the GitHub release**: desktop bundles for macOS/Windows/Ubuntu, the plain binaries, and the packed `dsh-plugin` tarball |
+| **App** `0.24.x` | `Cargo.toml`, `Cargo.lock`, `src-tauri/tauri.conf.json` | `v0.24.x` | Runs [`.github/workflows/tauri.yml`](.github/workflows/tauri.yml) and **creates the GitHub release**: desktop bundles for macOS/Windows/Ubuntu, the plain binaries, and the packed `dsh-plugin` tarball (plus the npm publish once that is turned on) |
 | **DSH plugin** `0.2.x` | [`dsh-plugin/package.json`](dsh-plugin/package.json) | `dsh-plugin-v0.2.x` | Nothing. The workflow filter is `tags: ['v*']`, so a `dsh-plugin-*` tag is only a marker in history |
 
 The plugin version is independent of the app version: a plugin-only fix moves it
@@ -80,9 +80,35 @@ push: check `$LASTEXITCODE` and confirm with `git ls-remote origin`.
 The tag run is the release: `tauri.yml` builds the three desktop targets,
 `dsh-plugin-binaries.yml` builds the four native pairs (Windows x64, Linux x64
 **musl**, macOS ARM64, macOS x64), and the `dsh-plugin` job stages them, runs the
-QA suites against the release binaries, `npm pack`s the bundle and attaches it
-next to the desktop assets. It is the one place `bin/` is populated — no binary
-is committed.
+QA suites against the release binaries, `npm pack`s the bundle, attaches it next
+to the desktop assets and — while the repository variable `NPM_PUBLISH` is
+`true` — publishes the version to npm. It is the one place `bin/` is populated —
+no binary is committed.
+
+### The first npm publish (once)
+
+`dsh-plugin/package.json` is `dsh-wave-insight`, and npm cannot attach a Trusted
+Publisher to a package that does not exist yet, so the first version goes out by
+hand after a release has built it.
+
+1. Cut a `v*` release; the `dsh-plugin` job attaches
+   `dsh-wave-insight-<version>.tgz` to it. The publish step is still off, so the
+   job succeeds without one.
+2. From a machine whose npm account owns the name, publish exactly that tarball:
+   `npm publish dsh-wave-insight-<version>.tgz` (an interactive 2FA prompt is
+   expected). It was packed from a staged `bin/`, so it is the same artifact the
+   job would have published.
+3. On npmjs.com, the package's **Settings > Trusted Publisher > GitHub Actions**:
+   organization `Wave-Insight`, repository `wave-insight`, workflow file
+   `tauri.yml`. Allow direct publishing as well as staging: a connection created
+   since 2026-09-03 permits only `npm stage publish` unless **npm publish** is
+   ticked, and this job runs `npm publish`. A new connection also expires if its
+   first publish does not succeed within two days, so create it when the next
+   release is at hand and recreate it if it lapsed.
+4. Set the repository variable `NPM_PUBLISH` to `true`.
+
+Every later tag then publishes the version `dsh-plugin/package.json` carries and
+skips a version that is already there.
 
 ## Traps
 
@@ -104,3 +130,14 @@ is committed.
 - **`dsh-plugin/bin/` is gitignored.** A checkout has no helper or backend until
   `cargo build -p dsh-bridge -p wave-insight-web-backend --release` and
   `node dsh-plugin/scripts/binaries.mjs stage`.
+- **The npm step skips a version that is already published.** The bundle version
+  only moves when the plugin changes, so most `v*` releases publish nothing;
+  without that guard the second release of an unchanged plugin fails on a
+  duplicate version.
+- **The package name is load-bearing.** The loader resolves a bundle's row by the
+  name in [`dsh-plugin/cordis.patch.yml`](dsh-plugin/cordis.patch.yml), and the
+  browser half registers under the package name in
+  [`dsh-plugin/client.js`](dsh-plugin/client.js). Renaming
+  [`dsh-plugin/package.json`](dsh-plugin/package.json) without both — and the
+  assertions in [`qa/dsh-plugin-client.test.mjs`](qa/dsh-plugin-client.test.mjs) —
+  installs a bundle whose row never resolves.
