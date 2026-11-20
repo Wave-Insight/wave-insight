@@ -10,14 +10,19 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { resolveAssets } from '../dsh-plugin/host/assets.js'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const exe = process.platform === 'win32' ? '.exe' : ''
+// The bundled name and the WAVE_WEB_BACKEND override come from the plugin's
+// own resolution, so a renamed platform row cannot leave this test pointing at
+// a path that no longer exists. A local `cargo build --release` still wins, so
+// the test runs against the source that was just compiled.
+const bundled = resolveAssets().backend
 const candidates = [
-  process.env.WAVE_WEB_BACKEND,
   path.join(root, 'target', 'release', `wave-insight-web-backend${exe}`),
-  path.join(root, 'dsh-plugin', 'bin', `wave-insight-web-backend-${process.platform === 'win32' ? 'windows-x64.exe' : process.platform === 'darwin' ? 'macos-arm64' : 'linux-x64'}`),
-].filter(Boolean)
+  ...bundled.candidates,
+]
 const binary = candidates.find((candidate) => existsSync(candidate))
 const uiDir = path.join(root, 'dsh-plugin', 'ui')
 const dump = path.join(root, 'qa', 'fixtures', 'wave.vcd')

@@ -1,7 +1,12 @@
 // Where the Host half finds its native pieces.
 //
-// The package ships one helper per platform and (currently) the Windows UI
-// backend. A row may override either path in its `config`, and the environment
+// The package ships one helper and one loopback backend per platform, and the
+// matrix below is the packaging manifest as well: `scripts/binaries.mjs` stages
+// it, `prepublishOnly` refuses a package with a row missing, and the release
+// workflow unpacks the built pairs into the tarball. None of those files are
+// committed — a checkout has to build and stage the row for its machine.
+//
+// A row may override either path in its `config`, and the environment
 // variables exist for ad-hoc development; the bundled file is the fallback so a
 // plain install needs no configuration. Nothing here throws: a missing binary
 // must not stop the plugin from loading, because the model-facing tools and the
@@ -13,18 +18,57 @@ import { fileURLToPath } from 'node:url'
 /** Package root, derived from this file's location (`host/assets.js`). */
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-/** Bundled JSON-lines helper per platform/arch. */
-const HELPERS = {
-  win32: { x64: 'dsh-bridge-windows-x64.exe' },
-  linux: { x64: 'dsh-bridge-linux-x64' },
-  darwin: { arm64: 'dsh-bridge-macos-arm64' },
+/**
+ * The supported targets, one row per `platform/arch`.
+ *
+ * `triple` is the Rust target the workflow builds (and the `target/<triple>`
+ * directory `cargo` writes to); `helper` and `backend` are the names the file
+ * has under `bin/` and inside the published tarball.
+ */
+export const PLATFORMS = {
+  'win32/x64': {
+    triple: 'x86_64-pc-windows-msvc',
+    helper: 'dsh-bridge-windows-x64.exe',
+    backend: 'wave-insight-web-backend-windows-x64.exe',
+  },
+  'linux/x64': {
+    triple: 'x86_64-unknown-linux-gnu',
+    helper: 'dsh-bridge-linux-x64',
+    backend: 'wave-insight-web-backend-linux-x64',
+  },
+  'darwin/arm64': {
+    triple: 'aarch64-apple-darwin',
+    helper: 'dsh-bridge-macos-arm64',
+    backend: 'wave-insight-web-backend-macos-arm64',
+  },
+  'darwin/x64': {
+    triple: 'x86_64-apple-darwin',
+    helper: 'dsh-bridge-macos-x64',
+    backend: 'wave-insight-web-backend-macos-x64',
+  },
 }
 
+/** One `{ platform: { arch: name } }` lookup out of the matrix. */
+function lookup(column) {
+  /** @type {Record<string, Record<string, string>>} */
+  const table = {}
+  for (const [target, row] of Object.entries(PLATFORMS)) {
+    const [platform, arch] = target.split('/')
+    table[platform] ??= {}
+    table[platform][arch] = row[column]
+  }
+  return table
+}
+
+/** Bundled JSON-lines helper per platform/arch. */
+const HELPERS = lookup('helper')
+
 /** Bundled loopback UI backend per platform/arch. */
-const BACKENDS = {
-  win32: { x64: 'wave-insight-web-backend-windows-x64.exe' },
-  linux: { x64: 'wave-insight-web-backend-linux-x64' },
-  darwin: { arm64: 'wave-insight-web-backend-macos-arm64' },
+const BACKENDS = lookup('backend')
+
+/** Every file name `bin/` and the published tarball must carry. */
+export function bundledNames() {
+  return Object.values(PLATFORMS).flatMap((row) => [row.helper, row.backend])
 }
 
 /** Render `platform/arch` the way the diagnostics do. */

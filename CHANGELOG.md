@@ -8,7 +8,25 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
-Nothing yet: the next wave lands here.
+### Changed
+
+- The DSH plugin no longer commits its native binaries. `dsh-plugin/bin/` is
+  ignored by git; `.github/workflows/dsh-plugin-binaries.yml` builds the
+  JSON-lines helper and the loopback viewer backend for Windows x64, Linux x64,
+  macOS ARM64 and macOS x64, the `v*` release job unpacks those artifacts into
+  the plugin tarball, and `prepublishOnly` refuses a package with a platform
+  missing. This supersedes the note in 0.23.2 that the helpers were committed. A
+  checkout stages its own pair with
+  `node dsh-plugin/scripts/binaries.mjs stage`.
+
+### Fixed
+
+- The DSH plugin tarball carries every platform's viewer backend. It listed only
+  the Windows build, so a Linux or macOS install got a bundle whose side panel
+  had no backend at all.
+- The bundled-viewer stamp no longer goes stale on a release commit: the
+  workspace version in the root `Cargo.toml` is hashed out, since it does not
+  change the wasm build but does change that file.
 
 ## [0.24.0] - 2026-11-20
 

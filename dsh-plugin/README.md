@@ -43,7 +43,8 @@ host/
   schema.js         dependency-free structural schemas
 client.js           Client half: tab type, slot body, view diff, handshake
 ui/                 built web-remote viewer (wasm + assets)
-bin/                native helper and viewer backend binaries
+bin/                native helper + viewer backend, staged per platform (not in git)
+scripts/binaries.mjs  stages a local build into bin/ and gates the package
 ```
 
 Every tool result carries the whole view in its presentation meta
@@ -58,6 +59,17 @@ panel also probes `/health` before showing the iframe.
 ```text
 Plugins > Add plugin > local directory: <repo>/dsh-plugin
 ```
+
+A checkout carries no native binaries — `bin/` is ignored by git — so stage the
+pair for this machine first:
+
+```text
+cargo build -p dsh-bridge -p wave-insight-web-backend --release
+node dsh-plugin/scripts/binaries.mjs stage
+```
+
+A released tarball already carries all eight files; skip that step when you
+installed one.
 
 The row is inserted by `cordis.patch.yml`; no configuration is required. Both
 optional paths are declared in the plugin `Config`, so a row may override them:
@@ -75,21 +87,28 @@ missing viewer never disables the tools: the panel shows the reason instead.
 
 ## Platform support
 
+Every supported target gets both native pieces. The table is the `PLATFORMS`
+matrix in [`host/assets.js`](host/assets.js): `package.json` lists exactly those
+file names, and `prepublishOnly` ([`scripts/binaries.mjs`](scripts/binaries.mjs))
+refuses to publish a package with a row missing.
+
 | Platform | `dsh-bridge` helper | Viewer backend |
 |---|---|---|
-| Windows x64 | bundled | bundled |
-| Linux x64 | bundled | build it: `cargo build -p wave-insight-web-backend --release`, then point `backendPath` at it (or place it as `bin/wave-insight-web-backend-linux-x64`) |
-| macOS ARM64 | bundled | same, `bin/wave-insight-web-backend-macos-arm64` |
+| Windows x64 | `bin/dsh-bridge-windows-x64.exe` | `bin/wave-insight-web-backend-windows-x64.exe` |
+| Linux x64 | `bin/dsh-bridge-linux-x64` | `bin/wave-insight-web-backend-linux-x64` |
+| macOS ARM64 | `bin/dsh-bridge-macos-arm64` | `bin/wave-insight-web-backend-macos-arm64` |
+| macOS x64 | `bin/dsh-bridge-macos-x64` | `bin/wave-insight-web-backend-macos-x64` |
 | anything else | build `dsh-bridge` and set `helperPath` | build the backend and set `backendPath` |
 
 The viewer itself (`ui/`) is platform independent: one wasm bundle.
 
-The committed Linux and macOS helper binaries predate the current `dsh-bridge`
-source. They still work — the Host falls back to the older per-name validation
-when a helper has no `validate` command — but rebuild them to get the fast path,
-the GHW time-range fallback and the plain-text value rendering:
-`cargo build -p dsh-bridge --release`, or take them from the
-`dsh-plugin-binaries` workflow.
+The binaries are **not** committed. `.github/workflows/dsh-plugin-binaries.yml`
+builds the four pairs and the release job unpacks them into the tarball; on a
+checkout, `cargo build` plus `node dsh-plugin/scripts/binaries.mjs stage` puts the
+pair for this machine where the Host looks. Without one the tools answer
+`HELPER_UNAVAILABLE` with the paths they tried, and the panel shows why it has no
+backend instead of failing activation. The Linux build comes off Ubuntu 22.04 so
+it starts on distributions carrying an older glibc.
 
 ## Security model
 
@@ -114,8 +133,8 @@ the GHW time-range fallback and the plain-text value rendering:
   last time step; a dump with no changes at all reports no range.
 - Time steps travel as JSON numbers, so a dump whose timestamps exceed 2^53 loses
   precision in the panel and in tool arguments.
-- The Linux/macOS viewer backends are not bundled in this repository, so the
-  panel is Windows-only out of the box.
+- The side panel needs the viewer backend for the machine it runs on. A released
+  tarball has every platform; a checkout has only the pair somebody staged.
 
 ## Development
 
@@ -126,7 +145,14 @@ node qa/dsh-invoke-shim.test.mjs    # Web shim arguments and origin checks
 node qa/web-backend-smoke.mjs       # Loopback backend (needs the release build)
 node qa/viewer-build-stamp.mjs      # Fails when ui/ predates front-end/
 cargo build -p dsh-bridge -p wave-insight-web-backend --release
+node dsh-plugin/scripts/binaries.mjs stage     # puts that build in bin/
+node dsh-plugin/scripts/binaries.mjs verify    # what prepublishOnly runs
 ```
+
+`stage` also takes `--from <dir>` (a directory of already release-named files,
+which is how the release job unpacks the workflow artifacts) and `--set
+<platform/arch>` for a cross build; `verify --tarball <file>` checks a packed
+`.tgz` for all eight files.
 
 `ui/` is a build artifact of `front-end/` (web-remote wasm) plus `dsh-invoke.js`.
 After rebuilding it, refresh the stamp so CI keeps the two in step:

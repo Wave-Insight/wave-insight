@@ -44,13 +44,25 @@ function rustSources(dir) {
 }
 
 const files = [...INPUTS, ...rustSources('front-end/src'), ...rustSources('wave-insight-lib/src')].sort()
+
+/**
+ * The workspace version lives in a file whose `[profile.release]` section does
+ * decide the wasm build, but the version line itself changes nothing about it.
+ * A release bump therefore has to be hashed out, or every release commit would
+ * report the viewer as stale.
+ */
+function normalized(file, text) {
+  if (file !== 'Cargo.toml') return text
+  return text.replace(/^version = "[^"]*"$/m, 'version = "<workspace>"')
+}
+
 const hash = createHash('sha256')
 for (const file of files) {
   // Line endings are normalized: a CRLF checkout must not change the stamp.
   const text = fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n')
   hash.update(file)
   hash.update('\0')
-  hash.update(text)
+  hash.update(normalized(file, text))
   hash.update('\0')
 }
 const sources = hash.digest('hex')

@@ -1,9 +1,17 @@
 name: DSH plugin binaries
 
-# Builds the JSON-lines helper that the DSH plugin ships for each supported
-# desktop platform. Dispatch this before packaging a plugin release.
+# Builds the native pieces the DSH plugin ships: one `dsh-bridge` helper and one
+# loopback viewer backend for every row of the matrix in
+# `dsh-plugin/host/assets.js`. None of them are committed — `dsh-plugin/bin/` is
+# ignored by git — so this workflow is the only source of the binaries that go
+# into the tarball. The release workflow calls it and unpacks the artifacts;
+# dispatching it by hand leaves the artifacts to download.
 on:
   workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -11,54 +19,53 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `key` is the `platform/arch` row in `dsh-plugin/host/assets.js`
+          # (Node's `process.platform` spelling: win32, linux, darwin).
+          #
+          # ubuntu-22.04, not -latest: a binary linked against glibc 2.38 (24.04)
+          # refuses to start on Ubuntu 22.04 and Debian 12, which people use.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            key: linux/x64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            asset: dsh-bridge-windows-x64.exe
-            backend: wave-insight-web-backend-windows-x64.exe
-            ext: .exe
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            asset: dsh-bridge-linux-x64
-            backend: wave-insight-web-backend-linux-x64
-            ext: ""
+            key: win32/x64
           - os: macos-latest
             target: aarch64-apple-darwin
-            asset: dsh-bridge-macos-arm64
-            backend: wave-insight-web-backend-macos-arm64
-            ext: ""
+            key: darwin/arm64
+          # macos-latest is arm64; clang cross-links the Intel slice from the
+          # same SDK, so the Intel Mac pair comes off the same runner.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            key: darwin/x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      # rust-toolchain.toml pins the compiler; rustup picks it up here.
-      - name: Add build target
+      # rust-toolchain.toml pins the compiler; `rustup show` installs it before
+      # `target add` runs, so the target lands in the toolchain cargo will use.
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Add the build target
         run: rustup target add ${{ matrix.target }}
 
-      - name: Build helper
-        run: cargo build -p dsh-bridge --release --locked --target ${{ matrix.target }}
+      - name: Build the helper and the loopback backend
+        run: cargo build -p dsh-bridge -p wave-insight-web-backend --release --locked --target ${{ matrix.target }}
 
-      - name: Build Web backend
-        run: cargo build -p wave-insight-web-backend --release --locked --target ${{ matrix.target }}
+      # The release names come from the matrix, so the packaging job can unpack
+      # every artifact with one merged download and no renaming.
+      - name: Stage them under their release names
+        shell: bash
+        run: node dsh-plugin/scripts/binaries.mjs stage --set ${{ matrix.key }} --from target/${{ matrix.target }}/release
 
-      - name: Upload Windows helper
-        if: matrix.os == 'windows-latest'
+      - name: Upload the platform pair
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: target/${{ matrix.target }}/release/dsh-bridge.exe
-          if-no-files-found: error
-
-      - name: Upload Unix helper
-        if: matrix.os != 'windows-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.asset }}
-          path: target/${{ matrix.target }}/release/dsh-bridge
-          if-no-files-found: error
-
-      - name: Upload Web backend
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.backend }}
-          path: target/${{ matrix.target }}/release/wave-insight-web-backend${{ matrix.ext }}
+          name: dsh-plugin-${{ matrix.target }}
+          path: dsh-plugin/bin/*
           if-no-files-found: error

@@ -102,48 +102,14 @@ jobs:
         files: wave_insight_tauri*
         fail_on_unmatched_files: true
 
-  # The DSH plugin ships platform-specific native binaries. Build the loopback
-  # backend on each runner (the JSON-lines helper is already committed for all
-  # three platforms), then assemble one npm tarball for the release.
+  # The DSH plugin ships one helper and one loopback backend per platform and
+  # none of them are committed, so this job cannot open with a checkout that
+  # already has them: the reusable workflow builds all four pairs and the
+  # packaging job unpacks the artifacts into the bundle.
   dsh-plugin-binaries:
-    if: startsWith(github.ref, 'refs/tags/')
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            asset: wave-insight-web-backend-windows-x64.exe
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            asset: wave-insight-web-backend-linux-x64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            asset: wave-insight-web-backend-macos-arm64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install the pinned toolchain
-        run: rustup show
-
-      - name: Add the build target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Build the loopback backend
-        run: cargo build -p wave-insight-web-backend --release --locked --target ${{ matrix.target }}
-
-      - name: Upload the backend binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.asset }}
-          path: |
-            target/${{ matrix.target }}/release/wave-insight-web-backend.exe
-            target/${{ matrix.target }}/release/wave-insight-web-backend
-          if-no-files-found: error
+    uses: ./.github/workflows/dsh-plugin-binaries.yml
 
   dsh-plugin:
-    if: startsWith(github.ref, 'refs/tags/')
     # Do not depend on `build`: a desktop-build flake must not skip the plugin
     # tarball. softprops/action-gh-release attaches to the existing tag (and
     # creates the release if the desktop job did not).
@@ -154,18 +120,43 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
-      - name: Collect the platform backend binaries
+      # Merged download: every artifact holds its pair already named the way the
+      # package declares it, so they land side by side in one directory.
+      - name: Collect the four platform pairs
         uses: actions/download-artifact@v4
         with:
-          pattern: wave-insight-web-backend-*
-          path: dsh-plugin/bin
+          pattern: dsh-plugin-*
+          path: staging
           merge-multiple: true
+
+      - name: Stage them into the bundle and check the manifest
+        run: |
+          node dsh-plugin/scripts/binaries.mjs stage --from staging
+          node dsh-plugin/scripts/binaries.mjs verify
+          chmod +x dsh-plugin/bin/dsh-bridge-linux-x64 dsh-plugin/bin/wave-insight-web-backend-linux-x64 \
+            dsh-plugin/bin/dsh-bridge-macos-arm64 dsh-plugin/bin/wave-insight-web-backend-macos-arm64 \
+            dsh-plugin/bin/dsh-bridge-macos-x64 dsh-plugin/bin/wave-insight-web-backend-macos-x64
+          ls -l dsh-plugin/bin
+
+      - name: Run the bundle tests against the release binaries
+        run: |
+          node qa/dsh-plugin-smoke.mjs
+          node qa/dsh-plugin-client.test.mjs
+          node qa/dsh-invoke-shim.test.mjs
+          node qa/web-backend-smoke.mjs
+          node qa/viewer-build-stamp.mjs
 
       - name: Pack the DSH bundle
         run: npm pack --pack-destination .
         working-directory: dsh-plugin
+
+      # The manifest check above reads the working tree; this one reads the
+      # tarball npm actually produced, so a `files` typo cannot ship a bundle
+      # with a platform silently missing.
+      - name: The tarball carries every platform
+        run: node dsh-plugin/scripts/binaries.mjs verify --tarball "$(ls dsh-plugin/*.tgz)"
 
       - name: Attach the plugin to the release
         uses: softprops/action-gh-release@v2

@@ -32,9 +32,18 @@
     "bin/dsh-bridge-windows-x64.exe",
     "bin/dsh-bridge-linux-x64",
     "bin/dsh-bridge-macos-arm64",
+    "bin/dsh-bridge-macos-x64",
     "bin/wave-insight-web-backend-windows-x64.exe",
+    "bin/wave-insight-web-backend-linux-x64",
+    "bin/wave-insight-web-backend-macos-arm64",
+    "bin/wave-insight-web-backend-macos-x64",
     "ui/**/*"
   ],
+  "scripts": {
+    "stage:binaries": "node scripts/binaries.mjs stage",
+    "verify:binaries": "node scripts/binaries.mjs verify",
+    "prepublishOnly": "node scripts/binaries.mjs verify"
+  },
   "engines": {
     "dsh": ">=0.2.1-rc.5"
   },

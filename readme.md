@@ -632,17 +632,18 @@ Two native pieces sit behind the bundle:
 
 - `dsh-bridge` ([`dsh-bridge/`](dsh-bridge/)) answers the model-facing tools in
   JSON lines, opening dumps with the same native reader as the desktop build and
-  returning bounded window queries. Helpers for Windows x64, Linux x64 and macOS
-  ARM64 are bundled in `dsh-plugin/bin/`, so no external binary install is
-  needed; `.github/workflows/dsh-plugin-binaries.yml` rebuilds them. Other
-  platforms can build with `cargo build -p dsh-bridge` and set
-  `WAVE_DSH_BRIDGE` (or the bundle's `helperPath` config).
+  returning bounded window queries.
 - `wave-insight-web-backend` ([`web-backend/`](web-backend/)) serves the built
   web-remote viewer and its `/invoke` route on loopback, so the tab renders the
-  real Wave Insight UI instead of a sketch. Only the Windows x64 build is
-  committed; Linux and macOS build it with
-  `cargo build -p wave-insight-web-backend --release` and point the bundle's
-  `backendPath` at it.
+  real Wave Insight UI instead of a sketch.
+
+Neither binary is committed. `.github/workflows/dsh-plugin-binaries.yml` builds
+the pair for Windows x64, Linux x64, macOS ARM64 and macOS x64, and the release
+job unpacks all four pairs into the `dsh-plugin` tarball. A repository checkout
+has none of them until `cargo build -p dsh-bridge -p wave-insight-web-backend
+--release` and `node dsh-plugin/scripts/binaries.mjs stage` have run. Other
+platforms build their own and point `WAVE_DSH_BRIDGE` / `WAVE_WEB_BACKEND` (or
+the bundle's `helperPath` / `backendPath`) at them.
 
 Install the bundle with Plugins > Add plugin, selecting `dsh-plugin/`.
 

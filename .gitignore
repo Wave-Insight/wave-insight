@@ -21,6 +21,12 @@ node_modules/
 #agent tooling session state (never part of the app)
 /.commandcode/
 
+#DSH plugin native binaries: built per platform by
+#.github/workflows/dsh-plugin-binaries.yml and unpacked into the release
+#tarball, or staged locally with `node dsh-plugin/scripts/binaries.mjs stage`.
+#A checkout has none of them, and none of them may be committed again.
+/dsh-plugin/bin/
+
 #browser QA artifacts: the staged build, the chrome profile and the screenshots
 /qa/.stage/
 /qa/artifacts/

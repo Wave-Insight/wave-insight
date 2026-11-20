@@ -4,6 +4,34 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [Unreleased]
+
+### Added
+
+- macOS x64 joins the bundle: the helper and the viewer backend are built for
+  Intel Macs too, so `darwin/x64` is a supported row instead of a silent gap.
+
+### Changed
+
+- The Linux and macOS viewer backends now ship with the bundle. Only the Windows
+  build was packaged before, so the side panel had no backend anywhere else and
+  fell back to its failure message.
+- The native binaries are no longer committed. `dsh-plugin/bin/` is ignored by
+  git and filled from the `dsh-plugin-binaries` workflow — which now builds the
+  helper *and* the backend for all four platforms — and the release job unpacks
+  those artifacts instead of relying on whatever was checked in.
+  `node dsh-plugin/scripts/binaries.mjs stage` reproduces the layout from a local
+  `cargo build`, `verify` (also run by `prepublishOnly`) refuses a package with a
+  platform missing, and a test keeps `package.json` "files" and the platform
+  matrix in step.
+- The Linux builds are linked on Ubuntu 22.04, so they start on distributions
+  with an older glibc instead of demanding 2.38.
+
+### Fixed
+
+- The tarball listed four of the eight binaries the Host looks for, so an
+  installed package was missing every viewer backend but the Windows one.
+
 ## [0.2.6] - 2026-11-20
 
 ### Added

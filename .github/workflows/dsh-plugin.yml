@@ -41,17 +41,29 @@ jobs:
         with:
           node-version: 24
 
-      # Build what the plugin actually spawns, then place it where the bundled
+      # Nothing under dsh-plugin/bin is tracked: the release workflow builds the
+      # four platform pairs and unpacks them into the tarball. Guard the ignore
+      # rule here so a stray `git add dsh-plugin/bin` cannot put a 1 MB binary
+      # back into the history.
+      - name: No native binaries are committed
+        run: |
+          tracked="$(git ls-files dsh-plugin/bin)"
+          if [ -n "$tracked" ]; then
+            echo "dsh-plugin/bin must stay out of git; CI stages the built binaries instead:" >&2
+            echo "$tracked" >&2
+            exit 1
+          fi
+
+      # Build what the plugin actually spawns, then stage it where the bundled
       # path resolution looks, so the tests exercise this source and not a
-      # committed binary from an older revision.
+      # binary from another revision.
       - name: Build the native helper and the loopback backend
         run: cargo build -p dsh-bridge -p wave-insight-web-backend --release --locked
 
-      - name: Place the Linux binaries where the plugin finds them
+      - name: Stage the Linux pair where the plugin finds it
         run: |
-          cp target/release/dsh-bridge dsh-plugin/bin/dsh-bridge-linux-x64
-          cp target/release/wave-insight-web-backend dsh-plugin/bin/wave-insight-web-backend-linux-x64
-          chmod +x dsh-plugin/bin/dsh-bridge-linux-x64 dsh-plugin/bin/wave-insight-web-backend-linux-x64
+          node dsh-plugin/scripts/binaries.mjs stage
+          node dsh-plugin/scripts/binaries.mjs verify --set linux/x64
 
       - name: Host tools, projection and helper
         run: node qa/dsh-plugin-smoke.mjs

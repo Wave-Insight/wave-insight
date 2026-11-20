@@ -9,7 +9,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import * as plugin from '../dsh-plugin/index.js'
-import { resolveAssets } from '../dsh-plugin/host/assets.js'
+import { PLATFORMS, bundledNames, resolveAssets } from '../dsh-plugin/host/assets.js'
 import { WebBackend } from '../dsh-plugin/host/daemon.js'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -37,6 +37,29 @@ test('manifests are BOM-free and parse', () => {
   const index = fs.readFileSync(path.join(root, 'dsh-plugin', 'ui', 'index.html'))
   assert.notEqual(index[0], 0xef, 'ui/index.html must not start with a BOM')
   assert.match(index.toString('utf8', 0, 40), /^<!DOCTYPE html>/i)
+})
+
+test('the packaged binaries and the platform matrix are the same list', () => {
+  // Nothing under bin/ is committed, so the only thing keeping a released
+  // tarball whole is that package.json "files" names exactly the rows of
+  // PLATFORMS — a row nobody lists ships no binary, and a listed file nobody
+  // builds ships nothing at all.
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'dsh-plugin', 'package.json'), 'utf8'))
+  const declared = manifest.files
+    .filter((entry) => entry.startsWith('bin/'))
+    .map((entry) => entry.slice('bin/'.length))
+  assert.deepEqual([...declared].sort(), [...bundledNames()].sort(), 'files lists every bundled binary, and only those')
+
+  const rustArch = { x64: 'x86_64', arm64: 'aarch64' }
+  const rustOs = { win32: 'windows', linux: 'linux', darwin: 'darwin' }
+  for (const [key, row] of Object.entries(PLATFORMS)) {
+    const [platform, arch] = key.split('/')
+    assert.ok(row.triple.includes(rustOs[platform]), `${key} builds a ${platform} target (got ${row.triple})`)
+    assert.ok(row.triple.startsWith(rustArch[arch]), `${key} builds its own architecture (got ${row.triple})`)
+    const stem = platform === 'win32' ? 'windows' : platform === 'darwin' ? 'macos' : platform
+    assert.match(row.helper, new RegExp(`^dsh-bridge-${stem}-${arch}(\\.exe)?$`), `${key} helper carries its platform`)
+    assert.match(row.backend, new RegExp(`^wave-insight-web-backend-${stem}-${arch}(\\.exe)?$`), `${key} backend carries its platform`)
+  }
 })
 
 /**
