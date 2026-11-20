@@ -20,7 +20,7 @@ export const META_VERSION = 1
 export const META_KEY = PROJECTION_KEY
 
 /** Bump when the state fields or fold semantics change (checkpoint invalidation). */
-export const STATE_VERSION = 4
+export const STATE_VERSION = 5
 
 /** @param {unknown} value @returns {string | null} */
 function checkDump(value) {
@@ -48,6 +48,9 @@ function checkView(value) {
   for (const cursor of ['one', 'two']) {
     if (!isInteger(value.cursors[cursor]) && value.cursors[cursor] !== null) return `cursors.${cursor} must be an integer or null`
   }
+  if (!Array.isArray(value.sources) || value.sources.some((source) => typeof source !== 'string')) {
+    return 'sources must be an array of file paths'
+  }
   if (typeof value.status !== 'string') return 'status must be a string'
   if (!isRecord(value.ui)) return 'ui must be an object'
   for (const field of ['url', 'error']) {
@@ -65,6 +68,11 @@ export function emptyView() {
     rows: [],
     visible: null,
     cursors: { one: null, two: null },
+    // The sources the panel's design database has open. They are part of the
+    // durable view because the viewer is told to open them from here: a resumed
+    // session has to replay the same files, or the panel's source pane is empty
+    // while the design tools still answer about them.
+    sources: [],
     status: 'No waveform is loaded. Call load_waveform with a .vcd, .fst or .ghw path.',
     ui: { url: null, error: null },
   }
@@ -89,7 +97,11 @@ export function sameView(left, right) {
   const leftRows = left.rows ?? []
   const rightRows = right.rows ?? []
   if (leftRows.length !== rightRows.length) return false
-  return leftRows.every((row, index) => row === rightRows[index])
+  if (!leftRows.every((row, index) => row === rightRows[index])) return false
+  const leftSources = left.sources ?? []
+  const rightSources = right.sources ?? []
+  if (leftSources.length !== rightSources.length) return false
+  return leftSources.every((source, index) => source === rightSources[index])
 }
 
 function sameDump(left, right) {

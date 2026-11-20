@@ -16,7 +16,8 @@
 //! Command names and payloads are the Tauri IPC ones the existing front-end
 //! remote layer already knows (`open_dump`, `dump_hierarchy`, `dump_window`,
 //! `dump_value_at`, `dump_values_at`, `dump_find`, `close_dump`,
-//! `close_all_dumps`, plus empty `dump_memory_stats` / `process_memory`).
+//! `close_all_dumps`, plus empty `dump_memory_stats` / `process_memory`), and
+//! `read_source` for the companion RTL the panel is told to open.
 
 // The registry is plain Rust (no Tauri types); include it verbatim so both the
 // desktop app and this daemon use the same dump semantics.
@@ -125,6 +126,12 @@ struct IdArgs {
     id: u64,
 }
 
+/// `read_source` takes a path; the answer is the file's text.
+#[derive(Debug, Deserialize)]
+struct ReadSourceArgs {
+    path: String,
+}
+
 fn ok(value: Value) -> Value {
     json!({ "ok": true, "result": value })
 }
@@ -224,6 +231,17 @@ async fn dispatch(state: &AppState, request: InvokeRequest) -> Value {
             Err(error) => error,
         },
         "close_all_dumps" => ok(json!(state.registry.close_all())),
+        // The panel opens the companion RTL the host pointed it at: the file
+        // text travels back so the viewer can parse it with the same design
+        // database its source pane uses. Reading a file here is why `/invoke`
+        // is token + loopback + same-origin only.
+        "read_source" => match parse::<ReadSourceArgs>(&request.args, "read_source") {
+            Ok(args) => match std::fs::read_to_string(&args.path) {
+                Ok(text) => ok(json!({ "path": args.path, "text": text })),
+                Err(error) => fail(format!("{}: {error}", args.path)),
+            },
+            Err(error) => error,
+        },
         // The viewer asks for these right after adopting a dump. The desktop
         // answers from OS calls this daemon does not make; the empty shapes let
         // the memory readout stay blank instead of logging a failed command on

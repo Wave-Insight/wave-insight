@@ -57,6 +57,7 @@ const PROMPT_SECTION = [
   'Wave Insight tools open and drive a waveform viewer in the DSH right sidebar.',
   'Start with load_waveform(path); find_signals/add_signals/remove_signals/set_time_range/set_cursors/get_changes/list_waveform act on that dump, and the panel follows every call.',
   'The design tools read the Verilog/SystemVerilog behind the dump: find_sources lists the companion RTL next to it, list_modules reports the module definitions and ports, find_declaration locates a hierarchical signal and the spans that drive and read it, and get_diagnostics reports what did not parse or resolve.',
+  'Call load_sources to show those sources in the side panel, so the user sees the same design the tools read.',
 ].join(' ')
 
 /** @param {any} ctx @param {string} message */

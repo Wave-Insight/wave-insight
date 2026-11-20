@@ -181,6 +181,20 @@ test('open, hierarchy, window, value, find and close', async () => {
   assert.equal(all.json.result, 1)
 })
 
+test('read_source hands the panel the companion RTL it was pointed at', async () => {
+  // The DSH host opens sources in the panel by path; the page cannot read a
+  // local file itself, so this route is how a companion .v/.sv arrives.
+  const source = path.join(root, 'qa', 'fixtures', 'top.sv')
+  const read = await invoke('read_source', { path: source })
+  assert.equal(read.json?.ok, true, read.json?.error)
+  assert.equal(read.json.result.path, source)
+  assert.match(read.json.result.text, /module top/)
+
+  // A file that is not there is an error the panel can show, not an empty text.
+  const missing = await invoke('read_source', { path: path.join(root, 'qa', 'fixtures', 'nope.sv') })
+  assert.equal(missing.json?.ok, false)
+  assert.match(String(missing.json?.error), /nope\.sv/)
+})
 test('the built viewer is served with usable headers', async () => {
   const index = await request({ method: 'GET', path: '/' })
   assert.equal(index.status, 200)

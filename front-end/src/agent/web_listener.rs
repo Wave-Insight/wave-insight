@@ -12,8 +12,11 @@
 //!
 //! `open_path` opens through the same native/HTTP path as the desktop drag &
 //! drop; the session is handed to the app's open listener, which delivers
-//! `Msg::RemoteReady`. Every other command reuses `Msg::AgentCommand` and the
-//! existing reply path in `agent::reply`.
+//! `Msg::RemoteReady`. `open_source` reads one `.v`/`.sv` file through the
+//! backend's `read_source` and hands the text to the same `Msg::GetVerilog`
+//! the file picker uses, so the DSH host can show the source pane the sources
+//! its tools are reading. Every other command reuses `Msg::AgentCommand` and
+//! the existing reply path in `agent::reply`.
 
 use std::cell::Cell;
 
@@ -81,6 +84,26 @@ pub fn attach_web_command_listener(
                     Err(error) => link.send_message(Msg::Error(
                         crate::remote::native_error_status(&path, &error),
                     )),
+                }
+            });
+            return;
+        }
+
+        if command.get("kind").and_then(|kind| kind.as_str()) == Some("open_source") {
+            let Some(source) = command
+                .get("path")
+                .and_then(|path| path.as_str())
+                .map(str::to_string)
+            else {
+                return;
+            };
+            let link = link.clone();
+            spawn_local(async move {
+                match crate::remote::read_source(&source).await {
+                    Ok(text) => {
+                        link.send_message(Msg::GetVerilog((source, text)));
+                    }
+                    Err(error) => link.send_message(Msg::Error(format!("{source}: {error}"))),
                 }
             });
             return;

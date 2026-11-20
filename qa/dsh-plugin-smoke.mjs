@@ -10,6 +10,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import * as plugin from '../dsh-plugin/index.js'
 import { PLATFORMS, bundledNames, resolveAssets } from '../dsh-plugin/host/assets.js'
+import { viewSchema } from '../dsh-plugin/host/projection.js'
 import { WebBackend } from '../dsh-plugin/host/daemon.js'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -214,6 +215,7 @@ test('wave-insight host half', async (t) => {
         'get_diagnostics',
         'list_modules',
         'list_waveform',
+        'load_sources',
         'load_waveform',
         'remove_signals',
         'set_cursors',
@@ -436,6 +438,35 @@ test('the design tools explain the sources behind a waveform', async (t) => {
     assert.match(found.summary, /no companion RTL next to wave\.vcd/)
   })
 
+  await t.test('load_sources opens the sources the design tools read', async () => {
+    const view = {
+      ...harness.handle.stateOf({ id: 'design' }),
+    }
+    const opened = await call('load_sources', {
+      paths: [path.join(root, 'qa', 'fixtures', 'top.sv'), path.join(root, 'qa', 'fixtures', 'cpu.sv')],
+    })
+    assert.match(opened.summary, /opened 2 sources/)
+    assert.equal(opened.state.sources.length, 2)
+    assert.ok(opened.state.sources.every((source) => source.endsWith('.sv')))
+
+    const again = await call('load_sources', { paths: [path.join(root, 'qa', 'fixtures', 'top.sv')] })
+    assert.match(again.summary, /opened 0 sources, 1 already open/)
+    assert.equal(again.state.sources.length, 2, 're-opening a file does not duplicate it')
+  })
+
+  await t.test('the projection carries the source list across a restart', async () => {
+    const meta = { waveInsight: { version: 1, state: { ...harness.handle.stateOf({ id: 'design' }), sources: ['C:/rtl/top.sv'] } } }
+    const folded = fold(meta, 'design')
+    assert.deepEqual(folded.sources, ['C:/rtl/top.sv'], 'the sources survive the fold')
+    // The fold itself does not validate; the registry validates the folded value
+    // against `stateSchema` before it can reach the panel, so check that contract.
+    assert.throws(
+      () => viewSchema.parse({ ...folded, sources: 'top.sv' }),
+      /sources/,
+      'a malformed source list is rejected by the schema',
+    )
+    assert.equal(viewSchema.parse({ ...folded, sources: ['C:/rtl/top.sv'] }).sources.length, 1)
+  })
   await t.test('a design tool without sources says what to pass', async () => {
     await assert.rejects(
       () => call('list_modules', {}),

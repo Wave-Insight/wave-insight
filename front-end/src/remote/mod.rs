@@ -1061,6 +1061,24 @@ mod ipc {
         serde_wasm_bindgen::from_value(value).map_err(|error| format!("{command}: {error}"))
     }
 
+    /// Read one source file's text through the backend.
+    ///
+    /// The browser page cannot open a local file by path, so a companion source
+    /// the DSH host points at has to travel back through `/invoke`. Only the
+    /// web-remote build has that route; the desktop build reads its sources
+    /// through the file dialog instead.
+    #[cfg(feature = "web-remote")]
+    pub async fn read_source(path: &str) -> Result<String, String> {
+        #[derive(serde::Deserialize)]
+        struct SourceText {
+            text: String,
+        }
+        let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "path": path }))
+            .map_err(|error| error.to_string())?;
+        let answer: SourceText = call("read_source", &args).await?;
+        Ok(answer.text)
+    }
+
     /// Open `path` natively; returns the summary.
     pub async fn open(path: &str) -> Result<DumpSummaryDto, String> {
         let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "path": path }))
@@ -1260,6 +1278,8 @@ mod ipc {
     }
 }
 
+#[cfg(feature = "web-remote")]
+pub use ipc::read_source;
 #[allow(unused_imports)]
 #[cfg(any(feature = "tauri", feature = "web-remote"))]
 pub use ipc::{

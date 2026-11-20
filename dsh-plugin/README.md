@@ -12,7 +12,7 @@ and desktop builds.
 - Reads the Verilog/SystemVerilog the dump came from with the same library the
   source pane uses, so a model and the viewer cannot disagree about where a
   signal is declared.
-- Exposes twelve model-facing tools:
+- Exposes thirteen model-facing tools:
 
   | Tool | Purpose |
   |---|---|
@@ -28,10 +28,15 @@ and desktop builds.
   | `list_modules` | Module definitions, ports and instances of some sources. |
   | `find_declaration` | Where a hierarchical signal is declared, driven and read. |
   | `get_diagnostics` | What the parser and the elaborator could not resolve. |
+  | `load_sources` | Open `.v`/`.sv` files in the panel's source pane. |
 
-  The four design tools take `paths` (explicit `.v`/`.sv` files) or `dump` (a
-  waveform to find its companion RTL next to); `dump` defaults to the file the
-  panel is showing. They only read, so they leave the panel untouched.
+  The four read-only design tools take `paths` (explicit `.v`/`.sv` files) or
+  `dump` (a waveform to find its companion RTL next to); `dump` defaults to the
+  file the panel is showing, and they leave the panel untouched. `load_sources`
+  is the one that changes it: the opened list is part of the durable view, so
+  the panel replays the same sources after a Host restart. The iframe reads each
+  file through the loopback backend's `read_source` (the `open_source` command),
+  which is why the panel shows exactly the design the model reads.
 
 - Opens the **Wave Insight** tab in DSH's right sidebar when a tool result first
   carries a dump. The tab renders the real Wave Insight viewer: the Host starts a
@@ -51,7 +56,7 @@ host/
   daemon.js         loopback viewer lifecycle (one child per Host, refcounted)
   projection.js     the `waveInsight` session projection
   sessions.js       per-session view cache, restored from the projection
-  tools.js          the twelve tool definitions
+  tools.js          the thirteen tool definitions
   schema.js         dependency-free structural schemas
 client.js           Client half: tab type, slot body, view diff, handshake
 ui/                 built web-remote viewer (wasm + assets)

@@ -4,6 +4,29 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.10] - 2026-11-20
+
+### Added
+
+- `load_sources` puts sources in the panel's source pane, so the viewer shows
+  the same design the design tools read. Call it with `paths`, or with nothing
+  to open the companion RTL next to the loaded dump. The opened list is part of
+  the durable view (`STATE_VERSION` 5), so a resumed session replays exactly the
+  files it had: the client sends one `open_source` command per new file, and the
+  iframe reads the text through the loopback backend.
+- `wave-insight-web-backend` answers `read_source { path }`: the browser page
+  cannot read a local file, so a companion `.v`/`.sv` the host points at travels
+  back through `/invoke`. It sits behind the same token, loopback host and
+  same-origin checks as every other command.
+- The viewer's `wave-web-command` listener handles `open_source` by handing the
+  text to the same `Msg::GetVerilog` the file picker uses, so an opened source
+  goes through the ordinary design-database and LSP path.
+
+### Changed
+
+- The bundled viewer is rebuilt from the current front end, which the new
+  `open_source` path required.
+
 ## [0.2.9] - 2026-11-20
 
 ### Added

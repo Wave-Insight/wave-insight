@@ -29,6 +29,7 @@ function cloneView(view) {
     rows: [...(view.rows ?? [])],
     visible: view.visible ? { ...view.visible } : null,
     cursors: { one: view.cursors?.one ?? null, two: view.cursors?.two ?? null },
+    sources: [...(view.sources ?? [])],
     status: view.status ?? emptyView().status,
     ui: { url: view.ui?.url ?? null, error: view.ui?.error ?? null },
   }

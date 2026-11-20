@@ -87,7 +87,7 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32((arg0 >>> 0) + 4 * 1, len1, true);
             getDataViewMemory0().setInt32((arg0 >>> 0) + 4 * 0, ptr1, true);
         },
-        __wbg___WAVE_INVOKE___a4c3ed0820f79ca4: function(arg0, arg1, arg2) {
+        __wbg___WAVE_INVOKE___912229f80a5a7d26: function(arg0, arg1, arg2) {
             const ret = window.__WAVE_INVOKE__(getStringFromWasm0(arg0, arg1), arg2);
             return ret;
         },
@@ -574,7 +574,7 @@ function __wbg_get_imports() {
             const ret = result;
             return ret;
         },
-        __wbg_invoke_dd8c31c50ce8bd9c: function(arg0, arg1, arg2) {
+        __wbg_invoke_ce8a9152054eb3b0: function(arg0, arg1, arg2) {
             const ret = window.__TAURI__.core.invoke(getStringFromWasm0(arg0, arg1), arg2);
             return ret;
         },
@@ -1169,7 +1169,7 @@ function __wbg_get_imports() {
     };
     return {
         __proto__: null,
-        "./front-end-f04a39ae89390df6_bg.js": import0,
+        "./front-end-93a7f9e1d63e7e2e_bg.js": import0,
     };
 }
 
@@ -1624,7 +1624,7 @@ async function __wbg_init_once(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('front-end-f04a39ae89390df6_bg.wasm', import.meta.url);
+        module_or_path = new URL('front-end-93a7f9e1d63e7e2e_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

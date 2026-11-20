@@ -86,6 +86,30 @@ test('view diff never sends open_path and skips an absent range', () => {
   assert.ok(![...commands, ...withCursor].some((command) => command.kind === 'open_path'))
 })
 
+test('view diff opens sources that are new since the last replay', () => {
+  // A source is a command, not viewer state: the panel has to be told to open
+  // each file, and a reloaded iframe needs them replayed.
+  const opened = viewCommands(null, { rows: [], sources: ['C:/rtl/top.sv', 'C:/rtl/cpu.sv'] })
+  assert.deepEqual(opened, [
+    { kind: 'open_source', path: 'C:/rtl/top.sv' },
+    { kind: 'open_source', path: 'C:/rtl/cpu.sv' },
+  ])
+
+  const incremental = viewCommands(
+    { rows: [], sources: ['C:/rtl/top.sv'] },
+    { rows: [], sources: ['C:/rtl/top.sv', 'C:/rtl/cpu.sv'] },
+  )
+  assert.deepEqual(incremental, [{ kind: 'open_source', path: 'C:/rtl/cpu.sv' }], 'an already-open source is not re-sent')
+
+  const quiet = viewCommands(
+    { rows: [], sources: ['C:/rtl/top.sv'] },
+    { rows: [], sources: ['C:/rtl/top.sv'] },
+  )
+  assert.deepEqual(quiet, [], 'an unchanged source list sends nothing')
+
+  const empty = viewCommands(null, { rows: [], sources: [] })
+  assert.deepEqual(empty, [], 'a view with no sources opens none')
+})
 test('range and cursor comparison is value based', () => {
   assert.equal(sameRange({ start: 1, end: 2 }, { start: 1, end: 2 }), true)
   assert.equal(sameRange({ start: 1, end: 2 }, { start: 1, end: 3 }), false)

@@ -613,5 +613,49 @@ export function createTools({ bridge, sessions, daemon }) {
           state: null,
         }
       },
+    }),
+    defineTool({
+      name: 'load_sources',
+      description:
+        'Open Verilog/SystemVerilog files in the side panel\'s source pane, so the panel shows the same design the design tools read. Give `paths` for explicit files, or nothing to open the companion RTL next to the loaded dump. Files already open are kept; the panel re-reads them on every replay.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          paths: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Absolute .v/.sv paths to open. Omit to use the companion RTL next to the loaded dump.',
+          },
+        },
+      },
+      run: async (args, exec) => {
+        const view = sessions.get(exec)
+        /** @type {string[]} */
+        let wanted
+        if (args.paths !== undefined && args.paths !== null) {
+          wanted = stringList(args.paths, 'paths')
+        } else {
+          const dump = requireDump(view)
+          wanted = await bridge.sources(dump.path, { signal: exec.signal })
+          if (wanted.length === 0) {
+            return {
+              summary: `no companion RTL next to ${dump.name}: looked for rtl/, generated/ or verilog/ beside it and in the two directories above`,
+              state: null,
+            }
+          }
+        }
+        // Opening a source is the panel's job: the view carries the list and
+        // the client replays it into the iframe, which reads the text through
+        // the backend. Re-opening a file is harmless.
+        const already = view.sources ?? []
+        const added = wanted.filter((source) => !already.includes(source))
+        const state = sessions.update(exec, { ...view, sources: [...already, ...added] })
+        const parts = [`opened ${added.length} source${added.length === 1 ? '' : 's'}`]
+        if (wanted.length > added.length) parts.push(`${wanted.length - added.length} already open`)
+        const shown = added.slice(0, 5)
+        if (shown.length > 0) parts.push(shown.map((source) => path.basename(source)).join(', '))
+        return { summary: parts.join(', '), state }
+      },
     }),  ]
 }

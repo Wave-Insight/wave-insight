@@ -10,6 +10,19 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.24.4] - 2026-11-20
+
+### Added
+
+- `load_sources` in the DSH plugin puts Verilog/SystemVerilog files in the
+  panel's source pane, so the viewer shows the design the tools are reading.
+  The open list is durable session state, so a resumed session replays it, and
+  the loopback backend grew a `read_source` command (behind the same token,
+  loopback-host and same-origin checks) to hand the page a file it could not
+  read itself. The viewer's web command listener handles the matching
+  `open_source`. Plugin **0.2.10**.
+- The bundled viewer is rebuilt from the current front end for that path.
+
 ## [0.24.3] - 2026-11-20
 
 ### Added

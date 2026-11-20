@@ -54,8 +54,8 @@ window.__ModuleLoader__.load({
      * `open_path` is not part of this list: opening replaces the viewer's dump
      * asynchronously and the app announces readiness afterwards, so the caller
      * sends it alone and replays the rest on the next handshake.
-     * @param {{rows?: string[], visible?: {start:number,end:number}|null, cursors?: {one:number|null,two:number|null}}} [previous]
-     * @param {{rows?: string[], visible?: {start:number,end:number}|null, cursors?: {one:number|null,two:number|null}}} next
+     * @param {{rows?: string[], sources?: string[], visible?: {start:number,end:number}|null, cursors?: {one:number|null,two:number|null}}} [previous]
+     * @param {{rows?: string[], sources?: string[], visible?: {start:number,end:number}|null, cursors?: {one:number|null,two:number|null}}} next
      */
     function viewCommands(previous, next) {
       if (!next) return []
@@ -68,6 +68,16 @@ window.__ModuleLoader__.load({
       if (added.length > 0) commands.push({ kind: 'add_signals', signals: added })
       if (next.visible && !sameRange(previous?.visible, next.visible)) {
         commands.push({ kind: 'set_time_range', start: next.visible.start, end: next.visible.end })
+      }
+      // Sources are commands, not state the viewer can diff itself: the panel
+      // has to be told to open each file, and re-telling it is how a reloaded
+      // iframe gets them back. Only what is new since the last replay is sent.
+      const beforeSources = previous?.sources ?? []
+      if (next.sources && next.sources.length > 0) {
+        const opened = next.sources.filter((source) => !beforeSources.includes(source))
+        if (opened.length > 0) {
+          for (const source of opened) commands.push({ kind: 'open_source', path: source })
+        }
       }
       if (!sameCursors(previous?.cursors, next.cursors)) {
         commands.push({
@@ -212,7 +222,7 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         sync()
-      }, [view?.dump?.path, view?.rows, view?.visible, view?.cursors, url, sync])
+      }, [view?.dump?.path, view?.rows, view?.visible, view?.cursors, view?.sources, url, sync])
 
       useEffect(() => {
         if (!url) return undefined
