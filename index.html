@@ -7,7 +7,7 @@
     <!-- an empty data icon: the browser stops probing /favicon.ico (a 404 on every load) -->
     <link rel="icon" href="data:," />
 
-    <link rel="stylesheet" href="/wave-insight/styles-5737ae7e418eff4a.css" integrity="sha384-4SsSK854o0qwoe16cFW5A0a3w788Q9seaDPWkj/CkhBy/iJFxGoutb+MJe2GiwrQ"/>
+    <link rel="stylesheet" href="/wave-insight/styles-bf9d155bfdb738e0.css" integrity="sha384-9Ew0h2hsrgZCFYGbaJQH/PRqA2FM3iOyv5xEOEbQSut6LBjGsWCujnCelaNqfw6O"/>
     <!--
       The editor is a pinned, self-hosted monaco build (see monaco/README.md).
       Trunk copies the directory to `dist/monaco/`, i.e. next to the wasm bundle,
@@ -15,12 +15,12 @@
       therefore never talks to a CDN and works offline / behind a firewall.
     -->
     
-  <link rel="modulepreload" href="/wave-insight/front-end-185672d03711b26.js" crossorigin="anonymous" integrity="sha384-zzpSL83KDxFlzqKZBITH/XRAHAEzKHo9U09Yw8DZDZ5q4WMgYbzm5y9Igu8K4qss"><link rel="preload" href="/wave-insight/front-end-f669e572274b8fcb_bg.wasm" crossorigin="anonymous" integrity="sha384-05aO0NY85gS/oqnE4p5nrqVQD88X93YYldCk30/WONHLQZAOd3tqVvl3Uxqea15I" as="fetch" type="application/wasm"></head>
+  <link rel="modulepreload" href="/wave-insight/front-end-d3cbc5e12ee28934.js" crossorigin="anonymous" integrity="sha384-et59sPpPk1HwRMWOJ81eh4mCdeFFj4s810g28lHR9u4Feofn+lHRsmLtB9TKGYXK"><link rel="preload" href="/wave-insight/front-end-a0cf8ccf497b65f6_bg.wasm" crossorigin="anonymous" integrity="sha384-jGAsi+xRebQzR/2sBkMt/kqYCtSv3AsfH+oqpFcUhL3qcsdZbLqi37zsMLS1mCqr" as="fetch" type="application/wasm"></head>
 
   <body>
 <script type="module">
-import init, * as bindings from '/wave-insight/front-end-185672d03711b26.js';
-const wasm = await init({ module_or_path: '/wave-insight/front-end-f669e572274b8fcb_bg.wasm' });
+import init, * as bindings from '/wave-insight/front-end-d3cbc5e12ee28934.js';
+const wasm = await init({ module_or_path: '/wave-insight/front-end-a0cf8ccf497b65f6_bg.wasm' });
 
 
 window.wasmBindings = bindings;
