@@ -8,6 +8,14 @@ does not duplicate them.
 
 ## Where we are
 
+**0.24.6** gives the DSH bundle its own npm name, `dsh-wave-insight`: the package
+name is now also the declared row and the client registration, so `dsh plugin
+--profile <profile> add dsh-wave-insight` replaces the local-directory install,
+and the release job publishes that version from the same tag through npm Trusted
+Publishing. The desktop app and the browser build are untouched, and an existing
+install of the old `@wave-insight/dsh-plugin` link has to be removed and added
+again.
+
 **0.24.2** is a DSH plugin patch: a resumed session's tools read the dump the panel is showing again (the projection reader now handles both registry shapes the 0.2.1 and 0.2.2 Host lines hand back), and the plugin's Linux pair is built for `x86_64-unknown-linux-musl`, so the static helper and viewer backend run on Alpine as well as on every glibc distribution.
 
 **0.24.1** is a packaging patch: the DSH plugin ships a JSON-lines helper and a viewer backend for Windows x64, Linux x64, macOS ARM64 and macOS x64, built in CI and delivered as one tarball instead of four binaries committed to the tree, so the side panel is no longer Windows-only.

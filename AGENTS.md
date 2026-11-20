@@ -22,10 +22,11 @@ patch bump and a `v*` tag — a `dsh-plugin-v*` tag on its own ships nothing.
 
 ### 1. Bump
 
-- [`Cargo.toml`](Cargo.toml) — `[workspace.package] version`. All six members
+- [`Cargo.toml`](Cargo.toml) — `[workspace.package] version`. All seven members
   inherit it, so this is the only place the app version is written in Rust.
-- `Cargo.lock` — the same six member blocks: `app`, `back-end`, `dsh-bridge`,
-  `front-end`, `wave-insight-lib`, `wave-insight-web-backend`.
+- `Cargo.lock` — the same seven member blocks: `app`, `back-end`, `dsh-bridge`,
+  `front-end`, `wave-insight-companion`, `wave-insight-lib`,
+  `wave-insight-web-backend`.
 - [`src-tauri/tauri.conf.json`](src-tauri/tauri.conf.json) — `version`. The
   Tauri bundle name, installer metadata and `releaseName: 'v__VERSION__'` all
   come from here, so a tag without this bump republishes the previous version.
@@ -116,7 +117,7 @@ skips a version that is already there.
   crates can share the number: `darling`, `darling_core` and `darling_macro`
   were at `0.24.1` and a blind replace made the lockfile unresolvable
   (`failed to select a version for the requirement darling = ^0.24`). Edit only
-  the six workspace members and re-check with `cargo metadata --locked`.
+  the seven workspace members and re-check with `cargo metadata --locked`.
 - **A `dsh-plugin-v*` tag does not create a release.** If a plugin fix should
   ship, it needs the app bump and a `v*` tag; `dsh-plugin-v*` is history only.
 - **`git push origin main` is ambiguous here.** A stray `refs/tags/main` exists,

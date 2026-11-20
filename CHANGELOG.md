@@ -8,6 +8,10 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
+Nothing yet: the next wave lands here.
+
+## [0.24.6] - 2026-11-20
+
 ### Changed
 
 - The DSH plugin is published as `dsh-wave-insight` instead of
@@ -15,6 +19,10 @@ an on-disk/transport format.
   dsh-wave-insight` installs it from npm without an organization. The package
   name is also the row name, so an existing install has to be removed and added
   again. Plugin **0.2.12**.
+- The release job publishes that bundle from the same tag once the repository
+  variable `NPM_PUBLISH` is on, authenticated by npm Trusted Publishing (OIDC)
+  rather than a token; a version that is already on the registry is skipped
+  instead of failing the release.
 
 ## [0.24.5] - 2026-11-20
 
