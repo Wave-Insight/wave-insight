@@ -10,3 +10,4 @@ authors.workspace = true
 [dependencies]
 serde_json = "1"
 wave-insight-lib = { path = "../wave-insight-lib" }
+wave-insight-companion = { path = "../companion-rtl" }

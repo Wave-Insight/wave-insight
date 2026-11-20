@@ -7,8 +7,12 @@ and desktop builds.
 
 ## What it does
 
-- Opens VCD, FST and GHW dumps through the project's native, memory-mapped reader.
-- Exposes eight model-facing tools:
+- Opens VCD, FST, GHW and FSDB dumps through the project's native, memory-mapped
+  reader (an FSDB trace is converted once by Verdi's `fsdb2vcd` and cached).
+- Reads the Verilog/SystemVerilog the dump came from with the same library the
+  source pane uses, so a model and the viewer cannot disagree about where a
+  signal is declared.
+- Exposes twelve model-facing tools:
 
   | Tool | Purpose |
   |---|---|
@@ -20,6 +24,14 @@ and desktop builds.
   | `set_cursors` | Place or clear the two time cursors. |
   | `get_changes` | Return bounded `time=value` pairs to the model and show the signals. |
   | `list_waveform` | Report the current dump, rows, window and cursors. |
+  | `find_sources` | The companion RTL next to a dump (`rtl/`, `generated/`, `verilog/`). |
+  | `list_modules` | Module definitions, ports and instances of some sources. |
+  | `find_declaration` | Where a hierarchical signal is declared, driven and read. |
+  | `get_diagnostics` | What the parser and the elaborator could not resolve. |
+
+  The four design tools take `paths` (explicit `.v`/`.sv` files) or `dump` (a
+  waveform to find its companion RTL next to); `dump` defaults to the file the
+  panel is showing. They only read, so they leave the panel untouched.
 
 - Opens the **Wave Insight** tab in DSH's right sidebar when a tool result first
   carries a dump. The tab renders the real Wave Insight viewer: the Host starts a
@@ -35,11 +47,11 @@ index.js            Host entry: re-exports apply / Config / inject
 host/
   plugin.js         wiring: assets, viewer, projection, tools, prompt section
   assets.js         bundled binary lookup (config -> env -> bin/)
-  bridge.js         JSON-lines protocol to the native helper
+  bridge.js         JSON-lines protocol to the native helper (waveform + design)
   daemon.js         loopback viewer lifecycle (one child per Host, refcounted)
   projection.js     the `waveInsight` session projection
   sessions.js       per-session view cache, restored from the projection
-  tools.js          the eight tool definitions
+  tools.js          the twelve tool definitions
   schema.js         dependency-free structural schemas
 client.js           Client half: tab type, slot body, view diff, handshake
 ui/                 built web-remote viewer (wasm + assets)
@@ -141,7 +153,7 @@ the machine happens to carry.
 ## Development
 
 ```text
-node qa/dsh-plugin-smoke.mjs        # Host tools, projection and helper
+node qa/dsh-plugin-smoke.mjs        # Host tools (waveform + design), projection, helper
 node qa/dsh-plugin-client.test.mjs  # Client view diff and registrations
 node qa/dsh-invoke-shim.test.mjs    # Web shim arguments and origin checks
 node qa/web-backend-smoke.mjs       # Loopback backend (needs the release build)

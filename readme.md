@@ -632,7 +632,12 @@ Two native pieces sit behind the bundle:
 
 - `dsh-bridge` ([`dsh-bridge/`](dsh-bridge/)) answers the model-facing tools in
   JSON lines, opening dumps with the same native reader as the desktop build and
-  returning bounded window queries.
+  returning bounded window queries. It also parses the Verilog/SystemVerilog
+  behind a dump — module definitions, a signal's declaration and its
+  drivers/loads, and the parser's diagnostics — through the same
+  `wave_insight_lib::design` the source pane uses, and finds the companion RTL
+  next to a waveform with `companion-rtl` ([`companion-rtl/`](companion-rtl/)),
+  the scan the desktop build shares.
 - `wave-insight-web-backend` ([`web-backend/`](web-backend/)) serves the built
   web-remote viewer and its `/invoke` route on loopback, so the tab renders the
   real Wave Insight UI instead of a sketch.

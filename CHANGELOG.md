@@ -10,6 +10,28 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.24.3] - 2026-11-20
+
+### Added
+
+- The DSH plugin's tools can read the Verilog/SystemVerilog behind a waveform.
+`find_sources` lists the companion RTL next to a dump, `list_modules` reports
+the module definitions with their ports and instances, `find_declaration`
+locates a hierarchical signal and every span that drives or reads it, and
+`get_diagnostics` reports what the parser and the elaborator could not
+resolve. They answer from the same `DesignDb` the source pane uses, so a model
+and the viewer cannot disagree about a declaration. Plugin **0.2.9**.
+- `companion-rtl` is a small new workspace crate: the SpinalHDL companion-RTL
+scan that used to live in `src-tauri` now serves both the desktop open path and
+the DSH helper, and it is host-only (the wasm bundle never walks a filesystem).
+
+### Fixed
+
+- The bundled-viewer stamp hashes the root `Cargo.toml` by its `[profile.*]`
+sections instead of the whole file. The version line was already normalized
+out, but adding a workspace member or a path dependency still reported the
+viewer as stale even though neither can change the wasm bundle.
+
 ## [0.24.2] - 2026-11-20
 
 ### Fixed

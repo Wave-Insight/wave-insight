@@ -1,0 +1,14 @@
+[package]
+name = "wave-insight-companion"
+version.workspace = true
+edition.workspace = true
+description = "Companion-RTL discovery: the Verilog sources a simulator wrote next to a dump"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# A host-only crate on purpose: the scan walks the filesystem, which the wasm
+# bundle cannot do, and keeping it out of `wave-insight-lib` keeps the bundled
+# viewer's build stamp tied to what actually changes that bundle.
+
+[dependencies]

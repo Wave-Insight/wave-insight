@@ -18,7 +18,9 @@ use tauri::ipc::Response;
 use tauri::Manager;
 
 mod agent;
-mod companion;
+// the companion scan lives in its own crate so the DSH helper runs the same
+// rules; this crate only exposes it through its IPC command
+use wave_insight_companion as companion;
 mod dumps;
 mod process_memory;
 

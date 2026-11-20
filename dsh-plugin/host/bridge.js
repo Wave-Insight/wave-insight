@@ -272,6 +272,97 @@ export class Bridge {
   }
 
   /**
+   * The module definitions of the given sources, in Host shape.
+   * @param {{ paths?: string[], dump?: string, limit?: number }} request
+   * @param {{ signal?: AbortSignal }} [options]
+   */
+  async modules(request, options = {}) {
+    const response = await this.call({ cmd: 'modules', ...request }, { signal: options.signal })
+    const modules = Array.isArray(response.modules) ? response.modules : []
+    return {
+      files: Array.isArray(response.files) ? response.files.map(String) : [],
+      moduleCount: Number.isFinite(Number(response.module_count)) ? Number(response.module_count) : modules.length,
+      truncated: response.truncated === true,
+      modules: modules.map((module) => ({
+        name: String(module?.name ?? ''),
+        file: String(module?.file ?? ''),
+        line: Number.isFinite(Number(module?.line)) ? Number(module.line) : 0,
+        ports: Array.isArray(module?.module_ports)
+          ? module.module_ports.map((port) => ({
+              name: String(port?.name ?? ''),
+              direction: String(port?.direction ?? 'unknown'),
+              kind: String(port?.kind ?? 'other'),
+              width: Number.isFinite(Number(port?.width)) ? Number(port.width) : null,
+            }))
+          : [],
+        instances: Array.isArray(module?.instances)
+          ? module.instances.map((instance) => ({
+              name: String(instance?.name ?? ''),
+              module: String(instance?.module ?? ''),
+            }))
+          : [],
+      })),
+    }
+  }
+
+  /**
+   * Where one hierarchical signal is declared, plus the spans that drive and
+   * read it. `declared: false` is a real answer: the design does not know the
+   * path, and the caller reports that instead of inventing a location.
+   * @param {{ paths?: string[], dump?: string, top?: string, signal: string }} request
+   * @param {{ signal?: AbortSignal }} [options]
+   */
+  async declare(request, options = {}) {
+    const response = await this.call({ cmd: 'declare', ...request }, { signal: options.signal })
+    const declaration = response.declaration
+    return {
+      declared: response.declared === true,
+      signal: String(response.signal ?? request.signal),
+      top: String(response.top ?? ''),
+      module: String(response.module ?? ''),
+      instance: String(response.instance ?? ''),
+      kind: String(response.kind ?? 'other'),
+      direction: response.direction == null ? null : String(response.direction),
+      width: Number.isFinite(Number(response.width)) ? Number(response.width) : null,
+      location: response.location == null ? null : String(response.location),
+      declaration:
+        declaration && typeof declaration === 'object'
+          ? { file: String(declaration.file ?? ''), line: Number(declaration.line ?? 0), col: Number(declaration.col ?? 0) }
+          : null,
+      drivers: referenceList(response.drivers),
+      loads: referenceList(response.loads),
+      diagnostics: diagnosticList(response.diagnostics),
+    }
+  }
+
+  /**
+   * What the parser or the elaborator could not resolve.
+   * @param {{ paths?: string[], dump?: string, top?: string }} request
+   * @param {{ signal?: AbortSignal }} [options]
+   */
+  async diagnostics(request, options = {}) {
+    const response = await this.call({ cmd: 'diagnostics', ...request }, { signal: options.signal })
+    const entries = diagnosticList(response.diagnostics)
+    return {
+      modules: Number.isFinite(Number(response.modules)) ? Number(response.modules) : 0,
+      top: response.top == null ? null : String(response.top),
+      count: Number.isFinite(Number(response.count)) ? Number(response.count) : entries.length,
+      truncated: response.truncated === true,
+      diagnostics: entries,
+    }
+  }
+
+  /**
+   * The companion RTL next to a dump (the SpinalHDL layout), by absolute path.
+   * @param {string} path the waveform file
+   * @param {{ signal?: AbortSignal }} [options]
+   */
+  async sources(path, options = {}) {
+    const response = await this.call({ cmd: 'sources', dump: path }, { signal: options.signal })
+    return Array.isArray(response.paths) ? response.paths.map(String) : []
+  }
+
+  /**
    * Fallback for helpers without a `validate` command.
    * @param {string} path
    * @param {string[]} wanted
@@ -301,6 +392,44 @@ export class Bridge {
   }
 }
 
+/**
+ * Driver/load references as `{ location, bits }`, dropping anything the helper
+ * did not fill in.
+ * @param {unknown} value
+ * @returns {Array<{ location: string, bits: string | null }>}
+ */
+function referenceList(value) {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => ({
+      location: String(entry?.location ?? ''),
+      bits: entry?.bits == null ? null : String(entry.bits),
+    }))
+    .filter((entry) => entry.location.length > 0)
+}
+
+/**
+ * Diagnostics as `{ severity, kind, message, location }`; the span becomes one
+ * `file:line:col` string because that is what a model quotes back.
+ * @param {unknown} value
+ * @returns {Array<{ severity: string, kind: string, message: string, location: string | null }>}
+ */
+function diagnosticList(value) {
+  if (!Array.isArray(value)) return []
+  return value.map((entry) => {
+    const span = entry?.span
+    const location =
+      span && typeof span === 'object'
+        ? `${String(span.file ?? '')}:${Number(span.line ?? 0)}:${Number(span.col ?? 0)}`
+        : null
+    return {
+      severity: String(entry?.severity ?? 'error'),
+      kind: String(entry?.kind ?? 'unknown'),
+      message: String(entry?.message ?? ''),
+      location,
+    }
+  })
+}
 /** @param {import('node:child_process').ChildProcess} child */
 function kill(child) {
   try {

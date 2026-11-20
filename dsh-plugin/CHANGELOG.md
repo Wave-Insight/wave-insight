@@ -4,6 +4,40 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.9] - 2026-11-20
+
+### Added
+
+- **The tools can read the Verilog/SystemVerilog behind a waveform.** The viewer
+  has parsed sources since Wave 3, but the Host half never reached that library,
+  so a model could see the signals and nothing about where they come from. Four
+  read-only tools close the gap, and they answer from the same `DesignDb` the
+  source pane uses, so the two cannot disagree:
+  - `find_sources` lists the companion RTL next to a dump (`rtl/`,
+    `generated/`/`verilog/`, in the dump's directory and the two above it).
+  - `list_modules` reports every module definition with its file and line, its
+    ports (direction, kind, width) and its child instances.
+  - `find_declaration` locates one hierarchical signal: the declaration span,
+    the module and instance, and every span that drives or reads it.
+  - `get_diagnostics` reports what the parser and the elaborator could not
+    resolve, with a `file:line:col` span per entry.
+
+  Each takes `paths` (explicit files) or `dump` (find the RTL next to a
+  waveform, defaulting to the file the panel shows) and leaves the panel view
+  untouched. `dsh-bridge` grew the matching `sources` / `modules` / `declare` /
+  `diagnostics` commands.
+- The companion-RTL scan moved from `src-tauri` into
+  `wave_insight_lib::design::companion` (gated off wasm), so the desktop open
+  path and the DSH helper run one rule set instead of two copies.
+
+### Fixed
+
+- `load_waveform` accepts and documents `.fsdb`: the helper has read FSDB
+  through Verdi's converter since 0.2.6, but the tool's description and schema
+  named only VCD/FST/GHW and steered the model away from a working format.
+- The INVALID_ARGS text for a list argument says "paths" instead of "signal
+  paths", which the design tools now use.
+
 ## [0.2.8] - 2026-11-20
 
 ### Fixed

@@ -5,6 +5,7 @@ on:
     paths:
       - 'dsh-plugin/**'
       - 'dsh-bridge/**'
+      - 'companion-rtl/**'
       - 'web-backend/**'
       - 'front-end/**'
       - 'src-tauri/src/dumps.rs'
@@ -20,6 +21,7 @@ on:
     paths:
       - 'dsh-plugin/**'
       - 'dsh-bridge/**'
+      - 'companion-rtl/**'
       - 'web-backend/**'
       - 'front-end/**'
       - 'src-tauri/src/dumps.rs'

@@ -1,4 +1,10 @@
-//! Companion RTL discovery for the desktop open path.
+//! Companion RTL discovery: the sources a simulator wrote next to a dump.
+//!
+//! Shared by the desktop open path (its `dump_companion_sources` IPC command)
+//! and the DSH helper's `sources` command, so both find the same files. It is
+//! not part of `wave-insight-lib`: the scan walks the filesystem, which the wasm
+//! bundle cannot do, and keeping it out of the library keeps the bundled
+//! viewer's build stamp tied to what actually changes that bundle.
 //!
 //! SpinalHDL (and most simulators) write the generated sources next to the
 //! waveform. The layout verified in the SpinalHDL sources (dev branch,
@@ -34,8 +40,8 @@
 //!   parses Verilog/SystemVerilog, and a VHDL file in the generated directory
 //!   would otherwise fail to parse on every open.
 //!
-//! This module is pure filesystem inspection: no tauri types, so it is unit
-//! tested with temporary directories on the host.
+//! This module is pure filesystem inspection: no tauri and no waveform types,
+//! so it is unit tested with temporary directories on the host.
 
 use std::collections::BTreeMap;
 use std::fs;

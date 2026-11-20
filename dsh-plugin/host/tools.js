@@ -22,6 +22,8 @@ const FIND_LIMIT_MAX = 200
 const FIND_RENDER_MAX = 30
 /** How long a load waits for the viewer backend before answering anyway. */
 const VIEWER_WAIT_MS = 5_000
+/** Hard cap on the modules one design answer lists. */
+export const DESIGN_MODULE_LIMIT = 400
 
 const OUTPUT_SCHEMA = {
   type: 'object',
@@ -79,7 +81,7 @@ function boundedInt(value, label, limit) {
  * @returns {string[]}
  */
 function stringList(value, label) {
-  if (!Array.isArray(value)) throw waveError('INVALID_ARGS', `"${label}" must be an array of signal paths`)
+  if (!Array.isArray(value)) throw waveError('INVALID_ARGS', `"${label}" must be an array of paths`)
   /** @type {string[]} */
   const list = []
   for (const item of value) {
@@ -89,10 +91,32 @@ function stringList(value, label) {
     const trimmed = item.trim()
     if (!list.includes(trimmed)) list.push(trimmed)
   }
-  if (list.length === 0) throw waveError('INVALID_ARGS', `"${label}" must contain at least one signal path`)
+  if (list.length === 0) throw waveError('INVALID_ARGS', `"${label}" must contain at least one path`)
   return list
 }
 
+/**
+ * The sources a design tool should parse: an explicit `paths` list, the `dump`
+ * argument, or the dump the panel already shows. The helper refuses an empty
+ * request, so the error says which of the three to give.
+ * @param {{ paths?: unknown, dump?: unknown }} args
+ * @param {ReturnType<typeof emptyView>} view
+ * @returns {{ paths?: string[], dump?: string }}
+ */
+function sourceRequest(args, view) {
+  if (args?.paths !== undefined && args?.paths !== null) {
+    return { paths: stringList(args.paths, 'paths') }
+  }
+  if (typeof args?.dump === 'string' && args.dump.trim().length > 0) {
+    return { dump: path.resolve(args.dump.trim()) }
+  }
+  const loaded = view?.dump?.path
+  if (loaded) return { dump: loaded }
+  throw waveError(
+    'NO_SOURCES',
+    'pass "paths" (.v/.sv files) or "dump" (a waveform to find its companion RTL next to), or load a waveform first',
+  )
+}
 /** @param {ReturnType<typeof emptyView>} view */
 function requireDump(view) {
   if (!view?.dump?.path) {
@@ -177,12 +201,15 @@ export function createTools({ bridge, sessions, daemon }) {
     defineTool({
       name: 'load_waveform',
       description:
-        'Open a VCD, FST or GHW dump with the native memory-mapped reader and show it in the Wave Insight side panel. Call this before any other waveform tool. Replaces any previously loaded dump and resets the shown rows and cursors.',
+        'Open a VCD, FST, GHW or FSDB dump with the native memory-mapped reader and show it in the Wave Insight side panel. Call this before any other waveform tool. Replaces any previously loaded dump and resets the shown rows and cursors.',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          path: { type: 'string', description: 'Absolute path of the waveform file (.vcd, .fst or .ghw).' },
+          path: {
+            type: 'string',
+            description: 'Absolute path of the waveform file (.vcd, .fst, .ghw or .fsdb). An FSDB trace is converted once and cached by the native reader.',
+          },
         },
         required: ['path'],
       },
@@ -440,5 +467,151 @@ export function createTools({ bridge, sessions, daemon }) {
         }
       },
     }),
-  ]
+
+    defineTool({
+      name: 'find_sources',
+      description:
+        'List the Verilog/SystemVerilog sources a simulator wrote next to the loaded dump (the SpinalHDL rtl/ layout, plus generated/ and verilog/ aliases, looked for in the dump directory and the two above it). Returns absolute paths you can pass to the design tools.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Waveform file to look next to. Defaults to the dump the panel is showing.',
+          },
+        },
+      },
+      run: async (args, exec) => {
+        let target
+        if (typeof args.path === 'string' && args.path.trim().length > 0) {
+          target = { name: path.basename(args.path.trim()), path: path.resolve(args.path.trim()) }
+        } else {
+          target = requireDump(sessions.get(exec))
+        }
+        const paths = await bridge.sources(target.path, { signal: exec.signal })
+        if (paths.length === 0) {
+          return {
+            summary: `no companion RTL next to ${target.name}: looked for rtl/, generated/ or verilog/ beside it and in the two directories above`,
+            state: null,
+          }
+        }
+        const shown = paths.slice(0, 20)
+        const more = paths.length > shown.length ? ` … ${paths.length - shown.length} more` : ''
+        return {
+          summary: `${paths.length} source${paths.length === 1 ? '' : 's'} next to ${target.name}: ${shown.join(', ')}${more}`.replace(/\s+/g, ' '),
+          state: null,
+          values: paths,
+        }
+      },
+    }),
+
+    defineTool({
+      name: 'list_modules',
+      description:
+        'Parse Verilog/SystemVerilog sources and report the module definitions: name, file and line, ports with their direction/kind/width, and the child instances. Use it to learn the design behind a waveform. Give `dump` to read the companion RTL next to the loaded dump, or `paths` for explicit files.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          paths: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Absolute .v/.sv paths to parse. Omit to use `dump`.',
+          },
+          dump: {
+            type: 'string',
+            description: 'Waveform path whose companion RTL should be parsed. Defaults to the loaded dump.',
+          },
+          limit: { type: 'number', description: `Maximum modules to list (default ${DESIGN_MODULE_LIMIT}).` },
+        },
+      },
+      run: async (args, exec) => {
+        const request = sourceRequest(args, sessions.get(exec))
+        const limit = boundedInt(args.limit, 'limit', { fallback: DESIGN_MODULE_LIMIT, min: 1, max: DESIGN_MODULE_LIMIT })
+        const found = await bridge.modules({ ...request, limit }, { signal: exec.signal })
+        if (found.modules.length === 0) {
+          return { summary: `no modules in ${found.files.length} source file(s)`, state: null }
+        }
+        const shown = found.modules.slice(0, 20)
+        const lines = shown.map((module) => {
+          const ports = module.ports
+            .map((port) => `${port.direction} ${port.kind}${port.width && port.width > 1 ? ` [${port.width - 1}:0]` : ''} ${port.name}`)
+            .join(', ')
+          const instances = module.instances.map((instance) => `${instance.module} ${instance.name}`).join(', ')
+          return `${module.name} (${path.basename(module.file)}:${module.line})${ports ? ` — ports: ${ports}` : ''}${instances ? ` — instances: ${instances}` : ''}`
+        })
+        const more = found.modules.length > shown.length ? ` … ${found.modules.length - shown.length} more` : ''
+        const cap = found.truncated ? ` (capped at ${limit})` : ''
+        return {
+          summary: `${found.moduleCount} module${found.moduleCount === 1 ? '' : 's'} in ${found.files.length} file(s)${cap}: ${lines.join(' | ')}${more}`,
+          state: null,
+        }
+      },
+    }),
+
+    defineTool({
+      name: 'find_declaration',
+      description:
+        'Locate a hierarchical signal in the parsed sources: the file and line of its declaration, its module/instance, its kind and width, and every place that drives or reads it. Give `dump` to parse the companion RTL next to the loaded dump, or `paths` for explicit files; `top` names the module to elaborate.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          signal: { type: 'string', description: 'Hierarchical signal path, e.g. top.u_cpu.pc.' },
+          top: { type: 'string', description: 'Module to elaborate as the design root. Omit when the sources define exactly one module.' },
+          paths: { type: 'array', items: { type: 'string' }, description: 'Absolute .v/.sv paths to parse. Omit to use `dump`.' },
+          dump: { type: 'string', description: 'Waveform path whose companion RTL should be parsed. Defaults to the loaded dump.' },
+        },
+        required: ['signal'],
+      },
+      run: async (args, exec) => {
+        const signal = requiredString(args.signal, 'signal')
+        const request = sourceRequest(args, sessions.get(exec))
+        const top = typeof args.top === 'string' && args.top.trim().length > 0 ? args.top.trim() : undefined
+        const found = await bridge.declare({ ...request, ...(top ? { top } : {}), signal }, { signal: exec.signal })
+        if (!found.declared) {
+          return {
+            summary: `${signal} is not in the design elaborated as ${found.top || '(no top)'}${found.diagnostics.length > 0 ? `; ${found.diagnostics.length} diagnostic(s) explain what could not be resolved` : ''}`,
+            state: null,
+          }
+        }
+        const parts = [`${signal} is declared at ${found.location}`]
+        const shape = [found.direction, found.kind].filter(Boolean).join(' ')
+        parts.push(`${shape}${found.width && found.width > 1 ? ` [${found.width - 1}:0]` : ''} in ${found.module} (${found.instance})`)
+        if (found.drivers.length > 0) parts.push(`driven at ${found.drivers.slice(0, 5).map((ref) => ref.location).join(', ')}`)
+        if (found.loads.length > 0) parts.push(`loaded at ${found.loads.slice(0, 5).map((ref) => ref.location).join(', ')}`)
+        return { summary: parts.join('; '), state: null }
+      },
+    }),
+
+    defineTool({
+      name: 'get_diagnostics',
+      description:
+        'Report what the parser and the elaborator could not resolve for a set of Verilog/SystemVerilog sources: syntax problems, unsupported constructs, unresolved modules and names. Give `dump` to read the companion RTL next to the loaded dump, or `paths` for explicit files.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          paths: { type: 'array', items: { type: 'string' }, description: 'Absolute .v/.sv paths to parse. Omit to use `dump`.' },
+          dump: { type: 'string', description: 'Waveform path whose companion RTL should be parsed. Defaults to the loaded dump.' },
+          top: { type: 'string', description: 'Module to elaborate, whose unresolved names are reported too.' },
+        },
+      },
+      run: async (args, exec) => {
+        const request = sourceRequest(args, sessions.get(exec))
+        const top = typeof args.top === 'string' && args.top.trim().length > 0 ? args.top.trim() : undefined
+        const found = await bridge.diagnostics({ ...request, ...(top ? { top } : {}) }, { signal: exec.signal })
+        if (found.count === 0) {
+          return { summary: `no diagnostics: ${found.modules} module(s) parsed cleanly${found.top ? ` and ${found.top} elaborated` : ''}`, state: null }
+        }
+        const shown = found.diagnostics.slice(0, 10)
+        const lines = shown.map((entry) => `${entry.location ? `${entry.location} ` : ''}${entry.severity} ${entry.kind}: ${entry.message}`)
+        const more = found.count > shown.length ? ` … ${found.count - shown.length} more` : ''
+        return {
+          summary: `${found.count} diagnostic${found.count === 1 ? '' : 's'}${found.truncated ? ' (capped)' : ''}: ${lines.join(' | ')}${more}`,
+          state: null,
+        }
+      },
+    }),  ]
 }

@@ -46,14 +46,23 @@ function rustSources(dir) {
 const files = [...INPUTS, ...rustSources('front-end/src'), ...rustSources('wave-insight-lib/src')].sort()
 
 /**
- * The workspace version lives in a file whose `[profile.release]` section does
- * decide the wasm build, but the version line itself changes nothing about it.
- * A release bump therefore has to be hashed out, or every release commit would
- * report the viewer as stale.
+ * The root `Cargo.toml` is an input for one reason: its `[profile.*]` sections
+ * decide how the wasm is compiled (`opt-level`, `lto`, `codegen-units`,
+ * `panic`). Everything else in that file — the `[workspace.package]` version, a
+ * new member, a dependency — changes nothing about the bundle, so hashing the
+ * whole file made a release bump or an unrelated crate report the viewer as
+ * stale. Only the profiles are hashed.
  */
 function normalized(file, text) {
   if (file !== 'Cargo.toml') return text
-  return text.replace(/^version = "[^"]*"$/m, 'version = "<workspace>"')
+  const lines = text.split('\n')
+  const out = []
+  let inProfile = false
+  for (const line of lines) {
+    if (/^\[/.test(line)) inProfile = line.startsWith('[profile')
+    if (inProfile) out.push(line)
+  }
+  return out.length > 0 ? out.join('\n') : ''
 }
 
 const hash = createHash('sha256')

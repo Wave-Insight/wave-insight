@@ -202,10 +202,23 @@ test('config accepts an omitted row config', () => {  // The Loader validates `u
 test('wave-insight host half', async (t) => {
   await plugin.apply(harness.ctx, {})
 
-  await t.test('registers eight tools, one projection and one prompt section', () => {
+  await t.test('registers the waveform and design tools, one projection and one prompt section', () => {
     assert.deepEqual(
       harness.tools.map((definition) => definition.name).sort(),
-      ['add_signals', 'find_signals', 'get_changes', 'list_waveform', 'load_waveform', 'remove_signals', 'set_cursors', 'set_time_range'],
+      [
+        'add_signals',
+        'find_declaration',
+        'find_signals',
+        'find_sources',
+        'get_changes',
+        'get_diagnostics',
+        'list_modules',
+        'list_waveform',
+        'load_waveform',
+        'remove_signals',
+        'set_cursors',
+        'set_time_range',
+      ],
     )
     for (const definition of harness.tools) {
       assert.equal(typeof definition.execute, 'function')
@@ -372,6 +385,72 @@ test('wave-insight host half', async (t) => {
   })
 })
 
+test('the design tools explain the sources behind a waveform', async (t) => {
+  // The design half reads Verilog/SystemVerilog through the same library the
+  // source pane uses, so a model and the viewer cannot disagree about where a
+  // signal is declared. These tools never touch the panel state: they only
+  // answer, so `state` stays null and the projection is untouched.
+  const local = createHarness()
+  await plugin.apply(local.ctx, {})
+  const exec = makeExec('design')
+  const call = async (name, args) => {
+    const tool = local.tools.find((definition) => definition.name === name)
+    assert.ok(tool, `tool ${name} is registered`)
+    return tool.execute(args, exec)
+  }
+  const sources = [path.join(root, 'qa', 'fixtures', 'top.sv'), path.join(root, 'qa', 'fixtures', 'cpu.sv')]
+
+  await t.test('list_modules reports definitions, ports and instances', async () => {
+    const listed = await call('list_modules', { paths: sources })
+    assert.match(listed.summary, /2 modules in 2 file\(s\)/)
+    assert.match(listed.summary, /top \(top\.sv:3\)/)
+    assert.match(listed.summary, /output logic \[15:0\] result/)
+    assert.match(listed.summary, /instances: cpu u_cpu, cpu u_cpu16/)
+    assert.equal(listed.state, null, 'a pure lookup does not rewrite the panel view')
+  })
+
+  await t.test('find_declaration locates a hierarchical signal and its references', async () => {
+    const found = await call('find_declaration', { paths: sources, top: 'top', signal: 'top.u_cpu.pc' })
+    assert.match(found.summary, /top\.u_cpu\.pc is declared at .*cpu\.sv:9:30/)
+    assert.match(found.summary, /output logic \[7:0\] in cpu \(top\.u_cpu\)/)
+    assert.match(found.summary, /driven at .*cpu\.sv:20:12/)
+    assert.match(found.summary, /loaded at .*top\.sv:17:10/)
+  })
+
+  await t.test('a path the design does not know is an answer, not a failure', async () => {
+    const missing = await call('find_declaration', { paths: sources, top: 'top', signal: 'top.nope' })
+    assert.match(missing.summary, /top\.nope is not in the design elaborated as top/)
+  })
+
+  await t.test('get_diagnostics reports unresolved names and clears on a clean design', async () => {
+    const broken = await call('get_diagnostics', { paths: [path.join(root, 'qa', 'fixtures', 'link_errors.sv')], top: 'link_top' })
+    assert.match(broken.summary, /2 diagnostics/)
+    assert.match(broken.summary, /missing_driver/)
+    assert.match(broken.summary, /unresolved-name/)
+    const clean = await call('get_diagnostics', { paths: sources, top: 'top' })
+    assert.match(clean.summary, /no diagnostics/)
+  })
+
+  await t.test('find_sources answers the companion scan, empty or not', async () => {
+    const found = await call('find_sources', { path: path.join(root, 'qa', 'fixtures', 'wave.vcd') })
+    assert.match(found.summary, /no companion RTL next to wave\.vcd/)
+  })
+
+  await t.test('a design tool without sources says what to pass', async () => {
+    await assert.rejects(
+      () => call('list_modules', {}),
+      (error) => error.code === 'NO_SOURCES' || error.code === 'NO_WAVEFORM',
+    )
+    await assert.rejects(
+      () => call('list_modules', { paths: [] }),
+      (error) => error.code === 'INVALID_ARGS',
+    )
+  })
+
+  for (const effect of local.effects) {
+    if (typeof effect.dispose === 'function') await effect.dispose()
+  }
+})
 test('a resumed session restores its dump on every registry shape', async (t) => {
   // The 0.2.1 desktop's register() resolves to the Cordis effect disposer, so a
   // reader built from "whatever register() returned" is a function with no
