@@ -56,12 +56,19 @@ jobs:
 
       # Build what the plugin actually spawns, then stage it where the bundled
       # path resolution looks, so the tests exercise this source and not a
-      # binary from another revision.
+      # binary from another revision. This machine is the linux/x64 row of the
+      # release matrix, and that row is musl now: build the static target so the
+      # host test stages the same file a released tarball would carry.
+      - name: Add the musl target
+        run: rustup target add x86_64-unknown-linux-musl
+
       - name: Build the native helper and the loopback backend
-        run: cargo build -p dsh-bridge -p wave-insight-web-backend --release --locked
+        run: cargo build -p dsh-bridge -p wave-insight-web-backend --release --locked --target x86_64-unknown-linux-musl
 
       - name: Stage the Linux pair where the plugin finds it
         run: |
+          # No --from: the stage default already reads target/<triple>/release,
+          # and the matrix row for this machine carries the musl triple now.
           node dsh-plugin/scripts/binaries.mjs stage
           node dsh-plugin/scripts/binaries.mjs verify --set linux/x64
 

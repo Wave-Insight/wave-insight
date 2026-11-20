@@ -50,6 +50,15 @@ test('the packaged binaries and the platform matrix are the same list', () => {
     .map((entry) => entry.slice('bin/'.length))
   assert.deepEqual([...declared].sort(), [...bundledNames()].sort(), 'files lists every bundled binary, and only those')
 
+  // A released Linux pair is static musl, not a glibc build tied to whichever
+  // distribution released it; the matrix and the workflow row have to agree.
+  assert.equal(PLATFORMS['linux/x64'].triple, 'x86_64-unknown-linux-musl', 'linux/x64 builds the static musl target')
+  assert.match(
+    fs.readFileSync(path.join(root, '.github', 'workflows', 'dsh-plugin-binaries.yml'), 'utf8'),
+    /target: x86_64-unknown-linux-musl/,
+    'the binaries workflow builds the musl target the matrix names',
+  )
+
   const rustArch = { x64: 'x86_64', arm64: 'aarch64' }
   const rustOs = { win32: 'windows', linux: 'linux', darwin: 'darwin' }
   for (const [key, row] of Object.entries(PLATFORMS)) {
@@ -66,22 +75,34 @@ test('the packaged binaries and the platform matrix are the same list', () => {
  * A Cordis-shaped context with one real `waveInsight` projection that can be
  * folded directly, so the tests cover the fold, the restore and the tool
  * results together.
+ *
+ * `legacyRegister` models the 0.2.1 desktop, whose `register()` returns the
+ * Cordis effect disposer instead of an awaitable handle: the only reader there
+ * is `registry.stateOf(session, key)`, and reading `stateOf` off the returned
+ * value throws. Both shapes have to restore a resumed session.
  */
-function createHarness() {
+function createHarness({ legacyRegister = false } = {}) {
   const tools = []
   const effects = []
   const promptSections = []
   const disposed = []
+  /** Every `(session, key)` the registry was asked for. */
+  const registryReads = []
   /** @type {Map<string, { definition: any, states: Map<string, any> }>} */
   const units = new Map()
 
+  /** Read a unit's current state, materializing it like the registry's cellFor. */
+  function readUnit(key, session) {
+    const unit = units.get(key)
+    if (!unit) return undefined
+    const id = String(session?.id ?? 'unknown')
+    if (!unit.states.has(id)) unit.states.set(id, unit.definition.init(session?.header ?? {}, 0))
+    return unit.states.get(id)
+  }
+
   const handle = {
     stateOf(session) {
-      const unit = units.get('waveInsight')
-      if (!unit) return undefined
-      const id = String(session?.id ?? 'unknown')
-      if (!unit.states.has(id)) unit.states.set(id, unit.definition.init(session?.header ?? {}, 0))
-      return unit.states.get(id)
+      return readUnit('waveInsight', session)
     },
     fold(id, event) {
       const unit = units.get('waveInsight')
@@ -107,7 +128,20 @@ function createHarness() {
     sessionProjections: {
       async register(definition) {
         units.set(definition.key, { definition, states: new Map() })
+        if (legacyRegister) {
+          // 0.2.1: the effect disposer. Awaiting it yields a plain function —
+          // Cordis's own wrapper resolves to the registered cleanup — so the
+          // awaited value has no stateOf and the keyed read is the only way in.
+          const settle = () => {}
+          const dispose = () => settle
+          dispose.then = (onFulfilled, onRejected) => Promise.resolve(settle).then(onFulfilled, onRejected)
+          return dispose
+        }
         return handle
+      },
+      stateOf(session, key) {
+        registryReads.push([session, key])
+        return readUnit(key, session)
       },
     },
     systemPrompt: {
@@ -123,7 +157,7 @@ function createHarness() {
     logger: { warn() {} },
   }
 
-  return { ctx, handle, tools, effects, promptSections, disposed }
+  return { ctx, handle, tools, effects, promptSections, disposed, registryReads }
 }
 
 /** @param {string} [sessionId] */
@@ -336,6 +370,118 @@ test('wave-insight host half', async (t) => {
       if (typeof effect.dispose === 'function') await effect.dispose()
     }
   })
+})
+
+test('a resumed session restores its dump on every registry shape', async (t) => {
+  // The 0.2.1 desktop's register() resolves to the Cordis effect disposer, so a
+  // reader built from "whatever register() returned" is a function with no
+  // stateOf. The tools then answer NO_WAVEFORM for a session whose panel is
+  // showing the dump, and no amount of retrying fixes it: the session cache
+  // restores from the durable projection on its first call after the restart.
+  //
+  // The seeded state is a real fixture: the tools go on to drive that dump
+  // through the helper.
+  const stale = {
+    dump: {
+      name: 'wave.vcd',
+      path: dump,
+      format: 'VCD',
+      timescale: '1ns',
+      signalCount: 21,
+      timeRange: { start: 5, end: 1600 },
+    },
+    rows: ['top.clk', 'top.rst'],
+    visible: { start: 100, end: 200 },
+    cursors: { one: 10, two: 20 },
+    status: 'wave.vcd is loaded',
+    ui: { url: 'http://127.0.0.1:1/?t=stale', error: null },
+  }
+
+  for (const [shape, options] of [
+    ['handle registry (0.2.2+)', {}],
+    ['disposer registry (0.2.1)', { legacyRegister: true }],
+  ]) {
+    await t.test(shape, async () => {
+      const local = createHarness(options)
+      // Seed the log before the plugin mounts: the load happened in the
+      // previous Host process, so no tool call in this one ever sees it.
+      await plugin.apply(local.ctx, {})
+      local.handle.fold('resumed', {
+        type: 'tool/result',
+        seq: 0,
+        data: { message: { isError: false }, meta: { waveInsight: { version: 1, state: stale } } },
+      })
+
+      const exec = makeExec('resumed')
+      const listed = await (async () => {
+        const tool = local.tools.find((definition) => definition.name === 'list_waveform')
+        return tool.execute({}, exec)
+      })()
+      assert.equal(listed.state.dump?.name, 'wave.vcd', 'the resumed session starts from the durable dump')
+      assert.deepEqual(listed.state.rows, stale.rows, 'the restored rows come from the log')
+      assert.deepEqual(listed.state.visible, stale.visible, 'the restored window comes from the log')
+      assert.notEqual(listed.state.ui?.url, stale.ui.url, 'the stale viewer URL never reaches the panel')
+
+      const added = await (async () => {
+        const tool = local.tools.find((definition) => definition.name === 'add_signals')
+        return tool.execute({ signals: ['top.u_cpu16.active'] }, exec)
+      })()
+      assert.ok(added.state.rows.includes('top.u_cpu16.active'), 'a tool can drive the restored dump')
+
+      if (options.legacyRegister) {
+        assert.ok(local.registryReads.length > 0, 'the legacy registry is read through stateOf(session, key)')
+        for (const [, key] of local.registryReads) assert.equal(key, 'waveInsight', 'the read names the unit key')
+      }
+      for (const effect of local.effects) {
+        if (typeof effect.dispose === 'function') await effect.dispose()
+      }
+    })
+  }
+})
+
+test('a wiring that cannot read the projection says so instead of pretending', async (t) => {
+  const local = createHarness()
+  await plugin.apply(local.ctx, {})
+  local.handle.fold('resumed', {
+    type: 'tool/result',
+    seq: 0,
+    data: {
+      message: { isError: false },
+      meta: {
+        waveInsight: {
+          version: 1,
+          state: {
+            dump: { name: 'des.fst', path: 'F:/dumps/des.fst', format: 'FST', timescale: null, signalCount: 1, timeRange: { start: 0, end: 1 } },
+            rows: [],
+            visible: null,
+            cursors: { one: null, two: null },
+            status: 'loaded',
+            ui: { url: null, error: null },
+          },
+        },
+      },
+    },
+  })
+
+  const { SessionViews } = await import('../dsh-plugin/host/sessions.js')
+  const warnings = []
+  const original = console.warn
+  console.warn = (message) => warnings.push(String(message))
+  try {
+    // A projection that is missing, or one that is not a reader at all (the
+    // regression: the raw effect disposer), must not fail silently.
+    for (const projection of [null, () => {}]) {
+      const sessions = new SessionViews({ projection, live: () => ({ url: null, error: null }) })
+      const view = sessions.get({ agent: { session: { id: 'resumed' } } })
+      assert.equal(view.dump, null, 'no reader means an empty view')
+    }
+  } finally {
+    console.warn = original
+  }
+  assert.ok(warnings.length > 0, 'the tool path warns about the missing reader at least once')
+  for (const effect of local.effects) {
+    if (typeof effect.dispose === 'function') await effect.dispose()
+  }
 })
 
 test('the panel transport: tokenized URL, health probe, shim token', async (t) => {

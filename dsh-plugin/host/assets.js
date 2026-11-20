@@ -32,7 +32,9 @@ export const PLATFORMS = {
     backend: 'wave-insight-web-backend-windows-x64.exe',
   },
   'linux/x64': {
-    triple: 'x86_64-unknown-linux-gnu',
+    // musl: the released helper and backend are static, so they start on Alpine
+    // and on any glibc distribution instead of demanding a libc generation.
+    triple: 'x86_64-unknown-linux-musl',
     helper: 'dsh-bridge-linux-x64',
     backend: 'wave-insight-web-backend-linux-x64',
   },

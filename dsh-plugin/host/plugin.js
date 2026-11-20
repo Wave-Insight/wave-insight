@@ -7,7 +7,7 @@
 import { resolveAssets } from './assets.js'
 import { Bridge } from './bridge.js'
 import { acquireWebBackend } from './daemon.js'
-import { createProjection } from './projection.js'
+import { createProjection, projectionReader } from './projection.js'
 import { SessionViews } from './sessions.js'
 import { createTools } from './tools.js'
 
@@ -88,10 +88,16 @@ export async function apply(ctx, config) {
   // starting with a null URL and no way to learn the live one.
   await viewer.daemon.ready(3000)
 
+  // Whatever `register()` resolves to is not always the handle: the 0.2.1
+  // registry returns the Cordis effect disposer, whose only reader is
+  // `registry.stateOf(session, key)`. Normalizing here keeps the session cache
+  // calling one shape on every Host this package supports.
   /** @type {{ stateOf: (session: unknown) => any } | null} */
   let projection = null
   try {
-    projection = await ctx.sessionProjections.register(createProjection({ live }))
+    const registration = await ctx.sessionProjections.register(createProjection({ live }))
+    projection = projectionReader(registration, ctx.sessionProjections)
+    if (!projection) throw new Error(`register() resolved to ${typeof registration} without a stateOf(session) reader`)
   } catch (error) {
     warn(ctx, `wave-insight: the session projection could not be registered, so the side panel will not follow tool calls: ${error instanceof Error ? error.message : String(error)}`)
   }

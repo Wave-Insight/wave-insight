@@ -112,6 +112,32 @@ function sameRange(left, right) {
 }
 
 /**
+ * Normalize whatever `register()` handed back into a reader the session cache
+ * can call: `reader.stateOf(session)`.
+ *
+ * The registry changed shape inside the range this plugin supports. 0.2.2 hands
+ * back an awaitable handle whose `stateOf(session)` reads this unit; 0.2.1 hands
+ * back the Cordis effect disposer, and the value has to be read back through
+ * `registry.stateOf(session, key)` — which takes the key, not just the session.
+ * Reading `stateOf` off the 0.2.1 value throws a TypeError, and a caller that
+ * swallows it turns a permanent wiring bug into "this session has no dump".
+ *
+ * @param {unknown} registration what `ctx.sessionProjections.register()` resolved to
+ * @param {{ stateOf?: (session: unknown, key: string) => unknown } | null | undefined} registry
+ * @returns {{ stateOf: (session: unknown) => any } | null}
+ */
+export function projectionReader(registration, registry) {
+  const handle = /** @type {{ stateOf?: unknown } | null | undefined} */ (registration)
+  if (typeof handle?.stateOf === 'function') {
+    return { stateOf: (session) => /** @type {any} */ (handle).stateOf(session) }
+  }
+  if (typeof registry?.stateOf === 'function') {
+    return { stateOf: (session) => registry.stateOf(session, PROJECTION_KEY) }
+  }
+  return null
+}
+
+/**
  * Build the projection definition.
  * @param {{ live: () => { url: string | null, error: string | null } }} options
  */

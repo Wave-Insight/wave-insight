@@ -8,6 +8,20 @@
 import { emptyView } from './projection.js'
 import { waveError } from './errors.js'
 
+/** @type {Set<string>} */
+const warned = new Set()
+
+/**
+ * Warn about a wiring failure once per process. The restore path runs on every
+ * tool call of every session, so an unconditional warning would bury the log.
+ * @param {string} message
+ */
+function warnOnce(message) {
+  if (warned.has(message)) return
+  warned.add(message)
+  console.warn(message)
+}
+
 /** Copy the parts of a view that a tool may replace later; never alias the projection value. */
 function cloneView(view) {
   return {
@@ -29,6 +43,8 @@ export class SessionViews {
    *   projection: { stateOf: (session: unknown) => any } | null,
    *   live: () => { url: string | null, error: string | null },
    * }} options
+   * The projection is a reader built by `projectionReader()`: whatever the
+   * registry's `register()` resolved to, normalized to `stateOf(session)`.
    */
   constructor(options) {
     this.projection = options.projection
@@ -100,18 +116,26 @@ export class SessionViews {
     return { ...view, ui }
   }
 
-  /** @param {{ agent?: any }} exec */
+  /**
+   * The durable view this session's log folded to, or null when it never
+   * loaded a dump.
+   *
+   * A projection the wiring could not build is a permanent condition, not a
+   * transient one: saying so once is what keeps "the tools cannot see the dump
+   * the panel is showing" from being rediscovered by every resumed session.
+   * @param {{ agent?: any }} exec
+   */
   #restore(exec) {
     const session = exec?.agent?.session
-    if (!session || !this.projection) return null
-    try {
-      const durable = this.projection.stateOf(session)
-      if (!durable?.dump?.path) return null
-      return cloneView(durable)
-    } catch {
-      // The session may not be prepared yet; an empty view is the right
-      // starting point and the next fold restores it.
+    if (!session) return null
+    if (typeof this.projection?.stateOf !== 'function') {
+      warnOnce(
+        'wave-insight: no session projection reader, so a resumed session starts with an empty view and the tools answer NO_WAVEFORM until load_waveform runs again',
+      )
       return null
     }
+    const durable = this.projection.stateOf(session)
+    if (!durable?.dump?.path) return null
+    return cloneView(durable)
   }
 }

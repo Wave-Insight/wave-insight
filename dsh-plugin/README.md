@@ -107,8 +107,10 @@ builds the four pairs and the release job unpacks them into the tarball; on a
 checkout, `cargo build` plus `node dsh-plugin/scripts/binaries.mjs stage` puts the
 pair for this machine where the Host looks. Without one the tools answer
 `HELPER_UNAVAILABLE` with the paths they tried, and the panel shows why it has no
-backend instead of failing activation. The Linux build comes off Ubuntu 22.04 so
-it starts on distributions carrying an older glibc.
+backend instead of failing activation. The Linux build targets
+`x86_64-unknown-linux-musl`, so the two binaries are static and start on Alpine
+as well as on any glibc distribution, instead of tracking which libc generation
+the machine happens to carry.
 
 ## Security model
 

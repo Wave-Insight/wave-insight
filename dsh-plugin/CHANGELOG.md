@@ -4,6 +4,33 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.8] - 2026-11-20
+
+### Fixed
+
+- A resumed session's tools can read the dump the panel is showing again. The
+  session cache rebuilt its view from the `waveInsight` projection through
+  `register()`'s return value assuming it was the registry handle, but on the
+  0.2.1 desktop line that value is the Cordis effect disposer: `stateOf` was
+  called on a function, and reader failures were swallowed by an empty `catch`.
+  Every `add_signals` / `set_time_range` / `get_changes` call after a Host
+  restart answered `NO_WAVEFORM` until `load_waveform` ran again, while the panel
+  kept rendering the dump from the log.
+  `projectionReader()` now normalizes whatever `register()` resolved to — the
+  awaitable handle's `stateOf(session)` on 0.2.2+, the registry's
+  `stateOf(session, key)` on 0.2.1 — and a wiring with neither warns once
+  instead of failing silently again.
+- The regression suite mounts both registry shapes and asserts that a session
+  seeded from the log alone restores its dump, its rows and its window, and that
+  a missing reader is reported rather than written off as "not ready yet".
+
+### Changed
+
+- The Linux pair targets `x86_64-unknown-linux-musl`: the helper and the viewer
+  backend are static, so one build runs on Alpine and on every glibc
+  distribution. The matrix no longer pins `ubuntu-22.04` to hold the glibc
+  requirement down.
+
 ## [0.2.7] - 2026-11-20
 
 ### Added

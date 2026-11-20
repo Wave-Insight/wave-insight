@@ -22,10 +22,14 @@ jobs:
           # `key` is the `platform/arch` row in `dsh-plugin/host/assets.js`
           # (Node's `process.platform` spelling: win32, linux, darwin).
           #
-          # ubuntu-22.04, not -latest: a binary linked against glibc 2.38 (24.04)
-          # refuses to start on Ubuntu 22.04 and Debian 12, which people use.
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
+          # musl, not gnu: a glibc-linked binary runs only on the distribution
+          # (and libc generation) it was built against — the reason this row used
+          # to pin ubuntu-22.04 to hold the requirement down to glibc 2.35. A
+          # static musl build carries its libc, so one file serves Alpine and
+          # every glibc distribution instead of tracking which Ubuntu, Debian or
+          # RHEL release is old enough.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
             key: linux/x64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
