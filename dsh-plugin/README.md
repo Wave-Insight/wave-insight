@@ -16,7 +16,7 @@ and desktop builds.
 
   | Tool | Purpose |
   |---|---|
-  | `load_waveform` | Open a dump (replaces any previous one). |
+  | `load_waveform` | Open a dump (replaces any previous one) and the companion RTL beside it. |
   | `find_signals` | Search hierarchical signal paths. |
   | `add_signals` | Validate and add rows to the wave. |
   | `remove_signals` | Remove rows. |

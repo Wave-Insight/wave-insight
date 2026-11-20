@@ -10,6 +10,20 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.24.5] - 2026-11-20
+
+### Added
+
+- `load_waveform` in the DSH plugin opens the companion RTL next to the dump,
+  the SpinalHDL `rtl/` rule the desktop build has applied since Wave 19, so the
+  panel shows the sources with the waveform instead of an empty source pane.
+  The scan is best effort and never fails a load. Plugin **0.2.11**.
+
+### Changed
+
+- A design tool whose companion scan found nothing answers `NO_SOURCES` with
+  the directories it tried, instead of a generic helper failure.
+
 ## [0.24.4] - 2026-11-20
 
 ### Added

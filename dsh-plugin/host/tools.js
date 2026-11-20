@@ -96,6 +96,45 @@ function stringList(value, label) {
 }
 
 /**
+ * The companion RTL next to a dump, never throwing.
+ *
+ * A load must not fail because a scan failed: no helper, a verbose filesystem,
+ * or a canceled call all just mean "no sources".
+ * @param {import('./bridge.js').Bridge} bridge
+ * @param {string} path the dump
+ * @param {AbortSignal | undefined} signal
+ * @returns {Promise<string[]>}
+ */
+async function companionSources(bridge, path, signal) {
+  try {
+    return await bridge.sources(path, { signal })
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Turn the helper's "no companion RTL" answer into a NO_SOURCES error.
+ *
+ * Every other helper failure is a real failure and keeps its own code; this one
+ * is an empty scan, which a model should read as "give me paths".
+ * @template T
+ * @param {() => Promise<T>} call
+ * @returns {Promise<T>}
+ */
+async function requireSources(call) {
+  try {
+    return await call()
+  } catch (error) {
+    const text = String(error?.detail ?? error?.message ?? '')
+    if (/no companion RTL next to/.test(text)) {
+      throw waveError('NO_SOURCES', text, { cause: error instanceof Error ? error : undefined })
+    }
+    throw error
+  }
+}
+
+/**
  * The sources a design tool should parse: an explicit `paths` list, the `dump`
  * argument, or the dump the panel already shows. The helper refuses an empty
  * request, so the error says which of the three to give.
@@ -111,6 +150,9 @@ function sourceRequest(args, view) {
     return { dump: path.resolve(args.dump.trim()) }
   }
   const loaded = view?.dump?.path
+  // A loaded dump with nothing beside it is still the right default: the helper
+  // scans it and answers "no companion RTL" with the directories it tried, which
+  // requireSources() turns into a NO_SOURCES error the model can act on.
   if (loaded) return { dump: loaded }
   throw waveError(
     'NO_SOURCES',
@@ -201,7 +243,7 @@ export function createTools({ bridge, sessions, daemon }) {
     defineTool({
       name: 'load_waveform',
       description:
-        'Open a VCD, FST, GHW or FSDB dump with the native memory-mapped reader and show it in the Wave Insight side panel. Call this before any other waveform tool. Replaces any previously loaded dump and resets the shown rows and cursors.',
+        'Open a VCD, FST, GHW or FSDB dump with the native memory-mapped reader and show it in the Wave Insight side panel. Call this before any other waveform tool. Replaces any previously loaded dump and resets the shown rows and cursors. The companion RTL next to the dump (the SpinalHDL rtl/ layout) is opened in the source pane at the same time.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -221,25 +263,34 @@ export function createTools({ bridge, sessions, daemon }) {
         await daemon.ready(VIEWER_WAIT_MS)
         const rows = info.signals.slice(0, ROWS_ON_LOAD)
         const range = info.timeRange
+        const dump = {
+          name: info.name || path.basename(target),
+          path: info.path || target,
+          format: info.format,
+          timescale: info.timescale,
+          timeRange: range ? { ...range } : null,
+          signalCount: info.signalCount,
+        }
+        // The desktop build opens the RTL next to a dump automatically (the
+        // SpinalHDL layout); without this the panel would show the wave and an
+        // empty source pane while the design tools answer about a design the
+        // user cannot see. Best effort: a scan that finds nothing, or fails,
+        // must never fail the load.
+        const sources = await companionSources(bridge, dump.path, exec.signal)
         const state = sessions.update(exec, {
-          dump: {
-            name: info.name || path.basename(target),
-            path: info.path || target,
-            format: info.format,
-            timescale: info.timescale,
-            timeRange: range ? { ...range } : null,
-            signalCount: info.signalCount,
-          },
+          dump,
           rows,
           visible: range ? { ...range } : null,
           cursors: { one: null, two: null },
-          status: `loaded ${info.name || path.basename(target)} (${info.format})`,
+          sources,
+          status: `loaded ${dump.name} (${info.format})`,
         })
         const count = `${info.signalCount} signal${info.signalCount === 1 ? '' : 's'}`
         const span = range ? `, range ${range.start}..${range.end}` : ', no time range reported'
         const cap = info.signalCount > rows.length ? `, showing the first ${rows.length}` : ''
+        const rtl = sources.length > 0 ? ` ${sources.length} companion RTL source${sources.length === 1 ? '' : 's'} opened in the panel.` : ''
         return {
-          summary: `${state.dump.name}: ${count}${cap}${span}. ${rows.length} row${rows.length === 1 ? '' : 's'} shown in the Wave Insight panel.`,
+          summary: `${state.dump.name}: ${count}${cap}${span}. ${rows.length} row${rows.length === 1 ? '' : 's'} shown in the Wave Insight panel.${rtl}`,
           state,
         }
       },
@@ -529,7 +580,7 @@ export function createTools({ bridge, sessions, daemon }) {
       run: async (args, exec) => {
         const request = sourceRequest(args, sessions.get(exec))
         const limit = boundedInt(args.limit, 'limit', { fallback: DESIGN_MODULE_LIMIT, min: 1, max: DESIGN_MODULE_LIMIT })
-        const found = await bridge.modules({ ...request, limit }, { signal: exec.signal })
+        const found = await requireSources(() => bridge.modules({ ...request, limit }, { signal: exec.signal }))
         if (found.modules.length === 0) {
           return { summary: `no modules in ${found.files.length} source file(s)`, state: null }
         }
@@ -569,7 +620,7 @@ export function createTools({ bridge, sessions, daemon }) {
         const signal = requiredString(args.signal, 'signal')
         const request = sourceRequest(args, sessions.get(exec))
         const top = typeof args.top === 'string' && args.top.trim().length > 0 ? args.top.trim() : undefined
-        const found = await bridge.declare({ ...request, ...(top ? { top } : {}), signal }, { signal: exec.signal })
+        const found = await requireSources(() => bridge.declare({ ...request, ...(top ? { top } : {}), signal }, { signal: exec.signal }))
         if (!found.declared) {
           return {
             summary: `${signal} is not in the design elaborated as ${found.top || '(no top)'}${found.diagnostics.length > 0 ? `; ${found.diagnostics.length} diagnostic(s) explain what could not be resolved` : ''}`,
@@ -601,7 +652,7 @@ export function createTools({ bridge, sessions, daemon }) {
       run: async (args, exec) => {
         const request = sourceRequest(args, sessions.get(exec))
         const top = typeof args.top === 'string' && args.top.trim().length > 0 ? args.top.trim() : undefined
-        const found = await bridge.diagnostics({ ...request, ...(top ? { top } : {}) }, { signal: exec.signal })
+        const found = await requireSources(() => bridge.diagnostics({ ...request, ...(top ? { top } : {}) }, { signal: exec.signal }))
         if (found.count === 0) {
           return { summary: `no diagnostics: ${found.modules} module(s) parsed cleanly${found.top ? ` and ${found.top} elaborated` : ''}`, state: null }
         }

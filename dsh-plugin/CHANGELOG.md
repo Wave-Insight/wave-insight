@@ -4,6 +4,22 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.11] - 2026-11-20
+
+### Added
+
+- `load_waveform` opens the companion RTL next to a dump, the rule the desktop
+  build has applied since Wave 19: a SpinalHDL run keeps its generated `.v`/
+  `.sv` in an `rtl` directory beside the waveform, so the panel now shows the
+  sources together with the wave instead of an empty source pane. The scan is
+  best effort — nothing found, or a failed scan, leaves the load untouched.
+
+### Changed
+
+- A design tool that found no companion RTL answers `NO_SOURCES` with the
+  directories it tried, instead of a generic `HELPER_ERROR`: a model can tell
+  "nothing there, pass paths" from a real failure.
+
 ## [0.2.10] - 2026-11-20
 
 ### Added

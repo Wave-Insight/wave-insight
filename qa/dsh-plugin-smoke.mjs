@@ -438,6 +438,23 @@ test('the design tools explain the sources behind a waveform', async (t) => {
     assert.match(found.summary, /no companion RTL next to wave\.vcd/)
   })
 
+  await t.test('load_waveform opens the companion RTL next to the dump', async () => {
+    // The desktop build calls this the SpinalHDL rule: the generated sources
+    // live in an `rtl` directory beside the waveform. A DSH load has to do the
+    // same, or the panel shows the wave and an empty source pane while the
+    // design tools answer about a design the user cannot see.
+    const companion = path.join(root, 'qa', 'fixtures', 'companion', 'simWorkspace', 'run', 'wave.vcd')
+    assert.ok(fs.existsSync(companion), 'the companion fixture exists')
+    const loaded = await call('load_waveform', { path: companion })
+    assert.match(loaded.summary, /2 companion RTL sources opened in the panel/)
+    assert.equal(loaded.state.sources.length, 2)
+    assert.ok(loaded.state.sources.every((source) => source.includes(`rtl${path.sep}`) || source.includes('rtl/')))
+
+    // A dump with nothing beside it still loads, with no sources.
+    const plain = await call('load_waveform', { path: path.join(root, 'qa', 'fixtures', 'wave.vcd') })
+    assert.deepEqual(plain.state.sources, [], 'a dump without companion RTL opens no sources')
+    assert.doesNotMatch(plain.summary, /companion RTL/)
+  })
   await t.test('load_sources opens the sources the design tools read', async () => {
     const view = {
       ...harness.handle.stateOf({ id: 'design' }),
