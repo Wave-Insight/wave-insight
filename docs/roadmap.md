@@ -8,7 +8,7 @@ does not duplicate them.
 
 ## Where we are
 
-The last tagged release is **0.23.0** (2026-11-12): one-canvas waveform
+**Wave 21** (this release, 0.24.0) adds FSDB reading on the native builds (Verdi's `fsdb2vcd` behind the converter/cache seam, `docs/design/fsdb.md`, with the vendor-SDK backend next) and waveform comparison (per-tab member slots 2..8 with colours, coloured signal badges, union sidebar roots and multi-series rows, `docs/design/compare.md`). The last tagged release before it was **0.23.0** (2026-11-12): one-canvas waveform
 renderer, R2 state store, Verdi-style navigation, CI gate, fixed-point display,
 search options, CSV/TXT/MAT export, chunked large-dump loading, LSP diagnostics
 and completion, the browser QA suite in `qa/`, generate/arrayed elaboration,

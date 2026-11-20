@@ -4,6 +4,14 @@ All notable changes to the Wave Insight DSH plugin are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Plugin
 versions are independent of the Wave Insight application version.
 
+## [0.2.6] - 2026-11-20
+
+### Added
+
+- The bundled viewer is the 0.24.0 build: waveform comparison (the Compare
+  toolbar with per-slot colours, the coloured signal badges in the SIGNALS list
+  and the union member roots) and FSDB traces through Verdi's `fsdb2vcd`.
+
 ## [0.2.5] - 2026-11-19
 
 ### Fixed

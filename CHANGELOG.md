@@ -8,6 +8,10 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
+Nothing yet: the next wave lands here.
+
+## [0.24.0] - 2026-11-20
+
 ### Added
 
 - FSDB (Synopsys Verdi) support on the native builds, read through the vendor
