@@ -10,6 +10,30 @@ an on-disk/transport format.
 
 Nothing yet: the next wave lands here.
 
+## [0.24.2] - 2026-11-20
+
+### Fixed
+
+- The DSH plugin's tools see the dump a resumed session is showing again. After
+  a Host restart the session cache rebuilt its view through
+  `sessionProjections.register()` as if the return value were the registry
+  handle, but on the 0.2.1 desktop line it is the Cordis effect disposer, so
+  `stateOf` was called on a function and the empty `catch` around it reported
+  the permanent wiring bug as a session that was not ready yet. Every
+  `add_signals` / `set_time_range` / `get_changes` then answered
+  `NO_WAVEFORM` while the panel kept rendering the dump from the log, until a
+  fresh `load_waveform`. The projection reader now normalizes both registry
+  shapes — the awaited handle's `stateOf(session)` and the 0.2.1 registry's
+  `stateOf(session, key)` — and says so once when neither exists instead of
+  failing silently. Plugin **0.2.8**.
+
+### Changed
+
+- The DSH plugin's Linux pair targets `x86_64-unknown-linux-musl`. The helper
+  and the viewer backend are static, so one build runs on Alpine and on every
+  glibc distribution, and the matrix no longer pins `ubuntu-22.04` to hold the
+  glibc requirement down. Plugin **0.2.8**.
+
 ## [0.24.1] - 2026-11-20
 
 ### Changed
