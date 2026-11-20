@@ -22,6 +22,7 @@
 
 use std::rc::Rc;
 
+use super::compare::CompareSet;
 use super::state::Rows;
 use super::types::{DumpHandle, DumpId, Focus, SessionRestore, Viewport};
 use wave_insight_lib::waveform::TimeRange;
@@ -52,6 +53,9 @@ pub struct DumpEntry {
     /// What opening this dump restored from the remembered session (the app
     /// turns the skipped count into one line of status text).
     pub session_restore: Option<SessionRestore>,
+    /// The comparison dumps this tab draws next to its own rows (per tab, so
+    /// each dump compares against its own members; dropped with the entry).
+    pub compare: CompareSet,
 }
 
 impl DumpEntry {
@@ -73,6 +77,7 @@ impl DumpEntry {
             viewport: Viewport::default(),
             focus: Focus::default(),
             session_restore: None,
+            compare: CompareSet::default(),
         }
     }
 }

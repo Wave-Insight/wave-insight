@@ -325,6 +325,8 @@ fn build_row(
             name: signal.local_name.clone(),
             path: signal.path.clone(),
             width: signal.width.unwrap_or(1).max(1) as usize,
+            // the design tree says nothing about dumps, let alone comparisons
+            members: 0,
         })
         .collect();
     let children = instance

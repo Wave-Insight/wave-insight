@@ -13,7 +13,7 @@ use wave_insight_lib::waveform::ShowType;
 use wave_insight_lib::waveform::{BitValue, WaveValue};
 
 use crate::wave_show::geometry::{crisp, Time, View, ROW_HEIGHT};
-use crate::wave_show::util::signal_things::{RowKind, SignalItem};
+use crate::wave_show::util::signal_things::{RowKind, RowValues, SignalItem};
 use crate::wave_show::Settings;
 
 /// Palette, mirrored from `:root` in `styles.css`.
@@ -39,6 +39,12 @@ const FONT: &str =
     "10.5px \"Cascadia Code\", \"JetBrains Mono\", \"SF Mono\", Menlo, Consolas, monospace";
 /// Stroke width of a waveform, in css pixels.
 const WAVE_LINE: f64 = 1.6;
+/// Stroke width of a comparison series: thinner than the base, so an overlapped
+/// edge still shows which line is which.
+const SERIES_LINE: f64 = 1.2;
+/// How much one extra bus band is inset inside the row, in css pixels per
+/// series: several bands stay visible inside one 30 px row.
+const SERIES_INSET: f64 = 1.5;
 /// Bus rails are drawn slightly thinner than the digital step line.
 const BUS_LINE: f64 = 1.2;
 /// Width of the diagonal that joins two bus values, in css pixels. A bus
@@ -92,6 +98,9 @@ pub struct PaintStats {
     pub labels_truncated: usize,
     /// Labels skipped because not even the ellipsis fitted in the band.
     pub labels_hidden: usize,
+    /// Extra traces drawn from comparison dumps (one per drawn series, per row).
+    /// The QA harness asserts it.
+    pub series: usize,
 }
 
 /// Paint `frame` into `canvas`.
@@ -205,13 +214,108 @@ fn draw_rows(
         context.stroke();
 
         match item.values.kind() {
-            RowKind::Empty => draw_no_data(context, top, width),
-            // analog mode replaces both the digital step and the bus band
+            RowKind::Empty if item.drawn_series().next().is_none() => {
+                draw_no_data(context, top, width)
+            }
+            // analog mode replaces both the digital step and the bus band; the
+            // comparison series are drawn on the same vertical scale, so the
+            // traces can be compared
             _ if item.setting.analog_active => {
                 draw_analog_row(context, frame, item, top, width, dpr, stats)
             }
             RowKind::Bool => draw_bool_row(context, frame, item, top, width, dpr, stats),
             RowKind::Bits => draw_bus_row(context, frame, item, top, width, dpr, stats),
+            // the base dump lacks the signal but a member has it: no base line,
+            // only the member's trace below
+            RowKind::Empty => {}
+        }
+        draw_series(context, frame, item, top, width, dpr, stats);
+    }
+}
+
+/// Draw every comparison series of one row, on top of the base trace.
+///
+/// The base is drawn first (in the row's own colour), then each member in its
+/// slot colour, later slots on top. The shapes follow the base's: a 1-bit step,
+/// a bus band outline or an analog polyline. Two rules keep overlapped traces
+/// readable:
+///
+/// * the 1-bit step is a thinner line ([`SERIES_LINE`]) so the base still shows
+///   through where the two disagree;
+/// * a bus band is an *outline* (stroke only, no labels) inset by
+///   [`SERIES_INSET`] per extra series, so several bands sit inside one row
+///   instead of hiding each other.
+fn draw_series(
+    context: &CanvasRenderingContext2d,
+    frame: &Frame<'_>,
+    item: &SignalItem,
+    top: f64,
+    width: f64,
+    dpr: f64,
+    stats: &mut PaintStats,
+) {
+    // the analog scale is shared by the base and every series, so the traces
+    // are comparable; a row whose traces have no number at all draws nothing
+    let analog = item.setting.analog_active;
+    let scale = if analog {
+        let mut values: Vec<&RowValues> = vec![&item.values];
+        values.extend(item.drawn_series().map(|series| &series.values));
+        analog_scale(values, &item.setting)
+    } else {
+        None
+    };
+    for (index, series) in item.drawn_series().enumerate() {
+        let color = color_string_of(series.color);
+        let inset = SERIES_INSET * (index + 1) as f64;
+        if analog {
+            let Some(scale) = scale else { continue };
+            draw_analog_trace(
+                context,
+                frame,
+                &series.values,
+                &color,
+                &item.setting,
+                scale,
+                top,
+                width,
+                dpr,
+                stats,
+            );
+            stats.series += 1;
+            continue;
+        }
+        if series.is_bool || series.values.kind() == RowKind::Bool {
+            draw_bool_trace(
+                context,
+                frame,
+                &series.values,
+                &color,
+                SERIES_LINE,
+                top,
+                width,
+                dpr,
+                stats,
+            );
+            stats.series += 1;
+            continue;
+        }
+        if series.values.kind() == RowKind::Bits {
+            let band = Band::inset(top, inset);
+            draw_bus_trace(
+                context,
+                frame,
+                &series.values,
+                &color,
+                &band,
+                item.format_width(),
+                1.0,
+                // no value labels for extra series: the labels stay the base's
+                false,
+                width,
+                dpr,
+                stats,
+            );
+            stats.series += 1;
         }
     }
 }
@@ -261,13 +365,39 @@ fn draw_bool_row(
     dpr: f64,
     stats: &mut PaintStats,
 ) {
+    draw_bool_trace(
+        context,
+        frame,
+        &item.values,
+        &color_string(&item.setting),
+        WAVE_LINE,
+        top,
+        width,
+        dpr,
+        stats,
+    );
+}
+
+/// One digital step trace: the base row at [`WAVE_LINE`], a comparison series a
+/// little thinner so an overlapped edge stays readable.
+#[allow(clippy::too_many_arguments)]
+fn draw_bool_trace(
+    context: &CanvasRenderingContext2d,
+    frame: &Frame<'_>,
+    values: &RowValues,
+    color: &str,
+    line_width: f64,
+    top: f64,
+    width: f64,
+    dpr: f64,
+    stats: &mut PaintStats,
+) {
     let (start, end) = frame.view.window(width);
-    let color = color_string(&item.setting);
-    context.set_stroke_style_str(&color);
-    context.set_line_width(WAVE_LINE);
+    context.set_stroke_style_str(color);
+    context.set_line_width(line_width);
     context.set_line_join("round");
 
-    let mut level = match item.values.value_at(start) {
+    let mut level = match values.value_at(start) {
         Some(value) => bool_level(value, top),
         None => f64::NAN,
     };
@@ -277,28 +407,27 @@ fn draw_bool_row(
     if started {
         context.move_to(0.0, level);
     }
-    item.values
-        .for_each_change(start, end, &frame.view, width, |x, value| {
-            stats.changes += 1;
-            // Paint the edge on the same crisp device column as the cursor line
-            // (see `geometry::crisp`). A cursor placed on a change then sits
-            // centred on the 1-bit edge instead of one column to its right,
-            // which is what made the levels look misaligned: the opaque cursor
-            // covered the right half of the 1.6 px edge and left the left half
-            // visible. Bus bands looked fine because their diagonals leave ink
-            // on both sides.
-            let x = crisp(x, dpr);
-            let next = bool_level(value, top);
-            if started {
-                context.line_to(x, level);
-                context.line_to(x, next);
-            } else {
-                //no value before the window: this change defines the first level
-                context.move_to(0.0, next);
-                started = true;
-            }
-            level = next;
-        });
+    values.for_each_change(start, end, &frame.view, width, |x, value| {
+        stats.changes += 1;
+        // Paint the edge on the same crisp device column as the cursor line
+        // (see `geometry::crisp`). A cursor placed on a change then sits
+        // centred on the 1-bit edge instead of one column to its right,
+        // which is what made the levels look misaligned: the opaque cursor
+        // covered the right half of the 1.6 px edge and left the left half
+        // visible. Bus bands looked fine because their diagonals leave ink
+        // on both sides.
+        let x = crisp(x, dpr);
+        let next = bool_level(value, top);
+        if started {
+            context.line_to(x, level);
+            context.line_to(x, next);
+        } else {
+            //no value before the window: this change defines the first level
+            context.move_to(0.0, next);
+            started = true;
+        }
+        level = next;
+    });
     if started {
         context.line_to(trace_end_x(frame, width), level);
         context.stroke();
@@ -314,50 +443,85 @@ fn draw_bus_row(
     dpr: f64,
     stats: &mut PaintStats,
 ) {
-    let (start, end) = frame.view.window(width);
-    let color = color_string(&item.setting);
-    let band = Band {
-        upper: top + ROW_PAD,
-        lower: top + ROW_HEIGHT - ROW_PAD,
-        mid: top + ROW_HEIGHT / 2.0,
-    };
-    let format_width = item.format_width();
+    draw_bus_trace(
+        context,
+        frame,
+        &item.values,
+        &color_string(&item.setting),
+        &Band::row(top),
+        item.format_width(),
+        BUS_LINE,
+        true,
+        width,
+        dpr,
+        stats,
+    );
+}
 
-    context.set_stroke_style_str(&color);
-    context.set_line_width(BUS_LINE);
+/// One bus band trace.
+///
+/// `labels` decides whether the segment values are printed: the base row always
+/// prints them, a comparison series never does (several overlapping label sets
+/// would be unreadable), so the band is an outline only.
+#[allow(clippy::too_many_arguments)]
+fn draw_bus_trace(
+    context: &CanvasRenderingContext2d,
+    frame: &Frame<'_>,
+    values: &RowValues,
+    color: &str,
+    band: &Band,
+    format_width: usize,
+    line_width: f64,
+    labels: bool,
+    width: f64,
+    dpr: f64,
+    stats: &mut PaintStats,
+) {
+    let (start, end) = frame.view.window(width);
+    let setting = Settings::new();
+
+    context.set_stroke_style_str(color);
+    context.set_line_width(line_width);
     // the diagonal joins look wrong with the default miter of a thin line
     context.set_line_join("round");
 
     // The value in effect at the left edge; `None` before the history starts.
-    let mut current = item.values.value_at(start);
+    let mut current = values.value_at(start);
     // Where the band of `current` begins, in surface pixels.
     let mut segment_start = 0.0f64;
 
     context.begin_path();
-    item.values
-        .for_each_change(start, end, &frame.view, width, |x, value| {
-            stats.changes += 1;
-            // one crisp column per change, shared with the cursor lines (see
-            // `geometry::crisp`): the band joins and the cursor sit on the
-            // same device column, so a cursor placed on a transition is centred
-            let x = crisp(x, dpr);
-            let Some(previous) = current else {
-                // the history starts inside the window: this is the first band
-                current = Some(value);
-                segment_start = x;
-                return;
-            };
-            if *previous == *value {
-                // a delta cycle or an explicit re-assignment: one band, no
-                // transition edge
-                return;
-            }
-            band.trace(context, segment_start, x, segment_start <= 0.0, false);
-            stats.bands += 1;
+    values.for_each_change(start, end, &frame.view, width, |x, value| {
+        stats.changes += 1;
+        // one crisp column per change, shared with the cursor lines (see
+        // `geometry::crisp`): the band joins and the cursor sit on the
+        // same device column, so a cursor placed on a transition is centred
+        let x = crisp(x, dpr);
+        let Some(previous) = current else {
+            // the history starts inside the window: this is the first band
+            current = Some(value);
+            segment_start = x;
+            return;
+        };
+        if *previous == *value {
+            // a delta cycle or an explicit re-assignment: one band, no
+            // transition edge
+            return;
+        }
+        band.trace(
+            context,
+            segment_start,
+            x,
+            segment_start <= 0.0,
+            false,
+            line_width,
+        );
+        stats.bands += 1;
+        if labels {
             label_segment(
                 context,
                 previous,
-                &item.setting,
+                &setting,
                 format_width,
                 segment_start,
                 x,
@@ -365,27 +529,37 @@ fn draw_bus_row(
                 band.lower,
                 stats,
             );
-            current = Some(value);
-            segment_start = x;
-        });
+        }
+        current = Some(value);
+        segment_start = x;
+    });
     if let Some(value) = current {
         // the last band ends at the end of the trace, not at the right edge of
         // an empty surface
         let end_x = trace_end_x(frame, width);
         if end_x > segment_start {
-            band.trace(context, segment_start, end_x, segment_start <= 0.0, true);
-            stats.bands += 1;
-            label_segment(
+            band.trace(
                 context,
-                value,
-                &item.setting,
-                format_width,
                 segment_start,
                 end_x,
-                band.upper,
-                band.lower,
-                stats,
+                segment_start <= 0.0,
+                true,
+                line_width,
             );
+            stats.bands += 1;
+            if labels {
+                label_segment(
+                    context,
+                    value,
+                    &setting,
+                    format_width,
+                    segment_start,
+                    end_x,
+                    band.upper,
+                    band.lower,
+                    stats,
+                );
+            }
         }
     }
     context.stroke();
@@ -401,6 +575,30 @@ struct Band {
 }
 
 impl Band {
+    /// The band of a base row: the row's padded box.
+    fn row(top: f64) -> Self {
+        Self {
+            upper: top + ROW_PAD,
+            lower: top + ROW_HEIGHT - ROW_PAD,
+            mid: top + ROW_HEIGHT / 2.0,
+        }
+    }
+
+    /// The band of the `inset`-th extra series: the same box, shrunk by
+    /// `inset` pixels on both edges so several bands stay visible inside one
+    /// row. A row too short for the inset keeps a one-pixel band instead of
+    /// flipping inside out.
+    fn inset(top: f64, inset: f64) -> Self {
+        let base = Self::row(top);
+        let limit = (base.lower - base.upper) / 2.0 - 1.0;
+        let inset = inset.clamp(0.0, limit.max(0.0));
+        Self {
+            upper: base.upper + inset,
+            lower: base.lower - inset,
+            mid: base.mid,
+        }
+    }
+
     /// Add one value's outline to the current path.
     ///
     /// A normal segment is a hexagon (`>` like ends). A segment too short for
@@ -411,6 +609,8 @@ impl Band {
     /// the transition happened outside the window, so that end is a plain
     /// vertical edge instead of a diagonal. Every other viewer does this; a
     /// hexagon at the border would claim a transition nobody can see.
+    ///
+    /// `line_width` caps the diagonal so a thin series band keeps its joins.
     fn trace(
         &self,
         context: &CanvasRenderingContext2d,
@@ -418,13 +618,14 @@ impl Band {
         to: f64,
         open_start: bool,
         open_end: bool,
+        line_width: f64,
     ) {
         let length = to - from;
         // `NaN` (an unset cursor) and an empty range draw nothing
         if length.is_nan() || length <= 0.0 {
             return;
         }
-        let full_slant = BUS_SLANT.min(length / 2.0);
+        let full_slant = BUS_SLANT.min(length / 2.0).max(line_width);
         let start_slant = if open_start { 0.0 } else { full_slant };
         let end_slant = if open_end { 0.0 } else { full_slant };
         context.move_to(from, self.mid);
@@ -459,32 +660,89 @@ fn draw_analog_row(
     dpr: f64,
     stats: &mut PaintStats,
 ) {
-    let (start, end) = frame.view.window(width);
-    let upper = top + ROW_PAD;
-    let lower = top + ROW_HEIGHT - ROW_PAD;
-
-    // The vertical scale is the range of the visible samples, so an analog row
-    // uses its whole height; a constant signal sits on the middle line.
-    let mut min = f64::INFINITY;
-    let mut max = f64::NEG_INFINITY;
-    let mut sample = |value: &WaveValue| {
-        if let Some(number) = analog_number(value, &item.setting) {
-            min = min.min(number);
-            max = max.max(number);
-        }
-    };
-    if let Some(value) = item.values.value_at(start) {
-        sample(value);
-    }
-    for (_, value) in item.values.window(start, end) {
-        sample(value);
-    }
-    if !min.is_finite() || !max.is_finite() {
+    // The vertical scale is the range of the *visible* samples of every trace of
+    // this row, so an analog row uses its whole height and the base and its
+    // comparison series share one scale (without that, two traces of the same
+    // signal would be drawn to different scales and the overlay would lie).
+    let scale = analog_scale(
+        std::iter::once(&item.values).chain(item.drawn_series().map(|series| &series.values)),
+        &item.setting,
+    );
+    let Some(scale) = scale else {
         // nothing numeric on screen (an event row, a string, only x/z): keep
         // the row's place with the muted "no data" line
         draw_no_data(context, top, width);
         return;
+    };
+
+    draw_analog_trace(
+        context,
+        frame,
+        &item.values,
+        &color_string(&item.setting),
+        &item.setting,
+        scale,
+        top,
+        width,
+        dpr,
+        stats,
+    );
+    stats.analog += 1;
+}
+
+/// The vertical range of the samples of `values` that share one analog scale,
+/// or `None` when none of them is numeric.
+///
+/// The scale is taken from the *whole fetched window* (the visible range plus
+/// its margin), not only from the visible slice: a pan inside the margin then
+/// keeps the same scale, and the base and its comparison series are plotted on
+/// the identical scale, which is what makes the overlay comparable.
+fn analog_scale<'a>(
+    values: impl IntoIterator<Item = &'a RowValues>,
+    setting: &Settings,
+) -> Option<(f64, f64)> {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    let mut found = false;
+    for values in values {
+        let mut sample = |value: &WaveValue| {
+            if let Some(number) = analog_number(value, setting) {
+                found = true;
+                min = min.min(number);
+                max = max.max(number);
+            }
+        };
+        if let Some(window) = values.cached() {
+            // the value carried in from before the window and every change of it
+            if let Some(before) = window.first_value() {
+                sample(before);
+            }
+            for (_, value) in window.changes() {
+                sample(value);
+            }
+        }
     }
+    (found && min.is_finite() && max.is_finite()).then_some((min, max))
+}
+
+/// One analog trace on a scale shared with the row's other traces.
+#[allow(clippy::too_many_arguments)]
+fn draw_analog_trace(
+    context: &CanvasRenderingContext2d,
+    frame: &Frame<'_>,
+    values: &RowValues,
+    color: &str,
+    setting: &Settings,
+    scale: (f64, f64),
+    top: f64,
+    width: f64,
+    dpr: f64,
+    stats: &mut PaintStats,
+) {
+    let (start, end) = frame.view.window(width);
+    let upper = top + ROW_PAD;
+    let lower = top + ROW_HEIGHT - ROW_PAD;
+    let (min, max) = scale;
     let spread = max - min;
     let y_of = |number: f64| -> f64 {
         if spread > 0.0 {
@@ -494,7 +752,7 @@ fn draw_analog_row(
         }
     };
 
-    context.set_stroke_style_str(&color_string(&item.setting));
+    context.set_stroke_style_str(color);
     context.set_line_width(WAVE_LINE);
     context.set_line_join("round");
     context.begin_path();
@@ -503,24 +761,22 @@ fn draw_analog_row(
     let mut last: Option<f64> = None;
     // seed the left edge with the value in effect at the window start, so the
     // trace is not empty until the first in-window change
-    if let Some(value) = item.values.value_at(start) {
-        let point = analog_number(value, &item.setting).map(&y_of);
+    if let Some(value) = values.value_at(start) {
+        let point = analog_number(value, setting).map(&y_of);
         analog_point(context, &mut last, 0.0, point);
     }
-    item.values
-        .for_each_change(start, end, &frame.view, width, |x, value| {
-            stats.changes += 1;
-            // same crisp column as the cursor lines (see `geometry::crisp`)
-            let x = crisp(x, dpr);
-            let point = analog_number(value, &item.setting).map(&y_of);
-            analog_point(context, &mut last, x, point);
-        });
+    values.for_each_change(start, end, &frame.view, width, |x, value| {
+        stats.changes += 1;
+        // same crisp column as the cursor lines (see `geometry::crisp`)
+        let x = crisp(x, dpr);
+        let point = analog_number(value, setting).map(&y_of);
+        analog_point(context, &mut last, x, point);
+    });
     if let Some(previous) = last {
         // hold the last value up to the end of the trace (never past it)
         context.line_to(trace_end_x(frame, width), previous);
     }
     context.stroke();
-    stats.analog += 1;
 }
 
 /// Add one analog sample (or a gap) to the current path.
@@ -810,10 +1066,12 @@ fn draw_cursors(
 
 /// `rgb(r,g,b)` for a row's colour.
 fn color_string(setting: &Settings) -> String {
-    format!(
-        "rgb({},{},{})",
-        setting.color.0, setting.color.1, setting.color.2
-    )
+    color_string_of(setting.color)
+}
+
+/// `rgb(r,g,b)` for any colour (a row's own, or a comparison slot's).
+fn color_string_of(color: (u8, u8, u8)) -> String {
+    format!("rgb({},{},{})", color.0, color.1, color.2)
 }
 
 /// Numbers from one redraw, for the QA harness and for profiling.
@@ -864,6 +1122,9 @@ pub fn publish_debug(info: &DebugInfo) {
     set("changes", JsValue::from_f64(info.stats.changes as f64));
     set("bands", JsValue::from_f64(info.stats.bands as f64));
     set("analog", JsValue::from_f64(info.stats.analog as f64));
+    // Wave 21: the extra comparison traces the last paint drew. Additive key:
+    // the existing assertions read the fields above unchanged.
+    set("series", JsValue::from_f64(info.stats.series as f64));
     set("visible", JsValue::from_f64(info.visible as f64));
     set("decoded", JsValue::from_f64(info.decoded as f64));
     set(

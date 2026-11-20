@@ -313,6 +313,8 @@ impl RemoteSession {
                         name: row.name.clone(),
                         path: row.path.clone(),
                         width,
+                        // one native dump: no comparison member to name
+                        members: 1,
                     });
                 }
             }

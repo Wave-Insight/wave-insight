@@ -51,6 +51,7 @@
 
 pub mod action;
 pub mod bulk;
+pub mod compare;
 pub mod design;
 pub mod dumps;
 pub mod persist;
@@ -68,6 +69,8 @@ pub mod types;
 // the call sites do not have to move again
 #[allow(unused_imports)]
 pub use action::{Action, Effect};
+#[allow(unused_imports)]
+pub use compare::{CompareMember, CompareSet, MAX_COMPARE};
 #[allow(unused_imports)]
 pub use design::{DesignState, SignalDetails, SourceRow};
 #[allow(unused_imports)]

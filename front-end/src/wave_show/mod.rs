@@ -1,8 +1,10 @@
+pub use compare_bar::CompareBar;
 pub use settings::Settings;
 pub use split::SplitPane;
 pub use wave::WaveShow;
 
 mod canvas;
+pub mod compare_bar;
 mod ctrl;
 pub mod export;
 pub mod find;

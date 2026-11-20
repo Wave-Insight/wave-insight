@@ -10,6 +10,7 @@
 //! renders from the resulting snapshot; it never mutates its own copy.
 
 use super::types::{Cursors, DumpHandle, DumpId, Focus, Layout, Row, Settings, Status, View};
+use wave_insight_lib::waveform::TimeRange;
 
 // `Layout`, `SetEditorRatio` and `ClearStatus` are the rest of the surface the
 // later R2 steps use; keeping the enum stable makes those steps additive.
@@ -96,6 +97,27 @@ pub enum Action {
     ViewCommitted(View),
     /// The cursors were set or cleared by a click.
     CursorsChanged(Cursors),
+
+    /// A comparison dump was loaded into the active tab: it takes the smallest
+    /// free slot (2..=8) in that slot's colour and its series are drawn on the
+    /// rows that resolve in it.
+    ///
+    /// The app opened and parsed the dump; the reducer owns the slot assignment
+    /// and the per-tab set. This never touches the rows, the viewport or the
+    /// cursor: an existing row simply gains a series, and adding a signal later
+    /// adds it from every dump that has it.
+    CompareMemberAdded {
+        name: String,
+        bytes: Option<u64>,
+        handle: DumpHandle,
+        time_range: Option<TimeRange>,
+    },
+    /// One comparison dump left the active tab. The other members keep their
+    /// slots and colours (no renumbering), so the badges do not move; the rows
+    /// stay where they are and the removed member's series simply disappear.
+    CompareMemberRemoved { slot: u8 },
+    /// Every comparison dump left the active tab.
+    CompareCleared,
 
     /// A source file was read: it becomes an open editor document (and an LSP
     /// document). Re-opening a file that is already open replaces its text.

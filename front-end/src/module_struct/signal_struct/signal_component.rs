@@ -7,6 +7,8 @@
 //! button for the whole selection. The context menu (right click, the
 //! context-menu key, Shift+F10) is unchanged.
 
+use std::rc::Rc;
+
 use wasm_bindgen::JsCast;
 use yew::prelude::*;
 
@@ -23,6 +25,16 @@ pub struct SignalComponentProps {
     /// The row is part of the list's multi-selection.
     #[prop_or_default]
     pub selected: bool,
+    /// Bitmask of the loaded dumps that have this signal: bit 0 is the base
+    /// dump, bit `slot - 1` a comparison member (see
+    /// [`CompareSet::bit`](crate::state::compare::CompareSet::bit)). `0` when no
+    /// comparison is loaded.
+    #[prop_or_default]
+    pub members: u8,
+    /// Every loaded dump as the sidebar labels it (number, file name, colour);
+    /// shared by all rows, so it is one `Rc` per list render, not one per row.
+    #[prop_or_default]
+    pub slots: Rc<Vec<crate::nav::SlotLabel>>,
     /// The row was clicked: plain / Ctrl / Shift selection intent.
     #[prop_or_default]
     pub onselect: Callback<SignalSelect>,
@@ -39,6 +51,44 @@ pub struct SignalComponentProps {
 }
 
 pub struct SignalComponent {}
+
+impl SignalComponent {
+    /// The coloured slot numbers after the signal name: which of the loaded
+    /// dumps have this signal, in slot order (`1 2 3`), each in that dump's
+    /// colour. Decorative for assistive tech - the row's own title and the
+    /// chips' titles carry the file names.
+    fn slot_badges(&self, ctx: &Context<Self>) -> Html {
+        let props = ctx.props();
+        if props.members == 0 {
+            return html! {};
+        }
+        html! {
+            <span class="sig-slots" aria-hidden="true">
+                {for props
+                    .slots
+                    .iter()
+                    .filter(|slot| props.members & crate::state::compare::slot_bit(slot.slot) != 0)
+                    .map(|slot| {
+                        let title = if slot.name.is_empty() {
+                            format!("waveform {}", slot.slot)
+                        } else {
+                            format!("waveform {} — {}", slot.slot, slot.name)
+                        };
+                        html! {
+                            <span class="sig-slot"
+                                style={format!(
+                                    "--slot-color:{}",
+                                    crate::state::compare::rgb(slot.color)
+                                )}
+                                title={title}>
+                                {slot.slot.to_string()}
+                            </span>
+                        }
+                    })}
+            </span>
+        }
+    }
+}
 
 impl Component for SignalComponent {
     type Message = ();
@@ -155,6 +205,7 @@ impl Component for SignalComponent {
                 onkeydown={keyboard_menu}
                 title={props.path.clone()}>
                 <span class="sig-name">{&props.name}</span>
+                {self.slot_badges(ctx)}
                 <span class="sig-size">{props.width.to_string()}</span>
                 <button type="button" class="sig-add"
                     tabindex="-1"

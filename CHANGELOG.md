@@ -22,6 +22,17 @@ an on-disk/transport format.
   refuses it before reading with the desktop/`--features fsdb` advice. The
   vendor-SDK backend is the next slice; `--features fsdb` currently falls back to
   the CLI. See [`docs/design/fsdb.md`](docs/design/fsdb.md).
+- Waveform comparison: a per-tab **Compare** toolbar loads up to seven extra
+  VCD/FST/GHW dumps as members with stable slots and one colour each, the SIGNALS
+  list badges every signal with the coloured slot numbers (`1 2 3`) of the dumps
+  that contain it, each member's own hierarchy appears as an extra sidebar root
+  (`compare 2 — run2.vcd`) so member-only signals are reachable, and one row
+  draws one trace per dump in that dump's colour (1-bit overlays, inset bus
+  bands, analog overlays; `PaintStats::series`). Adding a signal adds it from
+  every dump that has it, and the status line names them (`added pc (waveforms 1,
+  2)`). Rows stay keyed by path; the value column, export and find stay on the
+  base dump, the set is not persisted, native (read-only, mmap) mode refuses it,
+  and the axis is aligned by tick. See [`docs/design/compare.md`](docs/design/compare.md).
 
 ## [0.23.6] - 2026-11-19
 

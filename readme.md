@@ -526,6 +526,35 @@ whole file), on the first open only; afterwards the cached VCD opens like any
 other VCD. No Synopsys headers, libraries, binaries or generated bindings are
 shipped with this project.
 
+### Compare waveforms
+
+With a dump open, the wave dock has a **Compare** toolbar: slot `1` is the open
+dump, and **+ Compare…** loads another VCD/FST/GHW as a member in the next free
+slot (`2` … `8`) with its own colour. The SIGNALS list then badges every signal
+with the coloured slot numbers of the loaded dumps that contain it (`1 2 3`),
+and each comparison dump's own hierarchy appears as an extra sidebar root
+(`compare 2 — run2.vcd`), so a signal only the comparison dump has is still
+reachable.
+
+Adding a signal is unchanged - the row's `+`, a double click, Enter or
+**Add selected (N)** - and it adds the signal **from every loaded dump that has
+it**: the row draws one trace per dump, in that dump's colour (1-bit rows
+overlay their step lines, buses draw an outlined band inset per member, analog
+rows overlay their polylines), while the status line says which waveforms took
+the gesture (`added pc (waveforms 1, 2)`). Rows stay keyed by their hierarchical
+path, so the same row is what all the traces share; a member that lacks the
+signal simply draws nothing for it.
+
+Limits: the value column at the cursors shows the base dump's value (the
+comparison values are their traces), export and the value search keep working on
+the base dump only, the set belongs to the dump tab and is not persisted across a
+reload, the desktop's native (read-only, mmap) mode refuses comparison with an
+actionable message (reopen the dump through the wasm path), and the time axis is
+the base dump's with every trace aligned by tick (a differing timescale is
+reported once). At most seven members, and the picker reads at most 128 MB per
+file. The extra traces are counted by `__waveDebug.paint.series` for the QA
+harness. See [`docs/design/compare.md`](docs/design/compare.md).
+
 The keyboard and accessibility contract: clicking a wave row moves the keyboard
 focus into the wave pane, so `Delete` removes the selected rows there (it can
 no longer delete source text while monaco still had the focus), `ctrl+A`

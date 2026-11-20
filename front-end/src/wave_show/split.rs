@@ -358,7 +358,13 @@ impl SplitPane {
         let waveform = self.waveform.as_ref().map(|handle| handle.waveform());
         // map the store rows onto the render model (keeps decoded values for the
         // rows that survived)
-        let unload = self.signal_things.sync(&self.rows.items, waveform);
+        // the right pane is a second dump, not a comparison overlay: it has no
+        // members of its own, so its rows draw only the base series.
+        let unload = self.signal_things.sync(
+            &self.rows.items,
+            waveform,
+            &crate::state::compare::CompareSet::default(),
+        );
         if let Some(waveform) = waveform {
             for index in unload {
                 let _ = waveform.unload_signal(index);

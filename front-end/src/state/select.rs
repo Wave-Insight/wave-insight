@@ -14,6 +14,7 @@ use super::types::{
     Cursors, Dialog, DumpHandle, Focus, Goto, Layout, Picker, RowsSlice, SessionRestore, Status,
     TreeSelection, View, Viewport,
 };
+use crate::state::compare::{CompareMember, CompareSet};
 
 /// The two CSS variables and the drawer flag. Subscribed by `App` only.
 pub fn layout(state: &State) -> Layout {
@@ -194,4 +195,30 @@ pub fn dump_waveform(state: &State) -> Option<DumpHandle> {
 /// turns the skipped count into one line of status text).
 pub fn session_restore(state: &State) -> Option<SessionRestore> {
     state.dumps.active().and_then(|entry| entry.session_restore)
+}
+
+/// The active tab's comparison set (compared by its version, so a pointer move
+/// that touches nothing cannot fire it). Subscribed by the wave pane and the
+/// compare toolbar.
+pub fn compare(state: &State) -> CompareSet {
+    state
+        .dumps
+        .active()
+        .map(|entry| entry.compare.clone())
+        .unwrap_or_default()
+}
+
+/// The members of the active tab's set, in slot order (the toolbar renders one
+/// chip per member without cloning the handles).
+pub fn compare_members(state: &State) -> Vec<CompareMember> {
+    state
+        .dumps
+        .active()
+        .map(|entry| entry.compare.members.clone())
+        .unwrap_or_default()
+}
+
+/// Whether a dump is active at all: the compare toolbar renders only then.
+pub fn has_dump(state: &State) -> bool {
+    state.dumps.active().is_some()
 }

@@ -10,11 +10,12 @@ use crate::module_struct::ModuleStruct;
 use crate::module_struct::{RowContext, RowKind, TreeSelect};
 use crate::nav::selection_add::{self, EditorSelection};
 use crate::nav::{match_dump_candidates, PathPicker, SidebarTree, SignalInspector, SourceClick};
+use crate::state::compare::{self, CompareSet};
 use crate::state::{
     self, Action, Cursors, DumpHandle, DumpId, DumpsTabsSlice, Effect, Focus, Goto, Layout, Picker,
     Row, RowsSlice, SourcesSlice, Split, Status, Store, Subscription, TreeSelection,
 };
-use crate::wave_show::{SplitPane, WaveShow};
+use crate::wave_show::{CompareBar, SplitPane, WaveShow};
 
 use crate::top_bar::TopBar;
 
@@ -65,6 +66,10 @@ pub enum Msg {
     DumpClose(usize),
     /// A key press inside the dump tab strip (Ctrl+W closes the active dump).
     DumpTabsKey(KeyboardEvent),
+    /// The active tab's comparison set changed: the sidebar badges re-render
+    /// from the store, so the shell only has to redraw (the value is the new
+    /// set, compared by version).
+    CompareChanged(CompareSet),
     /// The store's split slice changed (open/closed, right dump, linked).
     SplitChanged(Option<Split>),
     /// The split toggle button.
@@ -332,6 +337,10 @@ pub struct App {
     /// The split view (right pane dump + linked flag), mirrored from the store.
     split: Option<Split>,
     _split_sub: Subscription,
+    /// The active tab's comparison set, mirrored so the sidebar's slot badges
+    /// re-render when a member is loaded or removed.
+    compare_state: CompareSet,
+    _compare_sub: Subscription,
     /// The split container, measured while its divider is dragged.
     split_view: NodeRef,
     /// Pointer x at the divider press.
@@ -572,6 +581,13 @@ impl Component for App {
         let split = store.select(state::select::split);
         let split_sub =
             store.subscribe(state::select::split, ctx.link().callback(Msg::SplitChanged));
+        // the comparison set is per tab: a loaded/removed member re-badges the
+        // sidebar, so the shell has to see it (the wave pane subscribes itself)
+        let compare_state = store.select(state::select::compare);
+        let compare_sub = store.subscribe(
+            state::select::compare,
+            ctx.link().callback(Msg::CompareChanged),
+        );
         let tree_selection = store.select(state::select::tree_selection);
         let tree_selection_sub = store.subscribe(
             state::select::tree_selection,
@@ -593,6 +609,8 @@ impl Component for App {
             _dumps_sub: dumps_sub,
             split,
             _split_sub: split_sub,
+            compare_state,
+            _compare_sub: compare_sub,
             tree_selection,
             _tree_selection_sub: tree_selection_sub,
             row_menu: None,
@@ -773,6 +791,7 @@ impl Component for App {
                                 onclear={link.callback(|_| Msg::MenuClearSelection)}
                                 onrowcontext={link.callback(Msg::RowMenuOpened)}
                                 onaddmany={link.callback(Msg::SidebarAddMany)}
+                                compare_slots={self.compare_slots()}
                                 signaladd={link.callback(|(_name, path): (String, String)| Msg::SidebarAdd(path))}/>
                     </aside>
                     {if self.layout.drawer_open {
@@ -909,6 +928,8 @@ impl Component for App {
                                     {"Full path"}
                                 </label>
                             </div>
+                            <CompareBar store={self.store.clone()}
+                                disabled={self.compare_disabled()} />
                             {if self.dump_tabs.len() >= 2 {
                                 let split_open = self.split.is_some();
                                 let linked = self.split.map(|split| split.linked).unwrap_or(true);
@@ -1359,6 +1380,12 @@ impl App {
                     self.apply(Action::DumpClosed { index });
                 }
                 false
+            }
+            Msg::CompareChanged(compare) => {
+                // the badges and the toolbar read the store directly; mirroring
+                // the set is enough to re-render the sidebar rows
+                self.compare_state = compare;
+                true
             }
             Msg::SplitChanged(split) => {
                 self.split = split;
@@ -2671,21 +2698,27 @@ impl App {
             let row_path = match &dump {
                 Some(waveform) => {
                     // the dump is the source of values: a path it cannot resolve
-                    // would draw nothing, so it is skipped (and counted)
+                    // would draw nothing, so it is skipped (and counted) - unless
+                    // a comparison member has it, in which case the row draws
+                    // that member's series
                     let candidates = match_dump_candidates(waveform.waveform(), path);
-                    if candidates.len() != 1 {
+                    if candidates.len() == 1 {
+                        candidates[0].clone()
+                    } else if candidates.is_empty() && self.compare_width_of(path).is_some() {
+                        path.clone()
+                    } else {
                         unresolved += 1;
                         continue;
                     }
-                    candidates[0].clone()
                 }
                 None => path.clone(),
             };
             let signal = self.signal_for_path(&row_path);
+            let width = self.compare_width_of(&row_path).unwrap_or(signal.size);
             rows.push(Row {
                 path: row_path.clone(),
                 name: row_path,
-                width: signal.size,
+                width,
                 setting: state::Settings::new(),
                 chosen: false,
                 load: signal.load,
@@ -2712,15 +2745,25 @@ impl App {
                 },
             });
         }
+        // Which loaded dumps took the batch, said once: the badges say it per
+        // row, this is the same fact for the whole gesture. Kept together with
+        // the reducer's own summary ("added N signals") instead of replacing it.
+        let mask = unique
+            .iter()
+            .fold(0u8, |mask, path| mask | self.waveform_mask(path));
+        let mut text = self
+            .store
+            .select(state::select::status)
+            .map(|status| status.text)
+            .unwrap_or_default();
+        if !text.is_empty() {
+            text.push_str(&format!(" ({})", compare::waveforms_label(mask)));
+        }
         if unresolved > 0 {
-            // keep the reducer's summary and say how many paths the dump could
-            // not resolve, instead of silently dropping them
-            if let Some(status) = self.store.select(state::select::status) {
-                self.note(Status::info(format!(
-                    "{} — {unresolved} not in the loaded dump",
-                    status.text
-                )));
-            }
+            text.push_str(&format!(" — {unresolved} not in the loaded dump"));
+        }
+        if !text.is_empty() {
+            self.note(Status::info(text));
         }
     }
 
@@ -2736,6 +2779,73 @@ impl App {
     /// The opened dump, read from the store (the store owns the only handle).
     fn dump(&self) -> Option<DumpHandle> {
         self.store.select(state::select::dump_waveform)
+    }
+
+    /// Every loaded dump as the sidebar labels it: slot 1 is the active dump,
+    /// then the comparison members in slot order. The signal rows badge
+    /// themselves with the slots that resolve their path.
+    fn compare_slots(&self) -> std::rc::Rc<Vec<crate::nav::SlotLabel>> {
+        let mut slots: Vec<crate::nav::SlotLabel> = Vec::new();
+        if let Some(name) = self.store.select(state::select::dump_name) {
+            slots.push(crate::nav::SlotLabel {
+                slot: 1,
+                name,
+                color: compare::color_of(1),
+            });
+        }
+        for member in self.store.select(state::select::compare_members) {
+            slots.push(crate::nav::SlotLabel {
+                slot: member.slot,
+                name: member.name,
+                color: member.color,
+            });
+        }
+        std::rc::Rc::new(slots)
+    }
+
+    /// The mask of the loaded dumps that have `path` (bit 0 = the base dump,
+    /// bit `slot - 1` = a comparison member): what the status line names and
+    /// what a row draws as series.
+    fn waveform_mask(&self, path: &str) -> u8 {
+        // the set marks the base unconditionally (a sidebar row comes from it);
+        // a row added for a member-only signal must not claim slot 1
+        let mut mask = self.store.select(state::select::compare).bit(path) & !1u8;
+        if self
+            .dump()
+            .is_some_and(|handle| handle.waveform().signal_by_path(path).is_some())
+        {
+            mask |= 1;
+        }
+        mask
+    }
+
+    /// The width a comparison member declares for a signal the base dump does
+    /// not have, so a member-only signal still lands as a row of the right size.
+    fn compare_width_of(&self, path: &str) -> Option<usize> {
+        self.store
+            .select(state::select::compare_members)
+            .iter()
+            .find_map(|member| {
+                member
+                    .handle
+                    .waveform()
+                    .signal_by_path(path)
+                    .map(|info| (info.width() as usize).max(1))
+            })
+    }
+
+    /// Comparison needs a wasm waveform to overlay: the native read-only mode
+    /// draws one mmap'd dump and has no second reader, so its toolbar explains
+    /// that instead of offering a picker.
+    fn compare_disabled(&self) -> bool {
+        #[cfg(any(feature = "tauri", feature = "web-remote"))]
+        {
+            self.remote.is_some()
+        }
+        #[cfg(not(any(feature = "tauri", feature = "web-remote")))]
+        {
+            false
+        }
     }
 
     /// Where `path` is declared, when the design knows it.
@@ -2854,17 +2964,25 @@ impl App {
             return;
         }
         let mut dump_candidates = Vec::new();
+        // A comparison member can have a signal the base dump does not. The row
+        // is still worth adding: its series then draws from the member that has
+        // it, and the width comes from that member.
+        let mut member_width: Option<usize> = None;
         if let Some(waveform) = self.dump() {
             dump_candidates = match_dump_candidates(waveform.waveform(), path);
             match dump_candidates.len() {
-                0 => {
-                    // the dump is the source of values: adding a row that cannot
-                    // decode is exactly the "the added signal draws nothing" bug
-                    self.note(Status::error(format!(
-                        "`{path}` is not in the loaded waveform"
-                    )));
-                    return;
-                }
+                0 => match self.compare_width_of(path) {
+                    Some(width) => member_width = Some(width),
+                    None => {
+                        // the dump is the source of values: adding a row that
+                        // cannot decode is exactly the "the added signal draws
+                        // nothing" bug
+                        self.note(Status::error(format!(
+                            "`{path}` is not in the loaded waveform"
+                        )));
+                        return;
+                    }
+                },
                 1 => {}
                 _ => {
                     self.note(Status::info(format!(
@@ -2890,10 +3008,11 @@ impl App {
         // the row list is store state now: resolve what the reducer cannot know
         // (width from the dump/design, driver + load locations) and dispatch
         let signal = self.signal_for_path(&row_path);
+        let width = member_width.unwrap_or(signal.size);
         self.store.dispatch(Action::RowAdded {
             path: row_path.clone(),
             name: row_path.clone(),
-            width: signal.size,
+            width,
             load: signal.load.clone(),
             drive: signal.drive.clone(),
             bit: None,
@@ -2904,7 +3023,10 @@ impl App {
                 instance: self.focus.instance.clone(),
             },
         });
-        self.note(Status::info(format!("added {row_path} to the waveform")));
+        self.note(Status::info(format!(
+            "added {row_path} to the waveform ({})",
+            compare::waveforms_label(self.waveform_mask(&row_path))
+        )));
         if show_declaration {
             // only jump when the source pane can show the file: a closed tab
             // would otherwise turn a successful add into an error status

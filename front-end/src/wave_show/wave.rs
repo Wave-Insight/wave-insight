@@ -13,6 +13,7 @@ use crate::state::DumpHandle;
 use std::cell::Cell;
 
 use crate::nav::ValueFormat;
+use crate::state::compare::CompareSet;
 use crate::state::{
     self, select, Cursors, Dialog, RowsSlice, Status, Store, Subscription, View, Viewport,
 };
@@ -119,6 +120,9 @@ pub enum Msg {
     TimeRange(Option<TimeRange>),
     /// The opened dump changed (the store owns the handle).
     Dump(Option<DumpHandle>),
+    /// The active tab's comparison set changed (a member was loaded or removed,
+    /// or the active dump switched). Compared by the set's version.
+    Compare(CompareSet),
     Wheel(WheelEvent),
     /// the row list was scrolled
     Scroll,
@@ -210,6 +214,9 @@ pub struct WaveShow {
     signal_things: SignalThings,
     /// The dump the rows are decoded from.
     waveform: Option<DumpHandle>,
+    /// The active tab's comparison dumps: every row draws one series per member
+    /// that has its signal.
+    compare: CompareSet,
     /// The rows the store owns, as the last snapshot the pane saw.
     rows: RowsSlice,
     /// The committed cursors, mirrored here for drawing.
@@ -232,6 +239,8 @@ pub struct WaveShow {
     _dump_sub: Subscription,
     _waveform_sub: Subscription,
     _layout_sub: Subscription,
+    /// The comparison set slice (per tab, versioned).
+    _compare_sub: Subscription,
     /// The pane's own re-render count, published for the tier-A QA gate.
     pane_render_count: Cell<u32>,
 
@@ -339,6 +348,10 @@ impl Component for WaveShow {
         // the canvas keeps its old backing store size and the drawing is drawn
         // squashed until something else forces a redraw.
         let layout_sub = store.subscribe(select::layout, ctx.link().callback(|_| Msg::Resize));
+        // the comparison set is per tab and versioned: loading or removing a
+        // member re-syncs the series, a cursor move never reaches it
+        let compare = store.select(select::compare);
+        let compare_sub = store.subscribe(select::compare, ctx.link().callback(Msg::Compare));
         // the settings dialog is store state now (R2 step 3b)
         let dialog = store.select(select::dialog);
         let dialog_sub = store.subscribe(select::dialog, ctx.link().callback(Msg::Dialog));
@@ -346,6 +359,7 @@ impl Component for WaveShow {
             store: store.clone(),
             signal_things: SignalThings::new(),
             waveform: store.select(select::dump_waveform),
+            compare,
             rows: store.select(select::rows),
             cursors: store.select(select::cursors),
             cursor_preview: None,
@@ -358,6 +372,7 @@ impl Component for WaveShow {
             _dump_sub: dump_sub,
             _waveform_sub: waveform_sub,
             _layout_sub: layout_sub,
+            _compare_sub: compare_sub,
             pane_render_count: Cell::new(0),
 
             view: View::default(),
@@ -704,6 +719,17 @@ impl WaveShow {
                 }
                 // the name column, the settings and the canvas all follow the store
                 true
+            }
+            Msg::Compare(compare) => {
+                // A comparison member was loaded or removed (or the active tab
+                // changed): re-resolve every row's series and repaint. The
+                // label column does not show series, so the pane needs a
+                // redraw, not a Yew render (tier A).
+                self.compare = compare;
+                self.signal_things
+                    .sync_series(&self.rows.items, &self.compare);
+                self.redraw();
+                false
             }
             Msg::Viewport(viewport) => {
                 // a committed gesture landed: mirror it and repaint the canvas.
@@ -1481,7 +1507,9 @@ impl WaveShow {
     /// rows that survived and unloading the ones that are gone.
     fn sync_rows(&mut self) {
         let waveform = self.waveform.as_ref().map(|waveform| waveform.waveform());
-        let unload = self.signal_things.sync(&self.rows.items, waveform);
+        let unload = self
+            .signal_things
+            .sync(&self.rows.items, waveform, &self.compare);
         if let Some(waveform) = waveform {
             for index in unload {
                 let _ = waveform.unload_signal(index);
@@ -1790,55 +1818,102 @@ impl WaveShow {
             self.decode_remote(fetch, width);
             return;
         }
-        // clone the handle so the backend borrow does not block the cache writes
-        let Some(handle) = self.waveform.clone() else {
-            self.last_decoded = 0;
-            return;
-        };
-        let waveform = handle.waveform();
         let req = WindowRequest::for_view(self.view, width);
-        let mut rows: Vec<usize> = Vec::new();
-        let mut signals: Vec<usize> = Vec::new();
-        for row in fetch {
-            let Some(item) = self.signal_things.iter().nth(row) else {
-                break;
-            };
-            let Some(index) = item.index else {
-                continue;
-            };
-            if !windowed::needs_fetch(item.values.cached(), req) {
-                continue;
-            }
-            rows.push(row);
-            signals.push(index);
-        }
-        if rows.is_empty() {
-            self.last_decoded = 0;
-            return;
-        }
-        let fetched = match windowed::fetch(waveform, &signals, req) {
-            Ok(fetched) => fetched,
-            Err(_error) => {
-                //the rows keep their previous window; a later redraw retries
-                self.last_decoded = 0;
-                return;
-            }
-        };
         let mut decoded = 0usize;
-        for (row, window) in rows.into_iter().zip(fetched) {
-            let Some(window) = window else {
+        // clone the handle so the backend borrow does not block the cache writes
+        if let Some(handle) = self.waveform.clone() {
+            let waveform = handle.waveform();
+            let mut rows: Vec<usize> = Vec::new();
+            let mut signals: Vec<usize> = Vec::new();
+            for row in fetch.clone() {
+                let Some(item) = self.signal_things.iter().nth(row) else {
+                    break;
+                };
+                let Some(index) = item.index else {
+                    continue;
+                };
+                if !windowed::needs_fetch(item.values.cached(), req) {
+                    continue;
+                }
+                rows.push(row);
+                signals.push(index);
+            }
+            // one bounded pass for the base rows; an empty list is not an early
+            // return any more, because a comparison member can still have rows
+            if !rows.is_empty() {
+                if let Ok(fetched) = windowed::fetch(waveform, &signals, req) {
+                    for (row, window) in rows.into_iter().zip(fetched) {
+                        let Some(window) = window else {
+                            continue;
+                        };
+                        // an expanded bit is one bit of its parent's window:
+                        // derive the bit instead of asking the backend for a
+                        // signal the dump does not have
+                        let bit = self.signal_things.iter().nth(row).and_then(|item| item.bit);
+                        match bit {
+                            Some(bit) => self.signal_things.set_window(
+                                row,
+                                windowed::derive_bit_window(&window, bit as usize),
+                            ),
+                            None => self.signal_things.set_window(row, window),
+                        }
+                        decoded += 1;
+                    }
+                }
+            }
+        }
+        // Comparison series: one bounded pass per member for the visible rows
+        // that resolved in it. The members are cloned out of the set first, so
+        // the render model can be updated while iterating. A member without the
+        // signal contributes nothing, and a series whose window still covers the
+        // view is not fetched again.
+        let members: Vec<(u8, DumpHandle)> = self
+            .compare
+            .members
+            .iter()
+            .map(|member| (member.slot, member.handle.clone()))
+            .collect();
+        for (slot, handle) in members {
+            let waveform = handle.waveform();
+            let mut rows: Vec<usize> = Vec::new();
+            let mut signals: Vec<usize> = Vec::new();
+            for row in fetch.clone() {
+                let Some(item) = self.signal_things.iter().nth(row) else {
+                    break;
+                };
+                let Some(series) = item.series.iter().find(|series| series.slot == slot) else {
+                    continue;
+                };
+                let Some(index) = series.index else {
+                    continue;
+                };
+                if !windowed::needs_fetch(series.values.cached(), req) {
+                    continue;
+                }
+                rows.push(row);
+                signals.push(index);
+            }
+            if rows.is_empty() {
+                continue;
+            }
+            let Ok(fetched) = windowed::fetch(waveform, &signals, req) else {
                 continue;
             };
-            // an expanded bit is one bit of its parent's window: derive the bit
-            // instead of asking the backend for a signal the dump does not have
-            let bit = self.signal_things.iter().nth(row).and_then(|item| item.bit);
-            match bit {
-                Some(bit) => self
-                    .signal_things
-                    .set_window(row, windowed::derive_bit_window(&window, bit as usize)),
-                None => self.signal_things.set_window(row, window),
+            for (row, window) in rows.into_iter().zip(fetched) {
+                let Some(window) = window else {
+                    continue;
+                };
+                let bit = self.signal_things.iter().nth(row).and_then(|item| item.bit);
+                match bit {
+                    Some(bit) => self.signal_things.set_series_window(
+                        row,
+                        slot,
+                        windowed::derive_bit_window(&window, bit as usize),
+                    ),
+                    None => self.signal_things.set_series_window(row, slot, window),
+                }
+                decoded += 1;
             }
-            decoded += 1;
         }
         self.last_decoded = decoded;
     }

@@ -136,6 +136,10 @@ pub struct ModuleStructProps {
     /// A row asked for its context menu (right click / keyboard).
     #[prop_or_default]
     pub onrowcontext: Callback<RowContext>,
+    /// Every loaded dump (base plus comparison members) as the sidebar labels
+    /// it; the signal rows badge themselves with the slots that have them.
+    #[prop_or_default]
+    pub compare_slots: std::rc::Rc<Vec<crate::nav::SlotLabel>>,
 }
 
 pub struct ModuleStruct {
@@ -554,7 +558,8 @@ impl Component for ModuleStruct {
                     selected={selected}
                     signaladd={link.callback(Msg::SignalAdd)}
                     onaddmany={ctx.props().onaddmany.clone()}
-                    onrowcontext={ctx.props().onrowcontext.clone()} />
+                    onrowcontext={ctx.props().onrowcontext.clone()}
+                    slots={ctx.props().compare_slots.clone()} />
             </div>
         }
     }

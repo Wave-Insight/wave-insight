@@ -25,7 +25,7 @@ use wave_insight_lib::waveform::{
     BitValue, Bits, Change, DecodedSignal, SignalKind, WaveValue, Waveform,
 };
 
-use crate::state::{Row, Settings};
+use crate::state::{compare::CompareSet, Row, Settings};
 use crate::wave_show::geometry::{self, Time};
 use crate::wave_show::windowed::RowWindow;
 
@@ -99,15 +99,6 @@ impl RowValues {
         window.for_each_change(start, end, view, width, visit);
     }
 
-    /// The changes of this row inside `start ..= end`, as a borrowed slice of the
-    /// cached window.
-    pub fn window(&self, start: Time, end: Time) -> &[Change] {
-        match self {
-            RowValues::Empty => &[],
-            RowValues::Window(window) => window.window(start, end),
-        }
-    }
-
     /// The cached window itself, when the row has one.
     pub fn cached(&self) -> Option<&RowWindow> {
         match self {
@@ -131,6 +122,44 @@ impl RowValues {
                 .and_then(WaveValue::width)
                 .map(|width| declared.min(width.max(1)))
                 .unwrap_or(declared),
+        }
+    }
+}
+
+/// One comparison member's history for one row: the same signal path, decoded
+/// from another dump.
+///
+/// Only slots 2..=8 appear here; slot 1 (the base) is the row's own
+/// index/width/is_bool/values and draws in the row's `setting.color`. A member
+/// that does not have the signal keeps `index: None` and empty values, so it
+/// costs nothing per frame.
+#[derive(Clone)]
+pub struct Series {
+    /// The comparison slot (2..=8).
+    pub slot: u8,
+    /// The slot's palette colour.
+    pub color: (u8, u8, u8),
+    /// Index in the member's waveform; `None` when the member lacks the signal.
+    pub index: Option<usize>,
+    /// The member's width for this row.
+    pub width: usize,
+    /// Whether the member draws this row as a single bit.
+    pub is_bool: bool,
+    /// The member's bounded window (its own decode, kept per row *and* slot).
+    pub values: RowValues,
+}
+
+impl Series {
+    /// An empty series: the slot is known, the member's signal was not found
+    /// (or nothing was decoded yet).
+    pub fn empty(slot: u8, color: (u8, u8, u8)) -> Self {
+        Self {
+            slot,
+            color,
+            index: None,
+            width: 1,
+            is_bool: true,
+            values: RowValues::Empty,
         }
     }
 }
@@ -160,6 +189,9 @@ pub struct SignalItem {
     pub driver: Vec<String>,
     pub choose: bool,
     pub values: RowValues,
+    /// The comparison members' histories, one per loaded slot that has the
+    /// signal, drawn on this same row in their own colours.
+    pub series: Vec<Series>,
 }
 
 impl SignalItem {
@@ -168,9 +200,17 @@ impl SignalItem {
     pub fn format_width(&self) -> usize {
         self.values.format_width(self.width)
     }
+
+    /// The series with anything to draw (a member without the signal or without
+    /// a decoded window draws nothing).
+    pub fn drawn_series(&self) -> impl Iterator<Item = &Series> {
+        self.series
+            .iter()
+            .filter(|series| !series.values.is_empty() && series.index.is_some())
+    }
 }
 
-/// Resolution of one row against the opened dump.
+/// Resolution of one row against one dump.
 struct Resolved {
     index: Option<usize>,
     width: usize,
@@ -196,6 +236,35 @@ fn resolve(path: &str, declared: usize, waveform: Option<&Waveform>) -> Resolved
         //vector than the trace really holds (and vice versa)
         is_bool: info.kind() == SignalKind::BitVector && info.width() == 1,
     }
+}
+
+/// The comparison series of one row: one per member, resolved against the
+/// member's own dump (a member without the signal keeps `index: None`).
+///
+/// The row's `bit` is honoured: an expanded-bus row draws that bit of the
+/// member's bus too, exactly like the base row.
+fn resolve_series(
+    path: &str,
+    bit: Option<u8>,
+    declared: usize,
+    compare: &CompareSet,
+) -> Vec<Series> {
+    compare
+        .members()
+        .map(|member| {
+            let resolved = resolve(path, declared, Some(member.handle.waveform()));
+            let mut series = Series::empty(member.slot, member.color);
+            series.index = resolved.index;
+            if bit.is_some() {
+                series.width = 1;
+                series.is_bool = true;
+            } else {
+                series.width = resolved.width;
+                series.is_bool = resolved.is_bool;
+            }
+            series
+        })
+        .collect()
 }
 
 /// The leaf signal name of a hierarchical path, for the label column.
@@ -259,11 +328,23 @@ impl SignalThings {
     ///
     /// The store owns order/settings/selection; this method only maps them onto
     /// the render model, keeping the decoded values of rows that survived (they
-    /// are keyed by path, not by index, so a reorder never drops a decode).
+    /// are keyed by path, not by index, so a reorder never drops a decode) *and*
+    /// the decoded window of every comparison series (keyed by path, bit and
+    /// slot).
+    ///
+    /// `compare` is the active tab's set: every member that has a row's path
+    /// becomes one [`Series`] on that row. A member that does not have it keeps
+    /// `index: None`, so adding a signal adds it from every dump that has it and
+    /// a dump that lacks it simply draws nothing.
     ///
     /// Returns the signal indices whose rows disappeared: the caller unloads
     /// them from the backend cache.
-    pub fn sync(&mut self, rows: &[Row], waveform: Option<&Waveform>) -> Vec<usize> {
+    pub fn sync(
+        &mut self,
+        rows: &[Row],
+        waveform: Option<&Waveform>,
+        compare: &CompareSet,
+    ) -> Vec<usize> {
         let mut previous = std::mem::take(&mut self.item);
         let mut next = Vec::with_capacity(rows.len());
         for row in rows {
@@ -285,6 +366,7 @@ impl SignalThings {
                     driver: Vec::new(),
                     choose: false,
                     values: RowValues::Empty,
+                    series: Vec::new(),
                 },
             };
             let resolved = resolve(&row.path, row.width, waveform);
@@ -310,6 +392,13 @@ impl SignalThings {
             item.load = row.load.clone();
             item.driver = row.drive.clone();
             item.choose = row.chosen;
+            item.series = carry_series(
+                std::mem::take(&mut item.series),
+                &row.path,
+                row.bit,
+                row.width,
+                compare,
+            );
             next.push(item);
         }
         // Windowed rows own their cache: drawing never fills the backend's
@@ -335,6 +424,29 @@ impl SignalThings {
                 item.is_bool = resolved.is_bool;
             }
             item.values = RowValues::Empty;
+            item.series.clear();
+        }
+    }
+
+    /// Re-resolve the comparison series after the set changed (a member was
+    /// loaded, removed, or the active dump switched): the rows and their decoded
+    /// base windows stay, every surviving series keeps its own window by slot.
+    pub fn sync_series(&mut self, rows: &[Row], compare: &CompareSet) {
+        for item in &mut self.item {
+            let Some(row) = rows
+                .iter()
+                .find(|row| row.path == item.path && row.bit == item.bit)
+            else {
+                // the row is gone; `sync` drops it on the next pass
+                continue;
+            };
+            item.series = carry_series(
+                std::mem::take(&mut item.series),
+                &item.path,
+                item.bit,
+                row.width,
+                compare,
+            );
         }
     }
 
@@ -364,48 +476,62 @@ impl SignalThings {
         }
     }
 
+    /// Store the bounded window of one comparison series.
+    ///
+    /// A slot the row does not carry (the member left the set) is ignored: the
+    /// answer simply has nowhere to go.
+    pub fn set_series_window(&mut self, row: usize, slot: u8, window: RowWindow) {
+        if let Some(item) = self.item.get_mut(row) {
+            if let Some(series) = item.series.iter_mut().find(|series| series.slot == slot) {
+                series.values = RowValues::Window(window);
+            }
+        }
+    }
+
     /// The cached window of one row, when it has one.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn window_of(&self, row: usize) -> Option<&RowWindow> {
         self.item.get(row).and_then(|item| item.values.cached())
     }
 
-    /// Bytes all cached windows in `rows` hold together (the memory budget).
+    /// Bytes all cached windows in `rows` hold together, every series included
+    /// (the memory budget counts what the drawing really holds).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn window_bytes(&self, rows: std::ops::Range<usize>) -> usize {
         let end = rows.end.min(self.item.len());
         let start = rows.start.min(end);
-        self.item[start..end]
-            .iter()
-            .filter_map(|item| item.values.cached())
-            .map(RowWindow::bytes)
-            .sum()
+        self.item[start..end].iter().map(item_bytes).sum()
     }
 
-    /// Drop the cached windows of every row outside `keep`.
+    /// Bytes one row's cached windows hold: the base window plus every series.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn row_bytes(&self, row: usize) -> usize {
+        self.item.get(row).map(item_bytes).unwrap_or(0)
+    }
+
+    /// Drop the cached windows of every row outside `keep`, series included.
     ///
     /// A row that scrolls back in fetches one bounded window again, so this is
     /// the cheapest way to give memory back for a long row list.
     pub fn drop_outside(&mut self, keep: std::ops::Range<usize>) {
         for (row, item) in self.item.iter_mut().enumerate() {
-            if keep.contains(&row) || matches!(item.values, RowValues::Empty) {
+            if keep.contains(&row) || item.values.is_empty() && item.series.is_empty() {
                 continue;
             }
             item.values = RowValues::Empty;
+            for series in &mut item.series {
+                series.values = RowValues::Empty;
+            }
         }
     }
 
     /// Keep the window cache inside `budget`, dropping the rows farthest from
     /// the viewport first (least recently looked at), then the edges of the
-    /// visible range. Returns the bytes still cached.
+    /// visible range. Every series counts: a comparison row holds one window per
+    /// dump that has the signal. Returns the bytes still cached.
     pub fn trim_windows(&mut self, keep: std::ops::Range<usize>, budget: usize) -> usize {
         let budget = budget.max(1);
-        let mut total: usize = self
-            .item
-            .iter()
-            .filter_map(|item| item.values.cached())
-            .map(RowWindow::bytes)
-            .sum();
+        let mut total: usize = self.item.iter().map(item_bytes).sum();
         if total <= budget {
             return total;
         }
@@ -423,10 +549,8 @@ impl SignalThings {
                 break;
             }
             if let Some(item) = self.item.get_mut(row) {
-                if let RowValues::Window(window) = &item.values {
-                    total = total.saturating_sub(window.bytes());
-                    item.values = RowValues::Empty;
-                }
+                total = total.saturating_sub(item_bytes(item));
+                clear_windows(item);
             }
         }
         // still over budget (a viewport full of very dense rows): drop from the
@@ -437,20 +561,16 @@ impl SignalThings {
             let row = low;
             low += 1;
             if let Some(item) = self.item.get_mut(row) {
-                if let RowValues::Window(window) = &item.values {
-                    total = total.saturating_sub(window.bytes());
-                    item.values = RowValues::Empty;
-                }
+                total = total.saturating_sub(item_bytes(item));
+                clear_windows(item);
             }
             if total <= budget || low >= high {
                 break;
             }
             high -= 1;
             if let Some(item) = self.item.get_mut(high) {
-                if let RowValues::Window(window) = &item.values {
-                    total = total.saturating_sub(window.bytes());
-                    item.values = RowValues::Empty;
-                }
+                total = total.saturating_sub(item_bytes(item));
+                clear_windows(item);
             }
         }
         total
@@ -480,6 +600,52 @@ impl Default for SignalThings {
     }
 }
 
+/// Bytes one row's cached windows hold: the base window plus every series.
+fn item_bytes(item: &SignalItem) -> usize {
+    let base = item.values.cached().map(RowWindow::bytes).unwrap_or(0);
+    base + item
+        .series
+        .iter()
+        .filter_map(|series| series.values.cached())
+        .map(RowWindow::bytes)
+        .sum::<usize>()
+}
+
+/// Give back every cached window of one row (base and series).
+fn clear_windows(item: &mut SignalItem) {
+    item.values = RowValues::Empty;
+    for series in &mut item.series {
+        series.values = RowValues::Empty;
+    }
+}
+
+/// The series of one row after `compare` changed.
+///
+/// A series that survives keeps its decoded window (keyed by path, bit and
+/// slot, which is exactly what `previous` holds); a member that left the set is
+/// gone and takes its window with it; a member that was just added starts empty
+/// and is fetched by the next redraw.
+fn carry_series(
+    previous: Vec<Series>,
+    path: &str,
+    bit: Option<u8>,
+    declared: usize,
+    compare: &CompareSet,
+) -> Vec<Series> {
+    if compare.is_empty() {
+        return Vec::new();
+    }
+    let mut resolved = resolve_series(path, bit, declared, compare);
+    for series in &mut resolved {
+        if let Some(kept) = previous.iter().find(|old| old.slot == series.slot) {
+            if kept.index == series.index && kept.width == series.width {
+                series.values = kept.values.clone();
+            }
+        }
+    }
+    resolved
+}
+
 impl<I: SliceIndex<[SignalItem]>> Index<I> for SignalThings {
     type Output = I::Output;
 
@@ -501,6 +667,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::state::DumpHandle;
     use crate::wave_show::windowed::{RowWindow, WindowRequest};
     use wave_insight_lib::waveform::{Bits, Change};
 
@@ -523,7 +690,7 @@ mod tests {
             .map(|(path, width)| store_row(path, *width))
             .collect();
         let mut things = SignalThings::new();
-        things.sync(&rows, None);
+        things.sync(&rows, None, &CompareSet::default());
         things
     }
 
@@ -564,7 +731,7 @@ mod tests {
         things.set_window(0, window(&[0, 10, 20], 0, 100));
         // the store reorders: the decoded row must follow its path, not its index
         let rows = vec![store_row("b", 1), store_row("a", 1)];
-        let unload = things.sync(&rows, None);
+        let unload = things.sync(&rows, None, &CompareSet::default());
         assert!(unload.is_empty());
         assert_eq!(things[1].path, "a");
         assert!(!things[1].values.is_empty(), "the decode followed the row");
@@ -578,7 +745,7 @@ mod tests {
         things[0].index = Some(4);
         things[1].index = Some(5);
         things.set_window(1, window(&[0, 10], 0, 100));
-        let unload = things.sync(&[store_row("a", 1)], None);
+        let unload = things.sync(&[store_row("a", 1)], None, &CompareSet::default());
         // drawing caches windows, not backend histories: nothing to unload
         assert!(unload.is_empty());
         assert_eq!(things.len(), 1);
@@ -590,7 +757,7 @@ mod tests {
         rows[0].setting.fixed_active = true;
         rows[0].chosen = true;
         let mut things = SignalThings::new();
-        things.sync(&rows, None);
+        things.sync(&rows, None, &CompareSet::default());
         assert!(things[0].setting.fixed_active);
         assert!(things[0].choose);
         assert_eq!(things.get_choose_idx(), vec![0]);
@@ -780,6 +947,223 @@ mod tests {
             low[1],
             low[0],
         ]))
+    }
+
+    // --- comparison series --------------------------------------------------
+
+    /// The base dump of the comparison tests: `top.clk` (1 bit) and `top.pc`
+    /// (8 bits).
+    fn base_vcd() -> wave_insight_lib::waveform::Waveform {
+        wave_insight_lib::waveform::Waveform::open_bytes(
+            include_bytes!("../../../../qa/fixtures/wave.vcd").to_vec(),
+        )
+        .expect("the fixture opens")
+    }
+
+    /// A second dump: the same `top.clk`, a *wider* `top.pc` and one signal the
+    /// base does not have.
+    fn member_vcd() -> wave_insight_lib::waveform::Waveform {
+        let text = "$timescale 1ns $end\n\
+                    $scope module top $end\n\
+                    $var wire 1 ! clk $end\n\
+                    $var wire 16 # pc [15:0] $end\n\
+                    $var wire 4 % only_here [3:0] $end\n\
+                    $upscope $end\n\
+                    $enddefinitions $end\n\
+                    $dumpvars\n0!\nb0 #\nb0 %\n$end\n#10\n1!\n#20\nb1010 %\n";
+        wave_insight_lib::waveform::Waveform::open_bytes(text.as_bytes().to_vec())
+            .expect("the member dump opens")
+    }
+
+    fn compare_with(
+        entries: impl IntoIterator<Item = (u8, wave_insight_lib::waveform::Waveform)>,
+    ) -> CompareSet {
+        let mut set = CompareSet::default();
+        for (slot, waveform) in entries {
+            while usize::from(set.free_slot().expect("room")) < usize::from(slot) {
+                let filler = set.free_slot().expect("room");
+                set.add(
+                    format!("filler{filler}.vcd"),
+                    None,
+                    DumpHandle::new(base_vcd()),
+                    None,
+                )
+                .expect("room for the filler");
+            }
+            let handle = DumpHandle::new(waveform);
+            assert_eq!(
+                set.add(format!("run{slot}.vcd"), None, handle, None),
+                Ok(slot)
+            );
+        }
+        set
+    }
+
+    #[test]
+    fn a_path_in_both_dumps_resolves_one_series_per_slot() {
+        let base = base_vcd();
+        let member = member_vcd();
+        let compare = compare_with([(2, member)]);
+        let rows = vec![store_row("top.clk", 1), store_row("top.pc", 8)];
+        let mut things = SignalThings::new();
+        things.sync(&rows, Some(&base), &compare);
+        assert_eq!(things.len(), 2);
+        // the base fields are the base dump's, exactly as before
+        assert!(things[0].index.is_some());
+        assert_eq!(things[0].width, 1);
+        assert_eq!(things[1].width, 8);
+        // one series per member, in the member's own slot and colour
+        assert_eq!(things[0].series.len(), 1);
+        assert_eq!(things[0].series[0].slot, 2);
+        assert_eq!(
+            things[0].series[0].color,
+            crate::state::compare::color_of(2)
+        );
+        assert!(things[0].series[0].index.is_some());
+        // the member's `pc` is 16 bits wide: the series says so, the row does not
+        assert_eq!(things[1].series[0].width, 16);
+        assert!(!things[1].series[0].is_bool);
+        assert_eq!(things[1].width, 8);
+    }
+
+    /// A dump with only `top.clk`: the member that lacks `top.pc`.
+    fn clk_only_vcd() -> wave_insight_lib::waveform::Waveform {
+        let text = "$scope module top $end\n$var wire 1 ! clk $end\n$upscope $end\n\
+                    $enddefinitions $end\n$dumpvars\n0!\n$end\n#5\n1!\n";
+        wave_insight_lib::waveform::Waveform::open_bytes(text.as_bytes().to_vec())
+            .expect("the clk-only dump opens")
+    }
+
+    #[test]
+    fn a_base_only_path_has_a_series_without_an_index() {
+        let base = base_vcd();
+        // slot 2 has `pc`; slot 3 only has `clk`
+        let compare = compare_with([(2, member_vcd()), (3, clk_only_vcd())]);
+        let rows = vec![store_row("top.pc", 8)];
+        let mut things = SignalThings::new();
+        things.sync(&rows, Some(&base), &compare);
+        let slots: Vec<(u8, bool)> = things[0]
+            .series
+            .iter()
+            .map(|series| (series.slot, series.index.is_some()))
+            .collect();
+        assert_eq!(slots, vec![(2, true), (3, false)]);
+        // a series is drawn only once it has a fetched window; the unresolved one
+        // can never have one, and it costs no decode at all
+        assert_eq!(things[0].drawn_series().count(), 0);
+        things.set_series_window(0, 2, window(&[0, 10], 0, 100));
+        assert_eq!(things[0].drawn_series().count(), 1);
+        assert!(things[0].series[1].values.is_empty());
+    }
+
+    #[test]
+    fn a_member_only_path_resolves_only_its_series() {
+        let base = base_vcd();
+        let compare = compare_with([(2, member_vcd()), (3, member_vcd())]);
+        // adding `only_here` from the member root: the base dump has no such
+        // signal, the two members do
+        let rows = vec![store_row("top.only_here", 4)];
+        let mut things = SignalThings::new();
+        things.sync(&rows, Some(&base), &compare);
+        assert!(things[0].index.is_none(), "the base dump does not have it");
+        assert_eq!(things[0].series.len(), 2);
+        assert!(things[0].series.iter().all(|series| series.index.is_some()));
+        assert_eq!(
+            things[0]
+                .series
+                .iter()
+                .map(|series| series.slot)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        // the row falls back to the design width, the series to the dump's
+        assert_eq!(things[0].width, 4);
+        assert!(things[0].series.iter().all(|series| series.width == 4));
+    }
+
+    #[test]
+    fn a_bit_row_keeps_the_bit_semantics_in_every_series() {
+        let base = base_vcd();
+        let compare = compare_with([(2, member_vcd())]);
+        // the expanded-bus row of `top.pc` bit 3: one bit wide, drawn as a bit
+        let mut row = store_row("top.pc", 8);
+        row.bit = Some(3);
+        row.width = 1;
+        let mut things = SignalThings::new();
+        things.sync(&[row], Some(&base), &compare);
+        assert!(things[0].is_bool);
+        assert_eq!(things[0].width, 1);
+        assert_eq!(things[0].name, "top.pc[3]");
+        // the member's pc is 16 bits wide, but the row shows bit 3 of it
+        assert!(things[0].series[0].is_bool);
+        assert_eq!(things[0].series[0].width, 1);
+        assert!(things[0].series[0].index.is_some());
+    }
+
+    #[test]
+    fn a_series_keeps_its_decoded_window_across_a_sync() {
+        let base = base_vcd();
+        let compare = compare_with([(2, member_vcd())]);
+        let rows = vec![store_row("top.pc", 8)];
+        let mut things = SignalThings::new();
+        things.sync(&rows, Some(&base), &compare);
+        things.set_series_window(0, 2, window(&[0, 10, 20], 0, 100));
+        assert_eq!(things[0].series[0].values.cached().map(|_| ()), Some(()));
+        // a reorder/refresh of the base rows keeps the member's decode: it is
+        // keyed by path + bit + slot
+        let rows = vec![store_row("top.pc", 8)];
+        things.sync(&rows, Some(&base), &compare);
+        assert!(
+            things[0].series[0].values.cached().is_some(),
+            "the series follows its slot, not the row index"
+        );
+        // the budget accounts for it
+        assert_eq!(
+            things.row_bytes(0),
+            3 * crate::wave_show::windowed::BYTES_PER_CHANGE
+        );
+    }
+
+    #[test]
+    fn a_removed_member_takes_its_series_with_it() {
+        let base = base_vcd();
+        let mut compare = compare_with([(2, member_vcd()), (3, member_vcd())]);
+        let rows = vec![store_row("top.clk", 1)];
+        let mut things = SignalThings::new();
+        things.sync(&rows, Some(&base), &compare);
+        assert_eq!(things[0].series.len(), 2);
+        // slot 2 leaves: slot 3 keeps its number and its window
+        things.set_series_window(0, 3, window(&[0, 10], 0, 100));
+        assert!(compare.remove(2).is_some());
+        things.sync_series(&rows, &compare);
+        assert_eq!(things[0].series.len(), 1);
+        assert_eq!(things[0].series[0].slot, 3);
+        assert!(things[0].series[0].values.cached().is_some());
+        // no members at all: no series, and nothing to fetch
+        compare.clear();
+        things.sync_series(&rows, &compare);
+        assert!(things[0].series.is_empty());
+        assert_eq!(things.row_bytes(0), 0);
+    }
+
+    #[test]
+    fn the_budget_and_the_trim_count_every_series() {
+        let base = base_vcd();
+        let compare = compare_with([(2, member_vcd())]);
+        let rows = vec![store_row("top.clk", 1), store_row("top.pc", 8)];
+        let mut things = SignalThings::new();
+        things.sync(&rows, Some(&base), &compare);
+        for row in 0..2 {
+            things.set_window(row, window(&[0, 10, 20], 0, 100));
+            things.set_series_window(row, 2, window(&[0, 10, 20], 0, 100));
+        }
+        let bytes = crate::wave_show::windowed::BYTES_PER_CHANGE;
+        // two rows, each holding a base window and one series window
+        assert_eq!(things.window_bytes(0..2), 12 * bytes);
+        // dropping outside the viewport frees both windows of a row
+        things.drop_outside(1..2);
+        assert_eq!(things.row_bytes(0), 0);
+        assert_eq!(things.row_bytes(1), 6 * bytes);
     }
 
     #[test]

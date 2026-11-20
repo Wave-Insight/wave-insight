@@ -19,7 +19,7 @@
 pub use crate::state::design::{DesignState, SignalDetails, SourceRow};
 pub use inspector::SignalInspector;
 pub use picker::PathPicker;
-pub use tree::{SidebarTree, SignalRow};
+pub use tree::{SidebarTree, SignalRow, SlotLabel};
 
 mod inspector;
 mod picker;

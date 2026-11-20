@@ -1984,3 +1984,98 @@ input.modal-input { width: 64px; flex: 0 0 auto; }
   color: var(--text-1);
   white-space: nowrap;
 }
+
+
+/* --- waveform comparison (Wave 21) ---------------------------------------
+   The toolbar chips and the sidebar's slot badges share one look: the number
+   sits on the dump's colour (the --slot-color custom property), so the badge in
+   the signal list and the trace in the wave view are recognisably the same
+   waveform. */
+.compare-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 10px;
+    border-bottom: 1px solid #18212c;
+    font-size: 11px;
+}
+.compare-title {
+    color: #6d7d92;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+}
+.compare-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid #223041;
+    border-radius: 10px;
+    padding: 1px 7px 1px 3px;
+    background: #0f1720;
+    color: #dbe6f5;
+    max-width: 260px;
+}
+.compare-chip .compare-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.compare-slot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 15px;
+    height: 15px;
+    border-radius: 8px;
+    background: var(--slot-color, #4cc2ff);
+    color: #0d1218;
+    font-size: 9.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+.compare-remove {
+    border: 0;
+    background: transparent;
+    color: #6d7d92;
+    cursor: pointer;
+    padding: 0 1px;
+    font-size: 13px;
+    line-height: 1;
+}
+.compare-remove:hover {
+    color: #ff6b8b;
+}
+.compare-add {
+    border: 1px dashed #2a3a4d;
+    border-radius: 10px;
+    padding: 1px 8px;
+    color: #9aa8bb;
+    cursor: pointer;
+}
+.compare-add:hover {
+    color: #dbe6f5;
+    border-color: #4cc2ff;
+}
+.compare-note {
+    color: #6d7d92;
+    font-style: italic;
+}
+.sig-slots {
+    display: inline-flex;
+    gap: 2px;
+    margin-left: 5px;
+}
+.sig-slot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 12px;
+    height: 12px;
+    border-radius: 6px;
+    background: var(--slot-color, #4cc2ff);
+    color: #0d1218;
+    font-size: 8.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}

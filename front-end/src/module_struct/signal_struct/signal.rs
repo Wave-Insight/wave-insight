@@ -30,7 +30,7 @@ use super::select::{SignalSelect, SignalSelection};
 use super::SignalComponent;
 use crate::module_struct::seam;
 use crate::module_struct::virtual_list::{self, ROW_H};
-use crate::nav::{SidebarTree, SignalRow};
+use crate::nav::{SidebarTree, SignalRow, SlotLabel};
 use crate::state::bulk::BULK_ADD_CAP;
 
 pub enum Msg {
@@ -77,6 +77,10 @@ pub struct SignalStructProps {
     /// A signal row asked for its context menu.
     #[prop_or_default]
     pub onrowcontext: Callback<crate::module_struct::RowContext>,
+    /// Every loaded dump as the sidebar labels it; the rows badge themselves
+    /// with the slots that have their signal (one `Rc` per render, not per row).
+    #[prop_or_default]
+    pub slots: std::rc::Rc<Vec<SlotLabel>>,
 }
 
 pub struct SignalStruct {
@@ -343,6 +347,8 @@ impl Component for SignalStruct {
                                 width={signal.width}
                                 path={signal.path.clone()}
                                 selected={selected.contains(signal.path.as_str())}
+                                members={signal.members}
+                                slots={ctx.props().slots.clone()}
                                 onselect={link.callback(Msg::Click)}
                                 onadd={link.callback(Msg::Add)}
                                 onenter={link.callback(Msg::Enter)}

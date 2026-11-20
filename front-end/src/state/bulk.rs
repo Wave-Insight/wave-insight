@@ -88,6 +88,7 @@ mod tests {
             name: path.rsplit('.').next().unwrap_or(path).to_string(),
             path: path.to_string(),
             width: 8,
+            members: 0,
         }
     }
 

@@ -329,6 +329,53 @@ pub fn reduce(state: &mut State, action: Action) -> Vec<Effect> {
                 top: state.design.top().map(str::to_owned),
             }];
         }
+        Action::CompareMemberAdded {
+            name,
+            bytes,
+            handle,
+            time_range,
+        } => {
+            // the set belongs to the active tab; with no dump open there is
+            // nothing to compare against
+            let Some(entry) = state.dumps.active_mut() else {
+                return Vec::new();
+            };
+            match entry.compare.add(name, bytes, handle, time_range) {
+                Ok(_slot) => {
+                    // the tree gains the member's own scopes (its signals must be
+                    // reachable), so it is rebuilt; the rows/viewport/cursor stay
+                    // exactly as they are
+                    state.dumps.touch();
+                    refresh_tree_keeping_selection(state);
+                }
+                Err(message) => {
+                    state.nav.status = Some(Status::error(message));
+                }
+            }
+        }
+        Action::CompareMemberRemoved { slot } => {
+            let Some(entry) = state.dumps.active_mut() else {
+                return Vec::new();
+            };
+            if entry.compare.remove(slot).is_none() {
+                return Vec::new();
+            }
+            // the rows stay in place: their extra series vanish with the member
+            state.dumps.touch();
+            refresh_tree_keeping_selection(state);
+        }
+        Action::CompareCleared => {
+            let Some(entry) = state.dumps.active_mut() else {
+                return Vec::new();
+            };
+            let had_members = !entry.compare.is_empty();
+            entry.compare.clear();
+            if !had_members {
+                return Vec::new();
+            }
+            state.dumps.touch();
+            refresh_tree_keeping_selection(state);
+        }
         Action::SourceOpened { file, text } | Action::SourceReloaded { file, text } => {
             if file.is_empty() {
                 return Vec::new();
@@ -775,22 +822,68 @@ fn sync_top_hint(state: &mut State) {
 /// Rebuild the sidebar tree the store hands to the sidebar.
 ///
 /// The active dump's scope hierarchy wins; the elaborated design is the fallback
-/// so the module list is usable before a dump is loaded. The module selection
-/// belongs to the old tree, so it is cleared (the sidebar then lists the top
-/// scope's signals, exactly as before this slice moved into the store).
+/// so the module list is usable before a dump is loaded. With comparison dumps
+/// loaded the tree is the union: the base tree plus one synthetic root per
+/// member, so a signal only a member has is still reachable, and every signal
+/// row carries the mask of the dumps that have it. The module selection belongs
+/// to the old tree, so it is cleared (the sidebar then lists the top scope's
+/// signals, exactly as before this slice moved into the store).
 fn refresh_tree(state: &mut State) {
-    state.tree = match state.dumps.active() {
-        Some(entry) => Some(SidebarTree::from_hierarchy(
-            entry.handle.waveform().hierarchy(),
-        )),
-        None => state.design.sidebar_tree(),
-    };
+    state.tree = derive_tree(state);
     match state.dumps.active_mut() {
         Some(entry) => entry.focus.instance = None,
         None => state.focus.instance = None,
     }
     // the bulk selection belongs to the old tree
     state.nav.tree_selection = crate::state::types::TreeSelection::default();
+}
+
+/// The tree of the active dump (with its comparison members) or of the design.
+fn derive_tree(state: &State) -> Option<SidebarTree> {
+    match state.dumps.active() {
+        Some(entry) => {
+            let base = entry.handle.waveform().hierarchy();
+            let extras: Vec<(u8, &str, &wave_insight_lib::waveform::HierarchyView)> = entry
+                .compare
+                .members()
+                .map(|member| {
+                    (
+                        member.slot,
+                        member.name.as_str(),
+                        member.handle.waveform().hierarchy(),
+                    )
+                })
+                .collect();
+            // no comparison loaded: the plain tree (no mask pass, no probes)
+            if extras.is_empty() {
+                Some(SidebarTree::from_hierarchy(base))
+            } else {
+                Some(SidebarTree::from_hierarchies(base, &extras))
+            }
+        }
+        None => state.design.sidebar_tree(),
+    }
+}
+
+/// Rebuild the tree after a comparison member appeared or left, keeping the
+/// module selection: loading a comparison waveform must not move the sidebar
+/// back to the top scope the user was looking at. A selection whose scope only
+/// existed in the member that just left is dropped.
+fn refresh_tree_keeping_selection(state: &mut State) {
+    let selected = match state.dumps.active() {
+        Some(entry) => entry.focus.instance.clone(),
+        None => state.focus.instance.clone(),
+    };
+    let tree = derive_tree(state);
+    let kept = match (&tree, &selected) {
+        (Some(tree), Some(path)) if tree.find(path).is_some() => selected,
+        _ => None,
+    };
+    state.tree = tree;
+    match state.dumps.active_mut() {
+        Some(entry) => entry.focus.instance = kept,
+        None => state.focus.instance = kept,
+    }
 }
 
 /// The rows a sources-only session already had on the wave, moved into the first
