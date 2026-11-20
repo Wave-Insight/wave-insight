@@ -58,6 +58,10 @@ pub fn estimate_factor(format: Option<WaveFormat>) -> f64 {
         // Measured peaks: 34 MB -> 138 MB, 69 MB -> 266 MB, 139 MB -> 522 MB,
         // 349 MB -> 1034 MB of wasm memory.
         Some(WaveFormat::Vcd) | None => 3.2,
+        // FSDB never reaches this estimate: the browser build refuses it before
+        // the pre-flight runs (the native build converts to VCD instead).  The
+        // arm keeps the match exhaustive; a converted FSDB would behave as VCD.
+        Some(WaveFormat::Fsdb) => 3.2,
     }
 }
 

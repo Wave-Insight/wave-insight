@@ -78,6 +78,16 @@ pub struct DumpSummaryDto {
     pub retained_bytes: usize,
     pub mapped_bytes: usize,
     pub open_ms: f64,
+    /// Converter that produced the VCD behind an FSDB dump (`fsdb2vcd`); absent
+    /// for every format read directly.
+    #[serde(default)]
+    pub converter: Option<String>,
+    /// Bytes of the cached VCD a conversion produced.
+    #[serde(default)]
+    pub converted_bytes: Option<u64>,
+    /// Milliseconds the conversion took on this open (0 when it was cached).
+    #[serde(default)]
+    pub convert_ms: Option<f64>,
 }
 
 /// One row of a hierarchy page.
@@ -139,6 +149,11 @@ pub struct RemoteDump {
     pub retained_bytes: usize,
     pub mapped_bytes: usize,
     pub open_ms: f64,
+    /// Present when the dump's bytes were converted (FSDB): the converter name,
+    /// the cached VCD's size and what the conversion cost on this open.
+    pub converter: Option<String>,
+    pub converted_bytes: Option<u64>,
+    pub convert_ms: Option<f64>,
 }
 
 impl RemoteDump {
@@ -156,6 +171,9 @@ impl RemoteDump {
             retained_bytes: dto.retained_bytes,
             mapped_bytes: dto.mapped_bytes,
             open_ms: dto.open_ms,
+            converter: dto.converter,
+            converted_bytes: dto.converted_bytes,
+            convert_ms: dto.convert_ms,
         }
     }
 
@@ -166,11 +184,34 @@ impl RemoteDump {
 
     /// The status line of a native open: the stable "waveform loaded" prefix
     /// plus what the mode costs and what it maps.
+    ///
+    /// A converted FSDB says so: the logical format, the original size, the
+    /// conversion cost and the converter, then the same open/mapping numbers.
+    /// A cache hit (nothing converted on this open) says that instead of naming
+    /// a duration.
     pub fn status_text(&self) -> String {
         let range = match self.range {
             Some((start, end)) => format!(", range {start}..{end}"),
             None => String::new(),
         };
+        if let Some(converter) = &self.converter {
+            let conversion = match self.convert_ms {
+                Some(ms) if ms >= 1.0 => format!(
+                    "converted to VCD in {}",
+                    crate::file_load::progress::format_duration_ms(ms)
+                ),
+                _ => "read from its cached VCD".to_string(),
+            };
+            return format!(
+                "waveform loaded — {} {} MB {conversion} ({converter}), opened in {}, mapped {} MB, {} signals in {} scopes",
+                self.format,
+                self.size_mb(),
+                crate::file_load::progress::format_duration_ms(self.open_ms),
+                self.mapped_bytes / (1024 * 1024),
+                self.signal_count,
+                self.scope_count
+            );
+        }
         format!(
             "waveform loaded (native read-only, mmap) — {} {} MB{} in {:.1} ms, mapped {} MB, {} signals in {} scopes",
             self.format,
@@ -491,6 +532,25 @@ pub fn open_decision(bytes: u64) -> OpenDecision {
         OpenDecision::Native
     } else {
         OpenDecision::Wasm
+    }
+}
+
+/// [`open_decision`] with the name a dump was opened as.
+///
+/// FSDB has no wasm reader at all: the bytes are proprietary and only the
+/// native build can convert them (`fsdb2vcd`, or the vendor SDK in the next
+/// slice). A small `.fsdb` therefore stays native whatever its size; every
+/// other name keeps the size threshold. The pure browser build never reaches
+/// this function because it refuses `.fsdb` before reading a single byte.
+pub fn open_decision_for(name: &str, bytes: u64) -> OpenDecision {
+    let fsdb = std::path::Path::new(name)
+        .extension()
+        .map(|extension| extension.eq_ignore_ascii_case("fsdb"))
+        .unwrap_or(false);
+    if fsdb {
+        OpenDecision::Native
+    } else {
+        open_decision(bytes)
     }
 }
 
@@ -1172,7 +1232,7 @@ mod ipc {
         // remote build has no local file bytes: every opened dump stays on the
         // HTTP/native path, whatever its size.
         #[cfg(not(feature = "web-remote"))]
-        if open_decision(dump.bytes) == OpenDecision::Wasm {
+        if open_decision_for(&dump.name, dump.bytes) == OpenDecision::Wasm {
             let _ = close(dump.id).await;
             return Ok(None);
         }
@@ -1328,6 +1388,9 @@ mod tests {
             retained_bytes: 0,
             mapped_bytes: 102_000_000,
             open_ms: 9.4,
+            converter: None,
+            converted_bytes: None,
+            convert_ms: None,
         }
     }
 
@@ -1375,6 +1438,61 @@ mod tests {
         assert!(!needs_native(NATIVE_THRESHOLD_BYTES));
         assert!(needs_native(NATIVE_THRESHOLD_BYTES + 1));
         assert!(needs_native(2 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn fsdb_always_takes_the_native_path() {
+        // no wasm reader exists: the size threshold must not send it to wasm
+        assert_eq!(open_decision_for("run.fsdb", 0), OpenDecision::Native);
+        assert_eq!(open_decision_for("RUN.FSDB", 1), OpenDecision::Native);
+        assert_eq!(
+            open_decision_for("run.fsdb", NATIVE_THRESHOLD_BYTES),
+            OpenDecision::Native
+        );
+        // lookalike names keep the ordinary decision
+        assert_eq!(open_decision_for("run.fsdb.gz", 0), OpenDecision::Wasm);
+        assert_eq!(open_decision_for("run.fsdbx", 0), OpenDecision::Wasm);
+        assert_eq!(open_decision_for("small.vcd", 0), OpenDecision::Wasm);
+        assert_eq!(
+            open_decision_for("big.fst", NATIVE_THRESHOLD_BYTES + 1),
+            OpenDecision::Native
+        );
+        for bytes in [0u64, 1, NATIVE_THRESHOLD_BYTES, 500_000_000] {
+            assert_eq!(
+                open_decision_for("wave.fst", bytes),
+                open_decision(bytes),
+                "non-FSDB names are unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn a_converted_dump_status_names_the_conversion() {
+        let mut dump = summary();
+        dump.format = "FSDB".to_string();
+        dump.bytes = 105 * 1024 * 1024;
+        dump.mapped_bytes = 120 * 1024 * 1024;
+        dump.converter = Some("fsdb2vcd".to_string());
+        dump.converted_bytes = Some(120 * 1024 * 1024);
+        dump.convert_ms = Some(8_200.0);
+        dump.open_ms = 412.0;
+        let text = dump.status_text();
+        assert!(text.starts_with("waveform loaded"), "{text}");
+        assert!(
+            text.contains("FSDB 105 MB converted to VCD in 8.2 s (fsdb2vcd), opened in 412 ms"),
+            "{text}"
+        );
+        assert!(text.contains("mapped 120 MB"), "{text}");
+
+        // a cache hit says so instead of inventing a conversion duration
+        dump.convert_ms = Some(0.0);
+        dump.open_ms = 41.0;
+        let cached = dump.status_text();
+        assert!(
+            cached.contains("FSDB 105 MB read from its cached VCD (fsdb2vcd)"),
+            "{cached}"
+        );
+        assert!(!cached.contains("converted to VCD"), "{cached}");
     }
 
     #[test]

@@ -15,6 +15,10 @@ pub enum WaveFormat {
     Fst,
     /// GHDL Wave, GHDL's binary format.
     Ghw,
+    /// Synopsys Fast Signal DataBase.  There is no public specification, so the
+    /// file is read through the vendor reader or its `fsdb2vcd` CLI and cached
+    /// as a VCD; see [`crate::waveform::Origin`].
+    Fsdb,
 }
 
 impl WaveFormat {
@@ -34,6 +38,7 @@ impl WaveFormat {
             WaveFormat::Vcd => "VCD",
             WaveFormat::Fst => "FST",
             WaveFormat::Ghw => "GHW",
+            WaveFormat::Fsdb => "FSDB",
         }
     }
 
@@ -43,6 +48,7 @@ impl WaveFormat {
             WaveFormat::Vcd => "vcd",
             WaveFormat::Fst => "fst",
             WaveFormat::Ghw => "ghw",
+            WaveFormat::Fsdb => "fsdb",
         }
     }
 }

@@ -12,6 +12,10 @@ authors.workspace = true
 #  cargo +nightly bench -p wave-insight-lib --features nightly-bench
 nightly-bench = []
 
+#the vendor FSDB Reader SDK backend (Verdi headers + libnffr/libnsys). The seam
+#exists; the next slice implements it. Off by default: no vendor payload ships.
+fsdb = []
+
 [dependencies]
 num="0.4.0"
 linked-hash-map = { version = "0.5.4", features = ["serde_impl"] }

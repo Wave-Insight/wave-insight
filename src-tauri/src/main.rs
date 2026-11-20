@@ -36,11 +36,15 @@ struct FileEntry {
 }
 
 /// Extensions the app can actually open.
+///
+/// `.fsdb` is listed because the native build can convert it (the library runs
+/// the vendor `fsdb2vcd` CLI and caches the VCD); the browser build refuses it.
 fn is_openable(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".vcd")
         || lower.ends_with(".fst")
         || lower.ends_with(".ghw")
+        || lower.ends_with(".fsdb")
         || lower.ends_with(".v")
         || lower.ends_with(".sv")
         || lower.ends_with(".svh")

@@ -8,7 +8,20 @@ an on-disk/transport format.
 
 ## [Unreleased]
 
-Nothing yet: the next wave lands here.
+### Added
+
+- FSDB (Synopsys Verdi) support on the native builds, read through the vendor
+  `fsdb2vcd` CLI (`WAVE_INSIGHT_FSDB2VCD` or `PATH`) and cached as a VCD in the
+  system temporary directory, so the existing wellen pipeline opens it with no
+  vendor linkage, no new dependency and no change to the default/wasm builds.
+  The waveform keeps its provenance (`Origin`: logical `FSDB`, original path,
+  cached VCD, converter, conversion time; `container_format()` is the `Vcd` that
+  was parsed), the desktop summary and status line report the conversion cost
+  (`waveform loaded — FSDB 105 MB converted to VCD in 8.2 s (fsdb2vcd), opened
+  in 412 ms`), the pickers/dialog accept `.fsdb`, and the pure browser build
+  refuses it before reading with the desktop/`--features fsdb` advice. The
+  vendor-SDK backend is the next slice; `--features fsdb` currently falls back to
+  the CLI. See [`docs/design/fsdb.md`](docs/design/fsdb.md).
 
 ## [0.23.6] - 2026-11-19
 

@@ -12,11 +12,16 @@
 //! the serde DTOs below (snake_case fields, u64 ids and times).
 //!
 //! open_dump(path) -> DumpSummary
-//!   { id, name, path, bytes, format: "FST"|"VCD"|"GHW",
+//!   { id, name, path, bytes, format: "FST"|"VCD"|"GHW"|"FSDB",
 //!     time_range: { start, end } | null,
-//!     signal_count, scope_count, retained_bytes, mapped_bytes, open_ms }
+//!     signal_count, scope_count, retained_bytes, mapped_bytes, open_ms,
+//!     converter?, converted_bytes?, convert_ms? }
 //!   errors: "unknown waveform format (...)", "<path>: io error: ...",
 //!           "too many dumps open (32), close one first"
+//!   An FSDB dump reports format "FSDB", bytes = the original file, mapped_bytes
+//!   = the cached VCD that is actually mapped, plus the converter name, the
+//!   cached VCD's size and the conversion time. The conversion (and its failure
+//!   text) comes from `wave_insight_lib::waveform::fsdb`.`prepare`.
 //!
 //! dump_hierarchy(id, offset, limit) -> HierarchyPage
 //!   { total, offset, rows: [ { kind: "scope"|"signal", depth, path, name,
@@ -97,7 +102,7 @@ pub struct DumpSummary {
     pub path: String,
     /// File size in bytes (the on-disk size, not what is resident).
     pub bytes: u64,
-    /// "VCD", "FST" or "GHW".
+    /// "VCD", "FST", "GHW" or "FSDB".
     pub format: String,
     /// Human-readable timescale (e.g. "1 ns"), when the format reports one.
     /// The AI tools quote it with every time value, because a bare tick count
@@ -111,9 +116,20 @@ pub struct DumpSummary {
     /// Heap bytes of the file content kept by the backend (0 for mmap/file).
     pub retained_bytes: usize,
     /// Bytes memory mapped by this dump (0 when the read fallback was used).
+    /// For a converted FSDB this is the cached VCD, not the proprietary file.
     pub mapped_bytes: usize,
     /// Time spent opening the file (header + hierarchy), in milliseconds.
     pub open_ms: f64,
+    /// Converter that produced the VCD behind an FSDB dump (`fsdb2vcd`); absent
+    /// for a format that is read directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub converter: Option<String>,
+    /// Size of the cached VCD a conversion produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub converted_bytes: Option<u64>,
+    /// Milliseconds the conversion took on this open (0 when it was cached).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convert_ms: Option<f64>,
 }
 
 /// One row of a dump_hierarchy page.
@@ -417,6 +433,18 @@ impl DumpRegistry {
         let mut inner = self.lock();
         let id = inner.next_id;
         inner.next_id = inner.next_id.wrapping_add(1);
+        // A converted dump keeps its provenance: the logical format and the
+        // original size, plus what produced the cached VCD that is mapped.
+        let (converter, converted_bytes, convert_ms) = match waveform.origin() {
+            Some(origin) => (
+                Some(origin.converter.clone()),
+                std::fs::metadata(&origin.converted)
+                    .ok()
+                    .map(|metadata| metadata.len()),
+                Some(origin.convert_ms),
+            ),
+            None => (None, None, None),
+        };
         let summary = DumpSummary {
             id,
             name: path
@@ -433,6 +461,9 @@ impl DumpRegistry {
             retained_bytes: stats.source_retained_bytes,
             mapped_bytes: stats.source_mapped_bytes,
             open_ms,
+            converter,
+            converted_bytes,
+            convert_ms,
         };
         let dump = Arc::new(NativeDump {
             name: summary.name.clone(),

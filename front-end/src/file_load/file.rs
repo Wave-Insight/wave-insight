@@ -62,7 +62,11 @@ pub enum FileType {
 #[cfg(not(feature = "tauri"))]
 pub fn file_type_of(name: &str) -> FileType {
     let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw") {
+    if lower.ends_with(".vcd")
+        || lower.ends_with(".fst")
+        || lower.ends_with(".ghw")
+        || lower.ends_with(".fsdb")
+    {
         FileType::IsWaveform
     } else if lower.ends_with(".sv")
         || lower.ends_with(".v")
@@ -73,6 +77,17 @@ pub fn file_type_of(name: &str) -> FileType {
     } else {
         FileType::Unknown
     }
+}
+
+/// Why the pure browser build refuses an FSDB file *before reading it*.
+///
+/// FSDB is read through Synopsys's converter or SDK, both of which exist only in
+/// the native builds; copying the bytes into wasm could not open them anyway.
+#[cfg(not(any(feature = "tauri", feature = "web-remote")))]
+pub fn fsdb_refusal(name: &str) -> String {
+    format!(
+        "{name}: FSDB needs the desktop build with Synopsys's fsdb2vcd on PATH (or a --features fsdb build); the browser build cannot read FSDB"
+    )
 }
 
 /// What one open attempt cost, reported upwards so the app can extend the
@@ -589,7 +604,11 @@ impl Component for FileLoad {
                 <label class={if self.drag_active {"file-drop active"} else {"file-drop"}}>
                     <input class="file-native" type="file" multiple=true onchange={onchangefunc}/>
                     <span class="file-drop-icon">{"＋"}</span>
-                    <span class="file-drop-text">{"Load or drop .vcd / .fst / .ghw / .v files"}</span>
+                    <span class="file-drop-text">{if cfg!(feature = "web-remote") {
+                        "Load or drop .vcd / .fst / .ghw / .fsdb / .v files"
+                    } else {
+                        "Load or drop .vcd / .fst / .ghw / .v files"
+                    }}</span>
                 </label>
                 {self.progress_row(ctx)}
             </div>
@@ -616,6 +635,13 @@ impl FileLoad {
                 ctx.props().onerror.emit(format!(
                     "{name}: unsupported file type — load a waveform (.vcd/.fst/.ghw) or a source (.v/.sv/.vh/.svh)"
                 ));
+                continue;
+            }
+            // FSDB needs the native converter: refuse before a byte is read
+            // instead of copying a proprietary trace into wasm memory.
+            #[cfg(not(feature = "web-remote"))]
+            if name.to_ascii_lowercase().ends_with(".fsdb") {
+                ctx.props().onerror.emit(fsdb_refusal(&name));
                 continue;
             }
             if let Some(message) = progress::guard_message(&name, size) {
@@ -904,6 +930,11 @@ fn drag_has_files(event: &DragEvent) -> bool {
 /// native file drag. Pointer events pass through it, so the drop still lands
 /// on whatever is underneath and the window handler sees it.
 pub fn drop_overlay_html() -> Html {
+    let dumps = if cfg!(any(feature = "tauri", feature = "web-remote")) {
+        "wave dumps .vcd / .fst / .ghw / .fsdb"
+    } else {
+        "wave dumps .vcd / .fst / .ghw"
+    };
     html! {
         <div class="drop-overlay">
             <div class="drop-overlay-card">
@@ -911,7 +942,7 @@ pub fn drop_overlay_html() -> Html {
                 <div class="drop-overlay-title">{"Drop to load"}</div>
                 <div class="drop-overlay-note">
                     {"anywhere in this window — "}
-                    <span>{"wave dumps .vcd / .fst / .ghw"}</span>
+                    <span>{dumps}</span>
                     {" · "}
                     <span>{"sources .v / .sv / .vh / .svh"}</span>
                 </div>
@@ -1019,5 +1050,23 @@ mod tests {
             changed[at] ^= 0x01;
             assert_ne!(fingerprint(a), fingerprint(&changed), "byte {at}");
         }
+    }
+
+    #[cfg(not(feature = "web-remote"))]
+    #[test]
+    fn the_browser_build_refuses_fsdb_with_what_to_do_about_it() {
+        // the picker accepts the extension so the refusal can name the format
+        assert!(matches!(file_type_of("run.FSDB"), FileType::IsWaveform));
+        assert!(matches!(file_type_of("run.fsdb"), FileType::IsWaveform));
+        assert!(matches!(file_type_of("run.fsdbx"), FileType::Unknown));
+        assert!(matches!(file_type_of("run.fsdb.gz"), FileType::Unknown));
+        let message = fsdb_refusal("run.fsdb");
+        assert!(message.starts_with("run.fsdb"), "{message}");
+        assert!(
+            message.contains(
+                "FSDB needs the desktop build with Synopsys's fsdb2vcd on PATH (or a --features fsdb build); the browser build cannot read FSDB"
+            ),
+            "{message}"
+        );
     }
 }

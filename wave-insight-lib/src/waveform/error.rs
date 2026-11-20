@@ -54,6 +54,20 @@ pub enum WaveformError {
     /// The backend could not complete the request for an internal reason, e.g.
     /// a signal without value encoding information.
     Backend(String),
+    /// An FSDB file was opened where no converter can run: a byte/reader source
+    /// has no path to convert from, or neither `fsdb2vcd` nor the optional
+    /// vendor-SDK feature is available.
+    FsdbUnavailable {
+        /// What was attempted, e.g. `"no converter for `run.fsdb`"`.
+        detail: String,
+    },
+    /// The FSDB converter was found but did not produce a readable VCD.
+    FsdbConversion {
+        /// The FSDB file the conversion was started for.
+        path: std::path::PathBuf,
+        /// What went wrong, including the tail of the tool's stderr.
+        detail: String,
+    },
 }
 
 impl WaveformError {
@@ -75,6 +89,12 @@ impl WaveformError {
                 format!("`{operation}` is not supported for {format} waveforms")
             }
             WaveformError::Backend(msg) => format!("waveform backend error: {msg}"),
+            WaveformError::FsdbUnavailable { detail } => format!(
+                "{detail} — FSDB reading needs Synopsys's FSDB Reader: put fsdb2vcd (Verdi) on PATH (or set WAVE_INSIGHT_FSDB2VCD), or build with --features fsdb and VERDI_HOME pointing at a Verdi install"
+            ),
+            WaveformError::FsdbConversion { path, detail } => {
+                format!("could not convert FSDB {}: {detail}", path.display())
+            }
         }
     }
 }

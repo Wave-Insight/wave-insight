@@ -486,6 +486,46 @@ shortened with `…` instead of disappearing.
   the previously active tab, and a natively mapped dump (> 64 MiB) comes back as
   a waveform without replaying its rows (small dumps restore rows and settings).
 
+### FSDB (native only, optional)
+
+Synopsys Verdi's `.fsdb` is proprietary and has no public specification, so this
+viewer never parses it itself. The desktop and DSH builds read it through a
+converter that produces a VCD, which the normal pipeline then opens:
+
+- **Today: the Verdi CLI.** Put `fsdb2vcd` on `PATH` (or name the executable
+  with `WAVE_INSIGHT_FSDB2VCD`). The first open runs
+  `fsdb2vcd <dump>.fsdb -o <cache>.vcd`; later opens reuse the cached VCD until
+  the file's path, size or modification time changes, at which point a
+  re-simulated dump converts again. The status line reports the cost, e.g.
+  `waveform loaded — FSDB 105 MB converted to VCD in 8.2 s (fsdb2vcd), opened in
+  412 ms`; when nothing was converted this time it says `read from its cached
+  VCD` instead, and the tab/badge show `FSDB`.
+- **Planned: the vendor SDK behind `--features fsdb`.** A later slice implements
+  the same converter seam on Synopsys's FSDB Reader SDK (built against
+  `VERDI_HOME`). It is not in this build: `--features fsdb` compiles today and
+  falls back to the CLI.
+
+The cache lives in the system temporary directory
+(`%TEMP%\wave-insight-fsdb-cache` on Windows,
+`$TMPDIR/wave-insight-fsdb-cache` elsewhere); set `WAVE_INSIGHT_FSDB_CACHE` to
+put it elsewhere. It is a temporary artifact: delete the directory whenever you
+like (or let the OS clean it), the next open converts again. Concurrent opens of
+the same trace convert once, not once per window.
+
+An FSDB opens in the **desktop native read-only mode** (the converted VCD is
+mapped and queried over the same IPC as a large FST), so that mode's limits
+apply: one native dump at a time, no split view or multi-dump tabs, export is
+refused, and the hierarchy is fetched eagerly at open (400,000-row cap). The
+pure **browser build cannot read FSDB**: it refuses an `.fsdb` before reading a
+byte with `FSDB needs the desktop build with Synopsys's fsdb2vcd on PATH (or a
+--features fsdb build); the browser build cannot read FSDB`. The DSH viewer and
+the JSON-lines bridge use the same native conversion.
+
+Conversion cost: seconds for a real trace (the vendor tool reads and writes the
+whole file), on the first open only; afterwards the cached VCD opens like any
+other VCD. No Synopsys headers, libraries, binaries or generated bindings are
+shipped with this project.
+
 The keyboard and accessibility contract: clicking a wave row moves the keyboard
 focus into the wave pane, so `Delete` removes the selected rows there (it can
 no longer delete source text while monaco still had the focus), `ctrl+A`

@@ -173,10 +173,24 @@
 //!   released web/desktop builds such a panic aborts the app/webview instead.
 //!   A panic raised by your own [`Waveform::stream_changes`] visitor is
 //!   re-raised, not swallowed.
+//!
+//! # FSDB
+//!
+//! Synopsys's FSDB has no public specification and wellen cannot read it.  On
+//! native builds [`Waveform::open_path`] / [`Waveform::open_path_mmap`] convert
+//! an `.fsdb` trace with the vendor `fsdb2vcd` CLI (or, in a later slice, the
+//! FSDB Reader SDK behind `--features fsdb`), cache the VCD and open that; the
+//! [`Origin`] records the logical format, the original path and what the
+//! conversion cost, while [`Waveform::container_format`] reports the VCD wellen
+//! actually parsed.  Byte and reader sources have no path to convert from and
+//! return [`WaveformError::FsdbUnavailable`].  The browser build does not compile
+//! the converter at all; its callers refuse an `.fsdb` before reading it.
 
 mod decoded;
 mod error;
 mod format;
+#[cfg(not(target_arch = "wasm32"))]
+mod fsdb;
 mod hierarchy;
 mod query;
 mod render;
@@ -188,7 +202,7 @@ mod value;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Seek;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use wellen::{LoadOptions, Signal, SignalRef, SignalSource, Time};
@@ -196,6 +210,8 @@ use wellen::{LoadOptions, Signal, SignalRef, SignalSource, Time};
 pub use decoded::{Change, DecodedSignal};
 pub use error::{Result, WaveformError};
 pub use format::{TimeUnit, Timescale, WaveFormat};
+#[cfg(not(target_arch = "wasm32"))]
+pub use fsdb::{Converter, Prepared};
 pub use hierarchy::{HierarchyStats, HierarchyView, ScopeNode, SignalInfo, SignalKind};
 pub use query::ValueQuery;
 // R3: the display preference lives with the waveform types now (the render API
@@ -208,6 +224,30 @@ pub use value::{BitValue, Bits, WaveValue};
 
 use error::catch_parse;
 use source::{detect_format, validate_vcd};
+
+/// True when `path` names an FSDB trace: a case-insensitive `.fsdb` extension.
+///
+/// This is the only FSDB detection there is: the format has no public magic
+/// bytes this build can rely on, and the viewer never guesses from content.  A
+/// compressed route (`.fsdb.gz`), a lookalike extension (`.fsdbx`) and a file
+/// without an extension are not FSDB paths.
+pub fn is_fsdb_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("fsdb"))
+        .unwrap_or(false)
+}
+
+/// Best effort: the FSDB header block carries the format's ASCII name (at the
+/// start, or after a leading length word).
+///
+/// This never made a file readable; it only lets a pathless
+/// [`Waveform::open_bytes`] answer with the actionable FSDB message instead of a
+/// misleading "unknown waveform format".  A wrong guess would only turn one
+/// error into another, never accept a file.
+fn looks_like_fsdb(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"FSDB") || bytes.get(4..8) == Some(b"FSDB".as_slice())
+}
 
 /// Options used for every wellen read.
 ///
@@ -255,6 +295,28 @@ pub struct WindowedSignal {
     pub capped: bool,
 }
 
+/// What an opened file really was, when a conversion produced its bytes.
+///
+/// Only FSDB has an origin today: the file on disk is proprietary, so the
+/// waveform reads a cached VCD that a converter wrote.  Everything that needs
+/// the *user's* file (tabs, companion RTL next to the dump, MCP identity) uses
+/// [`Origin::path`]; everything that parses bytes uses
+/// [`Waveform::container_format`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Origin {
+    /// Logical format of the file the user opened (`Fsdb`).
+    pub format: WaveFormat,
+    /// Path the user opened, as given (not the cache file, not canonicalized).
+    pub path: PathBuf,
+    /// Cached VCD that wellen parsed.
+    pub converted: PathBuf,
+    /// Converter that produced [`Origin::converted`], e.g. `"fsdb2vcd"`.
+    pub converter: String,
+    /// Milliseconds the conversion took on this open; `0.0` when the cache was
+    /// reused (nothing was converted this time).
+    pub convert_ms: f64,
+}
+
 /// An opened waveform file.
 ///
 /// Cheap to open (header only), `Send + Sync`, and all value queries take
@@ -264,7 +326,10 @@ pub struct WindowedSignal {
 /// [`Waveform::time_range_hint`] costs per format.
 pub struct Waveform {
     source: WaveformSource,
-    format: WaveFormat,
+    /// The format wellen actually parsed.  For a converted FSDB this is `Vcd`.
+    container_format: WaveFormat,
+    /// The file the user opened, when its bytes had to be converted first.
+    origin: Option<Origin>,
     hierarchy: HierarchyView,
     date: String,
     version: String,
@@ -282,7 +347,9 @@ pub struct Waveform {
 impl fmt::Debug for Waveform {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Waveform")
-            .field("format", &self.format)
+            .field("format", &self.file_format())
+            .field("container_format", &self.container_format)
+            .field("origin", &self.origin)
             .field("source", &self.source)
             .field("signals", &self.hierarchy.len())
             .field("timescale", &self.timescale)
@@ -298,8 +365,24 @@ impl Waveform {
     /// Open a waveform file from disk. The file is read twice: once for the
     /// header (now) and once for the body (on the first value query), because
     /// wellen's streaming interface is re-entered per query.
+    ///
+    /// A path with an `.fsdb` extension is converted first (native builds only;
+    /// see the [FSDB](self#fsdb) section) and the cached VCD is opened in its
+    /// place.  Every other path behaves exactly as before.
     pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_source(WaveformSource::from_path(path.as_ref().to_path_buf()))
+        let path = path.as_ref();
+        if is_fsdb_path(path) {
+            #[cfg(not(target_arch = "wasm32"))]
+            return Self::open_fsdb(path, false);
+            #[cfg(target_arch = "wasm32")]
+            return Err(WaveformError::FsdbUnavailable {
+                detail: format!(
+                    "{} cannot be converted in this build (the FSDB converter is native only)",
+                    path.display()
+                ),
+            });
+        }
+        Self::open_source(WaveformSource::from_path(path.to_path_buf()))
     }
 
     /// Open a waveform from a memory mapped file (native builds only).
@@ -311,6 +394,10 @@ impl Waveform {
     /// validation and value queries read through the same [`ByteSource`]
     /// interface, so a corrupt dump still answers Corrupt.
     ///
+    /// An `.fsdb` path is converted first and the **cached VCD** is mapped
+    /// (the proprietary file is never mapped).  [`Waveform::path`] keeps
+    /// answering the original path.
+    ///
     /// Fails with [`WaveformError::Io`] when the map cannot be created (missing
     /// file, empty file, unsupported filesystem); callers can fall back to
     /// [`Waveform::open_path`].
@@ -320,21 +407,59 @@ impl Waveform {
     /// [`Waveform`] is dropped.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_path_mmap(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if is_fsdb_path(path) {
+            return Self::open_fsdb(path, true);
+        }
         Self::open_source(WaveformSource::from_path_mmap(path)?)
+    }
+
+    /// Convert an `.fsdb` file and open the cached VCD.
+    ///
+    /// `mmap` selects the source for the *converted* file; the mapping keeps the
+    /// cache file open, which is harmless (the cache entry is immutable once
+    /// published and may be deleted on unix while mapped).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_fsdb(path: &Path, mmap: bool) -> Result<Self> {
+        let prepared = fsdb::prepare(path)?;
+        let source = if mmap {
+            WaveformSource::from_path_mmap(&prepared.vcd)?
+        } else {
+            WaveformSource::from_path(prepared.vcd.clone())
+        };
+        let origin = Origin {
+            format: WaveFormat::Fsdb,
+            path: path.to_path_buf(),
+            converted: prepared.vcd,
+            converter: prepared.converter,
+            convert_ms: prepared.convert_ms,
+        };
+        Self::open_source_with_origin(source, Some(origin))
     }
 
     /// Open a waveform that is already in memory.
     ///
     /// Useful for `include_bytes!` fixtures, for files that were read by the
     /// caller, or when the file is not on the local file system.
+    ///
+    /// FSDB bytes cannot be converted without a path: a recognizable FSDB header
+    /// comes back as [`WaveformError::FsdbUnavailable`] with the actionable text
+    /// instead of a misleading "unknown format".
     pub fn open_bytes(bytes: impl Into<Vec<u8>>) -> Result<Self> {
-        Self::open_source(WaveformSource::from_bytes(bytes.into()))
+        let bytes = bytes.into();
+        if looks_like_fsdb(&bytes) {
+            return Err(WaveformError::FsdbUnavailable {
+                detail: "this entry point has no path, so an FSDB file cannot be converted; open it with Waveform::open_path".to_string(),
+            });
+        }
+        Self::open_source(WaveformSource::from_bytes(bytes))
     }
 
     /// Open from anything readable.
     ///
     /// The reader does not have to be seekable, but it is drained into memory
     /// because wellen needs `Seek`; for big dumps prefer [`Waveform::open_path`].
+    /// Like [`Waveform::open_bytes`], an FSDB stream has no path to convert from.
     pub fn open_reader(mut reader: impl std::io::Read) -> Result<Self> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
@@ -342,7 +467,25 @@ impl Waveform {
     }
 
     /// Open a known source (used by the constructors above).
+    ///
+    /// This is the low-level entry point: an FSDB path in a
+    /// [`WaveformSource::Path`] is refused with [`WaveformError::FsdbUnavailable`]
+    /// because the conversion belongs to [`Waveform::open_path`].
     pub fn open_source(source: WaveformSource) -> Result<Self> {
+        if let Some(path) = source.path() {
+            if is_fsdb_path(path) {
+                return Err(WaveformError::FsdbUnavailable {
+                    detail: format!(
+                        "opening {} through a source does not convert FSDB; use Waveform::open_path",
+                        path.display()
+                    ),
+                });
+            }
+        }
+        Self::open_source_with_origin(source, None)
+    }
+
+    fn open_source_with_origin(source: WaveformSource, origin: Option<Origin>) -> Result<Self> {
         //our own magic check first: it keeps garbled input away from wellen's
         //FST probe, which would otherwise panic on it
         let mut reader = source.reader()?;
@@ -360,14 +503,14 @@ impl Waveform {
         let header = catch_parse(detected, "read header", || {
             Ok(wellen::viewers::read_header(reader, &options)?)
         })?;
-        let format =
+        let container_format =
             WaveFormat::from_wellen(header.file_format).ok_or(WaveformError::UnknownFormat)?;
         // Resolving the hierarchy walks wellen's arena and recurses into nested
         // scopes; a corrupt header with dangling handles or absurd nesting must
         // become a Corrupt error, not a panic/stack overflow.
-        let hierarchy = catch_parse(format, "read hierarchy", || {
+        let hierarchy = catch_parse(container_format, "read hierarchy", || {
             HierarchyView::build(&header.hierarchy).map_err(|detail| WaveformError::Corrupt {
-                format,
+                format: container_format,
                 operation: "read hierarchy",
                 detail,
             })
@@ -380,7 +523,8 @@ impl Waveform {
             .and_then(Timescale::from_wellen);
         Ok(Self {
             source,
-            format,
+            container_format,
+            origin,
             hierarchy,
             date,
             version,
@@ -392,13 +536,32 @@ impl Waveform {
     }
 
     /// Where the data came from.
+    ///
+    /// For a converted FSDB this is the **cached VCD**, not the file the user
+    /// opened (see [`Waveform::path`] and [`Waveform::origin`]).
     pub fn source(&self) -> &WaveformSource {
         &self.source
     }
 
-    /// Path of the file, if it was opened from disk (mapped or not).
+    /// Path of the file the user opened, if any.
+    ///
+    /// For a converted FSDB this is the original `.fsdb` path; the bytes are
+    /// read from [`Origin::converted`] instead.
     pub fn path(&self) -> Option<&Path> {
-        self.source.path()
+        self.origin
+            .as_ref()
+            .map(|origin| origin.path.as_path())
+            .or_else(|| self.source.path())
+    }
+
+    /// What produced the bytes, when a conversion did (FSDB only).
+    pub fn origin(&self) -> Option<&Origin> {
+        self.origin.as_ref()
+    }
+
+    /// `true` when the bytes came from a converter rather than the opened file.
+    pub fn is_converted(&self) -> bool {
+        self.origin.is_some()
     }
 
     /// Number of bytes memory mapped by this waveform (native builds only);
@@ -410,9 +573,21 @@ impl Waveform {
         self.source.mapped_len()
     }
 
-    /// Detected file format.
+    /// Logical file format: the format of the file the user opened.
+    ///
+    /// A converted FSDB reports [`WaveFormat::Fsdb`] even though the bytes were
+    /// parsed as a VCD; use [`Waveform::container_format`] for what wellen read.
     pub fn file_format(&self) -> WaveFormat {
-        self.format
+        self.origin
+            .as_ref()
+            .map(|origin| origin.format)
+            .unwrap_or(self.container_format)
+    }
+
+    /// The format wellen actually parsed (always [`WaveFormat::Vcd`] for a
+    /// converted FSDB).
+    pub fn container_format(&self) -> WaveFormat {
+        self.container_format
     }
 
     /// `$date` of a VCD header, creation date of an FST/GHW file (may be empty).
@@ -528,7 +703,7 @@ impl Waveform {
         if let Some(cached) = *slot {
             return Ok(cached);
         }
-        let hint = match self.format {
+        let hint = match self.container_format {
             WaveFormat::Vcd => {
                 let mut reader = self.source.reader()?;
                 timescan::scan_vcd_time_range(&mut reader)?
@@ -550,6 +725,9 @@ impl Waveform {
                 }
             }
             WaveFormat::Ghw => None,
+            // Never the container: an FSDB file is converted before wellen sees
+            // it, so the body is always a VCD here.
+            WaveFormat::Fsdb => None,
         };
         *slot = Some(hint);
         Ok(hint)
@@ -800,11 +978,11 @@ impl Waveform {
                 return Ok(cached);
             }
         }
-        let result = if self.format == WaveFormat::Ghw {
+        let result = if self.container_format == WaveFormat::Ghw {
             // wellen cannot stream GHW: the materialised fallback is the same
             // path value_at uses (documented in the method docs).
             self.stream_last_change(signal, 0, time)?
-        } else if self.format == WaveFormat::Vcd {
+        } else if self.container_format == WaveFormat::Vcd {
             // Forward-only format: one scan from the beginning to the requested
             // time, keeping only the last value (O(1) memory).
             self.stream_last_change(signal, 0, time)?
@@ -893,7 +1071,8 @@ impl Waveform {
             .map(|(_, &signal)| signal)
             .collect();
         if !pending.is_empty() {
-            if self.format == WaveFormat::Ghw || self.format == WaveFormat::Vcd {
+            if self.container_format == WaveFormat::Ghw || self.container_format == WaveFormat::Vcd
+            {
                 // Forward-only / non-streamable: one pass from 0 to time.
                 let results = self.stream_last_changes(&pending, 0, time)?;
                 for (&signal, result) in pending.iter().zip(results) {
@@ -1049,7 +1228,7 @@ impl Waveform {
     where
         F: FnMut(usize, Time, WaveValue) -> bool,
     {
-        if self.format == WaveFormat::Ghw {
+        if self.container_format == WaveFormat::Ghw {
             return self.stream_changes_materialised(query, visit);
         }
 
@@ -1124,7 +1303,7 @@ impl Waveform {
                     std::panic::resume_unwind(payload)
                 } else {
                     Err(WaveformError::Corrupt {
-                        format: self.format,
+                        format: self.container_format,
                         operation: "stream values",
                         detail: error::panic_detail(payload.as_ref()),
                     })
@@ -1403,7 +1582,7 @@ impl Waveform {
     /// Lazily read the body into the random access cache.
     fn ensure_body<'a>(&self, guard: &'a mut Option<EagerBody>) -> Result<&'a mut EagerBody> {
         if guard.is_none() {
-            *guard = Some(EagerBody::open(&self.source, self.format)?);
+            *guard = Some(EagerBody::open(&self.source, self.container_format)?);
         }
         guard
             .as_mut()

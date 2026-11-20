@@ -37,7 +37,11 @@ enum Kind {
 
 fn kind_of(name: &str) -> Kind {
     let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw") {
+    if lower.ends_with(".vcd")
+        || lower.ends_with(".fst")
+        || lower.ends_with(".ghw")
+        || lower.ends_with(".fsdb")
+    {
         Kind::Waveform
     } else if lower.ends_with(".sv")
         || lower.ends_with(".v")
@@ -375,7 +379,7 @@ impl Component for FileList {
                     </div>
 
                     <div class="file-modal-foot">
-                        {"waveforms: .vcd .fst .ghw   ·   sources: .v .sv"}
+                        {"waveforms: .vcd .fst .ghw .fsdb   ·   sources: .v .sv"}
                     </div>
                 </div>
             </div>

@@ -12,6 +12,13 @@
 //! * `find`     -> signal paths matching a case-insensitive substring
 //! * `validate` -> which of the given paths exist, without decoding any value
 //! * `wave`     -> bounded time/value changes for the given paths
+//!
+//! `.fsdb` goes through the library's `fsdb::prepare`: on the first open Verdi's
+//! `fsdb2vcd` (or, later, the SDK backend) converts the trace and the VCD is
+//! cached; every command then reads that cached VCD while the reported path and
+//! format stay the original file's.  Without a converter the `open` failure
+//! carries the library's actionable text (put `fsdb2vcd` on PATH or set
+//! `WAVE_INSIGHT_FSDB2VCD`).
 
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
@@ -51,7 +58,10 @@ fn value_text(value: &WaveValue, width: u32) -> String {
 }
 
 fn open_dump(path: &str) -> Result<Waveform, String> {
-    Waveform::open_path_mmap(path).map_err(|e| format!("failed to open {path}: {e}"))
+    // `.fsdb` is converted and cached inside the library; an unavailable
+    // converter surfaces as the library's actionable message here.
+    Waveform::open_path_mmap(path)
+        .map_err(|error| format!("failed to open {path}: {}", error.message()))
 }
 
 fn signal_names(request: &Value) -> Vec<String> {
@@ -252,5 +262,42 @@ fn main() {
         if writeln!(stdout, "{encoded}").is_err() || stdout.flush().is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_fsdb_without_a_converter_answers_the_actionable_error() {
+        let dir =
+            std::env::temp_dir().join(format!("wave-insight-dsh-fsdb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create the test directory");
+        let fsdb = dir.join("run.fsdb");
+        std::fs::write(&fsdb, b"not convertible here").expect("write the fake trace");
+
+        // Point the converter lookup at a program that does not exist, so the
+        // test does not depend on whether this machine has Verdi installed.
+        let previous = std::env::var_os("WAVE_INSIGHT_FSDB2VCD");
+        std::env::set_var("WAVE_INSIGHT_FSDB2VCD", dir.join("missing-fsdb2vcd"));
+        let response = handle(&json!({
+            "cmd": "open",
+            "path": fsdb.display().to_string(),
+        }));
+        match previous {
+            Some(value) => std::env::set_var("WAVE_INSIGHT_FSDB2VCD", value),
+            None => std::env::remove_var("WAVE_INSIGHT_FSDB2VCD"),
+        }
+
+        assert_eq!(response.get("ok").and_then(Value::as_bool), Some(false));
+        let error = response
+            .get("error")
+            .and_then(Value::as_str)
+            .expect("an error string");
+        assert!(error.contains("run.fsdb"), "{error}");
+        assert!(error.contains("fsdb2vcd"), "{error}");
+        assert!(error.contains("WAVE_INSIGHT_FSDB2VCD"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

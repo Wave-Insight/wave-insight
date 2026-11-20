@@ -794,6 +794,11 @@ impl Component for App {
                                         <div><strong>{"Nothing loaded yet"}</strong></div>
                                         <div>{"Drop a waveform ( "}
                                             <kbd>{".vcd"}</kbd>{" "}<kbd>{".fst"}</kbd>{" "}<kbd>{".ghw"}</kbd>
+                                            {if cfg!(any(feature = "tauri", feature = "web-remote")) {
+                                                html!{ <>{ " " }<kbd>{".fsdb"}</kbd></> }
+                                            } else {
+                                                html!{}
+                                            }}
                                             {" ) anywhere in this window to inspect its signals."}</div>
                                         <div>{"Drop your "}<kbd>{".sv"}</kbd>{" / "}<kbd>{".v"}</kbd>
                                             {" sources as well to get declarations, drivers and loads."}</div>
@@ -1243,7 +1248,10 @@ impl App {
                 }
                 path.into_iter().for_each(|p| {
                     let lower = p.to_ascii_lowercase();
-                    if lower.ends_with(".vcd") || lower.ends_with(".fst") || lower.ends_with(".ghw")
+                    if lower.ends_with(".vcd")
+                        || lower.ends_with(".fst")
+                        || lower.ends_with(".ghw")
+                        || lower.ends_with(".fsdb")
                     {
                         let file = p.clone();
                         let onready =
@@ -3396,8 +3404,9 @@ impl App {
         if let Some(session) = &self.remote {
             let dump = session.dump();
             let title = format!(
-                "{} — {} MB, {} signals in {} scopes, mapped {} MB (native backend, read-only)",
+                "{} — {} {} MB, {} signals in {} scopes, mapped {} MB (native backend, read-only)",
                 dump.path,
+                dump.format,
                 dump.size_mb(),
                 dump.signal_count,
                 dump.scope_count,
